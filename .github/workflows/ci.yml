@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+    branches: [master, dev]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check gofmt
+        run: |
+          output=$(gofmt -l .)
+          if [ -n "$output" ]; then
+            echo "files not formatted:"
+            echo "$output"
+            exit 1
+          fi
+
+      - name: Check goimports
+        run: |
+          go install golang.org/x/tools/cmd/goimports@v0.33.0
+          output=$(goimports -l .)
+          if [ -n "$output" ]; then
+            echo "files with incorrect imports:"
+            echo "$output"
+            exit 1
+          fi
+
+      - name: Go vet
+        run: go vet ./...
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test -race ./...
