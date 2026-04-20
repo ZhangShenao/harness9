@@ -1,0 +1,12 @@
+.DS_Store
+.env
+opencode.json
+
+# Superpowers 工具生成的文档，仅供开发会话内参考
+docs/superpowers/
+
+# Claude Code 本地会话记忆，因机器和会话而异，不纳入版本控制
+.claude/
+
+# Deep Research 生成的调研报告
+reports/
