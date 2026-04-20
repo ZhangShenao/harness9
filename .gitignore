@@ -1,6 +1,7 @@
 .DS_Store
 .env
 opencode.json
+harness9
 
 # Superpowers 工具生成的文档，仅供开发会话内参考
 docs/superpowers/
