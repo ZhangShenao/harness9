@@ -13,9 +13,9 @@ import (
 // countingProvider 是一个可编程的 LLM Provider 桩实现，
 // 按预设序列返回响应，并记录所有调用参数。
 type countingProvider struct {
-	mu       sync.Mutex
+	mu        sync.Mutex
 	responses []func(tools []schema.ToolDefinition) *schema.Message
-	calls    []providerCall
+	calls     []providerCall
 }
 
 type providerCall struct {
