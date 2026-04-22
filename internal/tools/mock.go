@@ -11,9 +11,11 @@ import (
 // 无需实际运行命令。
 type mockRegistry struct{}
 
-// GetAvailableTools 返回空切片，表示 mock 中未注册真实工具。
+// GetAvailableTools 返回默认的Bash工具
 // mock provider 不依赖 ToolDefinition 来决定调用什么工具。
-func (m *mockRegistry) GetAvailableTools() []schema.ToolDefinition { return nil }
+func (m *mockRegistry) GetAvailableTools() []schema.ToolDefinition {
+	return []schema.ToolDefinition{{Name: "bash"}}
+}
 
 // Execute 模拟工具执行：无论传入的 ToolCall 是什么，都返回一个确定的文件列表结果。
 // 在生产 Registry 中，此方法会根据 call.Name 分发到具体的工具实现。
