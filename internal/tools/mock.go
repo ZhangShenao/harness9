@@ -2,27 +2,42 @@ package tools
 
 import (
 	"context"
+	"log"
 
 	"github.com/harness9/internal/schema"
 )
 
 // mockRegistry 是 Registry 的桩实现，用于集成测试和早期开发。
-// 对任何工具调用均返回硬编码的文件列表，模拟一次成功的 bash 执行，
-// 无需实际运行命令。
+// 注册了一个 get_weather 工具，对任何调用均返回硬编码的天气查询结果，
+// 无需实际调用天气 API。
 type mockRegistry struct{}
 
-// GetAvailableTools 返回默认的Bash工具
-// mock provider 不依赖 ToolDefinition 来决定调用什么工具。
+// GetAvailableTools 返回 get_weather 工具定义，包含城市参数的 JSON Schema。
 func (m *mockRegistry) GetAvailableTools() []schema.ToolDefinition {
-	return []schema.ToolDefinition{{Name: "bash"}}
+	return []schema.ToolDefinition{
+		{
+			Name:        "get_weather",
+			Description: "获取指定城市的天气情况。",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"city": map[string]interface{}{
+						"type": "string",
+					},
+				},
+				"required": []string{"city"},
+			},
+		},
+	}
 }
 
-// Execute 模拟工具执行：无论传入的 ToolCall 是什么，都返回一个确定的文件列表结果。
+// Execute 模拟天气查询工具执行：返回硬编码的天气结果。
 // 在生产 Registry 中，此方法会根据 call.Name 分发到具体的工具实现。
 func (m *mockRegistry) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
+	log.Printf("  -> [Mock 工具执行] 正在查询 %s 的天气...\n", call.Name)
 	return schema.ToolResult{
 		ToolCallID: call.ID,
-		Output:     "-rw-r--r--@ 1 zsa  staff   866B Apr 20 17:08 main.go\n",
+		Output:     "API 返回：今天天气晴，最低温度 14 度，最高温度 25 度，体感舒适。",
 		IsError:    false,
 	}
 }
