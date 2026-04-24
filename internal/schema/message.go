@@ -83,7 +83,8 @@ type ToolDefinition struct {
 	// Description 工具用途和行为的自然语言描述，供 LLM 决定何时以及如何调用该工具。
 	Description string `json:"description"`
 
-	// InputSchema 描述工具参数格式的 JSON Schema，使用 json.RawMessage
-	// 延迟序列化，与 ToolCall.Arguments 保持一致的反序列化策略。
-	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+	// InputSchema 描述工具参数格式的 JSON Schema。使用 interface{} 类型以兼容
+	// 不同 SDK 的参数格式要求（OpenAI 需要 shared.FunctionParameters，
+	// Anthropic 需要 map[string]any），各 Provider 实现负责类型转换。
+	InputSchema interface{} `json:"input_schema"`
 }

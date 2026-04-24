@@ -43,8 +43,11 @@ harness9 的核心是一个 **Two-Stage ReAct** 循环引擎，将传统 Reasoni
 |------|---------|------|
 | `schema` | `internal/schema/message.go` | 定义跨组件共享的核心数据类型 |
 | `LLMProvider` | `internal/provider/interface.go` | 抽象 LLM 通信层，封装 API 差异 |
+| `OpenAIProvider` | `internal/provider/openai.go` | OpenAI 兼容 API 适配器（OpenAI / OpenRouter / Azure） |
+| `ClaudeProvider` | `internal/provider/anthropic.go` | Anthropic 兼容 API 适配器（Anthropic / OpenRouter） |
 | `Registry` | `internal/tools/registry.go` | 解耦工具发现与执行 |
 | `AgentEngine` | `internal/engine/agent_loop.go` | 编排 Two-Stage ReAct 主循环，驱动各组件协作 |
+| `env` | `internal/env/env.go` | 基于 .env 文件的环境变量配置加载 |
 
 ## 2. Two-Stage ReAct 设计理念
 
@@ -171,14 +174,14 @@ Role (string)
 │  ToolDefinition                                  │
 │  ├── Name        string   工具唯一标识             │
 │  ├── Description string   用途描述                │
-│  └── InputSchema RawMessage 参数 JSON Schema      │
+│  └── InputSchema interface{} 参数 JSON Schema      │
 └──────────────────────────────────────────────────┘
 ```
 
 **关键设计决策：**
 
 - **`ToolCall.Arguments` 使用 `json.RawMessage`**：延迟反序列化，将参数解析责任交给具体工具实现。
-- **`ToolDefinition.InputSchema` 使用 `json.RawMessage`**：与 Arguments 保持一致的反序列化策略，避免 `interface{}` 类型在序列化时的不可控行为。
+- **`ToolDefinition.InputSchema` 使用 `interface{}`**：不同 LLM SDK 对工具参数格式要求不同（OpenAI 需要 `shared.FunctionParameters`，Anthropic 需要 `map[string]any`），使用 `interface{}` 允许各 Provider 实现直接传递原生 `map[string]interface{}`，避免额外的 JSON 往返序列化开销。各 Provider 内部负责类型转换（`convertToFunctionParameters` / `extractSchemaFields`）。
 - **`ToolCallID` 关联机制**：工具执行结果 (Observation) 通过 `ToolCallID` 与原始 `ToolCall` 关联。
 - **`ToolResult.IsError` 自愈标记**：当工具执行失败时，引擎将错误暴露给 LLM，使其能尝试修正参数并重试（Self-Healing）。
 
@@ -393,7 +396,78 @@ type LLMProvider interface {
 - `availableTools` 参数支持 `nil`（Phase 1 剥夺工具）和非空（Phase 2 恢复工具）
 - 引擎只依赖接口，切换模型只需替换 Provider 实现
 
-### 5.2 Registry 接口
+### 5.2 具体实现
+
+#### OpenAIProvider（`internal/provider/openai.go`）
+
+OpenAI 兼容实现，支持所有遵循 OpenAI Chat Completion API 规范的后端。通过环境变量配置认证和端点：
+
+| 环境变量 | 说明 |
+|---------|------|
+| `OPENAI_API_KEY` | API 认证密钥（必需） |
+| `OPENAI_BASE_URL` | API 端点基址，如 `https://api.openai.com/v1`（必需） |
+
+```go
+p, err := provider.NewOpenAIProvider("gpt-4o")
+```
+
+**消息转换规则：**
+
+| schema 类型 | OpenAI SDK 类型 |
+|-------------|----------------|
+| `RoleSystem` | `openai.SystemMessage` |
+| `RoleUser`（含 ToolCallID） | `openai.ToolMessage(content, toolCallID)` |
+| `RoleUser`（无 ToolCallID） | `openai.UserMessage(content)` |
+| `RoleAssistant` | `ChatCompletionAssistantMessageParam`（含 ToolCalls） |
+| `ToolDefinition` | `openai.ChatCompletionFunctionTool` |
+
+`InputSchema` 的 `interface{}` → `shared.FunctionParameters` 转换由 `convertToFunctionParameters` 函数完成：优先尝试直接类型断言，失败时通过 JSON 往返转换并报告错误。
+
+#### ClaudeProvider（`internal/provider/anthropic.go`）
+
+Anthropic 兼容实现，支持 Anthropic 官方和 OpenRouter 等 Anthropic 兼容端点：
+
+| 环境变量 | 说明 |
+|---------|------|
+| `ANTHROPIC_API_KEY` | API 认证密钥（必需） |
+| `ANTHROPIC_BASE_URL` | API 端点基址，如 `https://api.anthropic.com`（必需） |
+
+```go
+p, err := provider.NewAnthropicProvider("claude-sonnet-4-20250514", 4096)
+//                                                        model     maxTokens
+```
+
+**Anthropic API 特殊处理：**
+
+| 差异点 | 处理方式 |
+|--------|---------|
+| System prompt 不在 messages 数组中 | 从 `RoleSystem` 消息中提取，设置为 `params.System` |
+| ToolUseBlock 的 Input 类型 | `json.Unmarshal` 将 `Arguments` 解析为 `map[string]interface{}` |
+| `required` 字段类型 | `extractSchemaFields` 安全处理 `[]interface{}` → `[]string` 转换 |
+| `MaxTokens` 必须显式指定 | 通过构造函数参数传入，默认 4096 |
+
+两个 Provider 的构造函数均返回 `(*Provider, error)` 而非 `panic`，遵循 Go 的错误处理惯例，允许调用方（如 main）优雅处理配置缺失。
+
+### 5.3 环境配置（`internal/env`）
+
+`env` 包提供零依赖的 `.env` 文件加载器，在程序启动时调用：
+
+```go
+env.Load(filepath.Join(workDir, ".env"))
+```
+
+**设计特点：**
+
+| 特性 | 说明 |
+|------|------|
+| 系统环境变量优先 | 已存在的环境变量不会被 `.env` 文件覆盖 |
+| 静默跳过缺失文件 | 无 `.env` 文件时返回 nil，不阻断启动 |
+| 支持引号值 | 自动去除成对匹配的双引号或单引号 |
+| 注释和空行 | `#` 开头的行和空行被跳过 |
+
+配置模板见 `.env.example`，真实配置文件 `.env` 已在 `.gitignore` 中排除版本控制。
+
+### 5.4 Registry 接口
 
 ```go
 type Registry interface {
@@ -402,7 +476,7 @@ type Registry interface {
 }
 ```
 
-### 5.3 依赖注入 + 函数选项
+### 5.5 依赖注入 + 函数选项
 
 ```go
 eng := engine.NewAgentEngine(p, r, workDir, true,
@@ -451,39 +525,54 @@ eng := engine.NewAgentEngine(p, r, workDir, true,
 Turn 1:
   [Context]
     system:    "You are harness9... working directory is: /test"
-    user:      "帮我检查当前目录的文件"
+    user:      "我今天想去北京旅游，帮我看看天气合适吗？"
 
   Phase 1 (Thinking): → Generate(ctx, history, nil)
-    assistant: "【深度思考】目标是检查文件。我需要先调用 bash..."
+    assistant: "【深度思考】用户想了解北京今天的天气情况..."
     → ToolCalls 清除为 nil
     → 注入到临时 phase2History
 
-  Phase 2 (Action): → Generate(ctx, phase2History, [bash])
-    assistant: "我要执行我刚才规划的步骤了。" + ToolCall{id:"call_123", name:"bash"}
+  Phase 2 (Action): → Generate(ctx, phase2History, [get_weather])
+    assistant: "让我查询一下北京的天气。" + ToolCall{id:"call_abc", name:"get_weather", args:{"city":"北京"}}
 
-  合并: assistant = "【深度思考】...\n\n我要执行..." + ToolCalls
+  合并: assistant = "【深度思考】...\n\n让我查询..." + ToolCalls
     → 注入到 contextHistory（单条消息）
 
-  ToolCall: → Registry.Execute(bash, "ls -la")
-    ToolResult{id:"call_123", output:"-rw-r--r-- ... main.go"}
+  ToolCall: → Registry.Execute(get_weather, {"city":"北京"})
+    ToolResult{id:"call_abc", output:"今天天气晴，最低温度 14 度..."}
 
-  Observation: user: "-rw-r--r-- ... main.go" (toolCallID:"call_123")
+  Observation: user: "今天天气晴，最低温度 14 度..." (toolCallID:"call_abc")
 
 Turn 2:
   [Context = 4 messages: system, user, assistant(merged), user(obs)]
 
   Phase 1 (Thinking): → Generate(ctx, history, nil)
-    assistant: "【深度思考】已经看到文件列表..."
+    assistant: "【深度思考】已经获取到天气数据..."
 
-  Phase 2 (Action): → Generate(ctx, phase2History, [bash])
-    assistant: "任务圆满完成！" (无 ToolCall)
+  Phase 2 (Action): → Generate(ctx, phase2History, [get_weather])
+    assistant: "北京今天天气不错，适合出游！" (无 ToolCall)
 
   合并: → 注入到 contextHistory
 
   → 终止条件满足，循环退出
 ```
 
-## 8. 与主流框架的对比
+## 8. Provider 实现对比
+
+| 维度 | OpenAIProvider | ClaudeProvider |
+|------|---------------|----------------|
+| API 协议 | Chat Completion | Messages |
+| System prompt | 作为 messages 数组中的 system 消息 | 作为独立 `params.System` 参数 |
+| 工具调用响应 | `ToolCalls[].Function.Arguments`（JSON 字符串） | `Content[]` 中 `tool_use` block 的 `Input`（结构化对象） |
+| 历史工具调用 | `ChatCompletionMessageFunctionToolCallParam` | `ToolUseBlockParam` |
+| 工具结果回传 | `openai.ToolMessage(content, toolCallID)` | `anthropic.NewToolResultBlock(toolCallID, content, isError)` |
+| InputSchema 转换 | `convertToFunctionParameters` → `shared.FunctionParameters` | `extractSchemaFields` → `properties` + `required` |
+| MaxTokens | 不需要显式指定 | 必须显式传入 |
+| 构造函数 | `NewOpenAIProvider(model) (*OpenAIProvider, error)` | `NewAnthropicProvider(model, maxTokens) (*ClaudeProvider, error)` |
+
+两个 Provider 的消息转换逻辑均实现为 `Generate` 方法，将 `schema.Message` → SDK 原生参数 的映射封装在 Provider 内部，引擎层无需感知 API 差异。
+
+## 9. 与主流框架的对比
 
 > 详细调研报告见 `docs/技术调研/two-stage-react-research.md`
 
@@ -497,7 +586,7 @@ Turn 2:
 | **DeepAgents** | ⚠️ | `write_todos` 工具 | Planning 是工具而非独立阶段 |
 | **OpenCode** | ⚠️ | plan/build Agent 切换 | 通过独立 Agent 模式而非同一 Turn 内阶段 |
 
-## 9. 已知限制与未来演进
+## 10. 已知限制与未来演进
 
 | 限制 | 当前状态 | 演进方向 |
 |------|---------|---------|
@@ -507,7 +596,7 @@ Turn 2:
 | **Hook 系统** | 无 | PreToolUse / PostToolUse / Stop / TurnComplete 事件钩子 |
 | **自适应思考** | EnableThinking 为静态配置 | 根据任务复杂度自动决定是否启用 Phase 1 |
 
-## 10. 设计原则总结
+## 11. 设计原则总结
 
 | 原则 | 体现 |
 |------|------|
@@ -520,5 +609,5 @@ Turn 2:
 | **三重保障终止** | 自然终止 + MaxTurns 限制 + Context 取消 |
 | **可观测性** | 结构化日志 `[engine]` 前缀 + key=value 格式 |
 | **防御性编程** | Phase 1 ToolCalls 清除、工具独立超时 |
-| **延迟解析** | `json.RawMessage` 统一用于 Arguments 和 InputSchema |
+| **延迟解析** | `json.RawMessage` 用于 Arguments 延迟反序列化；`interface{}` 用于 InputSchema 兼容多 SDK |
 | **自愈能力** | `ToolResult.IsError` 支持模型感知错误并自动重试 |
