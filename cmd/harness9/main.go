@@ -4,11 +4,11 @@
 //
 // 启动流程：
 //
-//	1. 确定物理工作路径（WorkDir）
-//	2. 从 .env 文件加载环境变量（API Key、Base URL 等）
-//	3. 创建 LLM Provider（模型后端适配器）
-//	4. 创建 Tool Registry 并注册内置工具
-//	5. 组装 Agent Engine 并启动主循环
+//  1. 确定物理工作路径（WorkDir）
+//  2. 从 .env 文件加载环境变量（API Key、Base URL 等）
+//  3. 创建 LLM Provider（模型后端适配器）
+//  4. 创建 Tool Registry 并注册内置工具
+//  5. 组装 Agent Engine 并启动主循环
 package main
 
 import (
