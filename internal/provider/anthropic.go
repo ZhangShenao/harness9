@@ -11,12 +11,12 @@ import (
 	"github.com/harness9/internal/schema"
 )
 
-// ClaudeProvider 是 LLMProvider 的 Anthropic Claude 实现，支持所有遵循 Anthropic Messages API
+// AnthropicProvider 是 LLMProvider 的 Anthropic Claude 实现，支持所有遵循 Anthropic Messages API
 // 规范的后端（包括 Anthropic 官方、OpenRouter 等 Anthropic 兼容端点）。
 //
 // 通过 ANTHROPIC_API_KEY 和 ANTHROPIC_BASE_URL 环境变量配置认证和端点，
 // 使同一实现可灵活对接不同的 Anthropic 兼容服务。
-type ClaudeProvider struct {
+type AnthropicProvider struct {
 	client    anthropic.Client
 	model     string
 	maxTokens int64
@@ -31,7 +31,7 @@ type ClaudeProvider struct {
 // 环境变量:
 //   - ANTHROPIC_API_KEY: API 认证密钥，缺失时返回错误
 //   - ANTHROPIC_BASE_URL: API 端点基址，缺失时返回错误
-func NewAnthropicProvider(model string, maxTokens int64) (*ClaudeProvider, error) {
+func NewAnthropicProvider(model string, maxTokens int64) (*AnthropicProvider, error) {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		return nil, fmt.Errorf("请设置 ANTHROPIC_API_KEY 环境变量")
@@ -43,7 +43,7 @@ func NewAnthropicProvider(model string, maxTokens int64) (*ClaudeProvider, error
 	if maxTokens <= 0 {
 		maxTokens = 4096
 	}
-	return &ClaudeProvider{
+	return &AnthropicProvider{
 		client:    anthropic.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
 		model:     model,
 		maxTokens: maxTokens,
@@ -60,7 +60,7 @@ func NewAnthropicProvider(model string, maxTokens int64) (*ClaudeProvider, error
 //   - schema.ToolDefinition → anthropic.ToolParam
 //
 // 注意：Anthropic Messages API 要求 system prompt 作为独立参数传入，而非 messages 数组的一部分。
-func (p *ClaudeProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+func (p *AnthropicProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
 	var anthropicMsgs []anthropic.MessageParam
 	var systemPrompt string
 
