@@ -32,6 +32,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -335,16 +336,23 @@ func (e *AgentEngine) executeToolsConcurrently(ctx context.Context, turn int, to
 				defer cancel()
 			}
 
-			log.Printf("[engine] Turn %d | 工具启动 | name=%s id=%s", currentTurn, tc.Name, tc.ID)
+			log.Printf("[engine] Turn %d | 工具启动 | name=%s id=%s arguments=%s",
+				currentTurn, tc.Name, tc.ID, toJSON(tc.Arguments))
 
 			results[idx] = e.registry.Execute(toolCtx, tc)
 
 			if results[idx].IsError {
-				log.Printf("[engine] Turn %d | 工具失败 | name=%s error=%s",
-					currentTurn, tc.Name, results[idx].Output)
+				log.Printf("[engine] Turn %d | 工具失败 | name=%s id=%s result=%s",
+					currentTurn, tc.Name, tc.ID, toJSON(map[string]interface{}{
+						"is_error": true,
+						"output":   truncStr(results[idx].Output),
+					}))
 			} else {
-				log.Printf("[engine] Turn %d | 工具完成 | name=%s bytes=%d",
-					currentTurn, tc.Name, len(results[idx].Output))
+				log.Printf("[engine] Turn %d | 工具完成 | name=%s id=%s result=%s",
+					currentTurn, tc.Name, tc.ID, toJSON(map[string]interface{}{
+						"is_error": false,
+						"output":   truncStr(results[idx].Output),
+					}))
 			}
 		}(i, toolCall, turn)
 	}
@@ -366,4 +374,21 @@ func joinContent(thinking, action string) string {
 	default:
 		return thinking + "\n\n" + action
 	}
+}
+
+func toJSON(v interface{}) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("<marshal error: %v>", err)
+	}
+	return string(b)
+}
+
+const maxLogOutputLen = 512
+
+func truncStr(s string) string {
+	if len(s) <= maxLogOutputLen {
+		return s
+	}
+	return s[:maxLogOutputLen] + fmt.Sprintf("...[截断，全文 %d 字节]", len(s))
 }

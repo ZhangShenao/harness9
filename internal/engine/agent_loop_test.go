@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/harness9/internal/schema"
+	"github.com/harness9/internal/tools"
 )
 
 // countingProvider 是一个可编程的 LLM Provider 桩实现，
@@ -47,6 +48,8 @@ type staticRegistry struct {
 	output string
 }
 
+func (r *staticRegistry) Register(_ tools.BaseTool) {}
+
 func (r *staticRegistry) GetAvailableTools() []schema.ToolDefinition {
 	return r.tools
 }
@@ -61,7 +64,14 @@ func (r *staticRegistry) Execute(_ context.Context, call schema.ToolCall) schema
 
 // errorRegistry 对任何调用都返回错误结果。
 type errorRegistry struct {
-	staticRegistry
+	tools  []schema.ToolDefinition
+	output string
+}
+
+func (r *errorRegistry) Register(_ tools.BaseTool) {}
+
+func (r *errorRegistry) GetAvailableTools() []schema.ToolDefinition {
+	return r.tools
 }
 
 func (r *errorRegistry) Execute(_ context.Context, call schema.ToolCall) schema.ToolResult {
@@ -338,7 +348,7 @@ func TestToolErrorResult(t *testing.T) {
 		},
 	}
 
-	r := &errorRegistry{staticRegistry{output: ""}}
+	r := &errorRegistry{}
 	eng := NewAgentEngine(p, r, "/test", false)
 
 	err := eng.Run(context.Background(), "test error")
@@ -377,6 +387,8 @@ func TestToolTimeout(t *testing.T) {
 }
 
 type timeoutCheckRegistry struct{}
+
+func (r *timeoutCheckRegistry) Register(_ tools.BaseTool) {}
 
 func (r *timeoutCheckRegistry) GetAvailableTools() []schema.ToolDefinition {
 	return nil
