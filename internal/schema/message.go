@@ -5,20 +5,22 @@ package schema
 
 import "encoding/json"
 
-// Role 枚举了多轮对话中可能出现的参与者角色，遵循主流 Chat Completion API
-// （OpenAI、Anthropic、Google 等）使用的 system / user / assistant 三元组。
+// Role 枚举了多轮对话（Multi-Turn Conversation）中可能出现的参与者角色，
+// 遵循主流 Chat Completion API（OpenAI、Anthropic、Google 等）使用的
+// system / user / assistant 三元组。
 type Role string
 
 const (
-	// RoleSystem 系统提示词：定义 agent 的性格、约束和行为边界，通常在会话开始时注入一次。
+	// RoleSystem 系统提示词（System Prompt）：定义 agent 的性格、约束和行为边界，
+	// 通常在会话开始时注入一次。LLM 在所有后续 Turn 中都会参考此消息。
 	RoleSystem Role = "system"
 
-	// RoleUser 用户角色：包含人类操作者的输入 prompt，以及工具执行后回传的 Observation，
-	// 供模型进行下一轮 Reasoning。
+	// RoleUser 用户角色（User）：包含人类操作者的输入 Prompt，以及工具执行后回传的
+	// Observation（观察结果），供模型进行下一轮 Reasoning（推理）。
 	RoleUser Role = "user"
 
-	// RoleAssistant 模型输出角色：一条 assistant 消息可能包含纯文本推理 (Reasoning)、
-	// 一个或多个工具调用请求 (parallel ToolCall)，或两者的组合。
+	// RoleAssistant 模型输出角色（Assistant）：一条 assistant 消息可能包含纯文本推理
+	// （Reasoning）、一个或多个工具调用请求（Parallel ToolCall），或两者的组合。
 	RoleAssistant Role = "assistant"
 )
 
@@ -36,27 +38,28 @@ type Message struct {
 	// 而没有文本推理，此字段可能为空。
 	Content string `json:"content"`
 
-	// ToolCalls 当 assistant 请求工具调用时非空。切片支持并行调用 (parallel tool calling)：
+	// ToolCalls 当 assistant 请求工具调用时非空。切片支持并行调用（Parallel Tool Calling）：
 	// 引擎并发执行所有调用，并将每个结果作为独立的 Observation 消息回传。
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
 	// ToolCallID 用于 Observation（user 角色）消息中，标识此消息是对哪个 ToolCall
-	// 的响应，使 LLM 能够将 Observation 与其原始请求进行匹配。
+	// 的响应（Request-Response 关联），使 LLM 能够将 Observation 与其原始请求进行匹配。
 	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // ToolCall 代表模型发出的单个工具调用请求。模型指定要调用的已注册工具名称，
 // 并提供符合该工具 Input Schema 的 JSON 参数载荷。
 type ToolCall struct {
-	// ID 由 LLM Provider 分配的唯一标识符，用于将工具执行结果 (ToolResult) 与
-	// 原始请求进行关联。
+	// ID 由 LLM Provider 分配的唯一标识符（Unique Identifier），用于将工具执行结果
+	// （ToolResult）与原始请求（ToolCall）进行关联（Request-Response Matching）。
 	ID string `json:"id"`
 
-	// Name 目标工具在 Registry 中的标识符（例如 "bash"、"edit"、"glob"）。
+	// Name 目标工具在 Registry（注册表）中的标识符（如 "bash"、"read_file"、"glob"）。
 	Name string `json:"name"`
 
-	// Arguments 存放工具调用的原始 JSON 参数。使用 json.RawMessage 延迟反序列化，
-	// 将解析责任交给具体的工具实现，避免在引擎层进行过早的类型断言。
+	// Arguments 存放工具调用的原始 JSON 参数载荷（Payload）。使用 json.RawMessage
+	// 延迟反序列化（Lazy Deserialization），将解析责任交给具体的工具实现，
+	// 避免在引擎层进行过早的类型断言（Premature Type Assertion）。
 	Arguments json.RawMessage `json:"arguments"`
 }
 
@@ -70,7 +73,7 @@ type ToolResult struct {
 	Output string `json:"output"`
 
 	// IsError 标记工具执行是否失败。当为 true 时，引擎可将错误暴露给 LLM，
-	// 使其尝试自愈 (self-healing)，例如修正命令语法后重试。
+	// 使其尝试自愈（Self-Healing），例如修正命令语法后重试。
 	IsError bool `json:"is_error"`
 }
 
@@ -83,8 +86,8 @@ type ToolDefinition struct {
 	// Description 工具用途和行为的自然语言描述，供 LLM 决定何时以及如何调用该工具。
 	Description string `json:"description"`
 
-	// InputSchema 描述工具参数格式的 JSON Schema。使用 interface{} 类型以兼容
+	// InputSchema 描述工具参数格式的 JSON Schema。使用 any 类型以兼容
 	// 不同 SDK 的参数格式要求（OpenAI 需要 shared.FunctionParameters，
-	// Anthropic 需要 map[string]any），各 Provider 实现负责类型转换。
-	InputSchema interface{} `json:"input_schema"`
+	// Anthropic 需要 map[string]any），各 Provider 实现负责类型转换（Type Adaptation）。
+	InputSchema any `json:"input_schema"`
 }

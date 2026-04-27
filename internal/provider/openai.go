@@ -18,8 +18,10 @@ import (
 // 通过 OPENAI_API_KEY 和 OPENAI_BASE_URL 环境变量配置认证和端点，
 // 使同一实现可灵活对接不同的 OpenAI 兼容服务。
 type OpenAIProvider struct {
+	// client OpenAI SDK 客户端，封装了 HTTP 通信、认证和重试逻辑。
 	client openai.Client
-	model  string
+	// model 模型标识符，如 "gpt-4o"、"openai/gpt-5.4-mini" 等，直接传递给 Chat Completion API。
+	model string
 }
 
 // NewOpenAIProvider 创建 OpenAI 兼容的 Provider 实例。

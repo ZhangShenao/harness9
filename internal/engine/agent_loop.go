@@ -376,6 +376,8 @@ func joinContent(thinking, action string) string {
 	}
 }
 
+// toJSON 将任意值序列化为 JSON 字符串，用于日志输出。
+// 序列化失败时返回错误提示文本，不会 panic。
 func toJSON(v interface{}) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -384,8 +386,11 @@ func toJSON(v interface{}) string {
 	return string(b)
 }
 
+// maxLogOutputLen 日志中单条输出的最大字节数，防止工具返回的超大内容撑爆日志。
 const maxLogOutputLen = 512
 
+// truncStr 截断过长的字符串，超出部分替换为截断提示。
+// 用于在日志中安全输出工具执行结果，同时保留长度信息供调试参考。
 func truncStr(s string) string {
 	if len(s) <= maxLogOutputLen {
 		return s
