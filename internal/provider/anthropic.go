@@ -16,9 +16,17 @@ import (
 //
 // 通过 ANTHROPIC_API_KEY 和 ANTHROPIC_BASE_URL 环境变量配置认证和端点，
 // 使同一实现可灵活对接不同的 Anthropic 兼容服务。
+//
+// 注意：Anthropic Messages API 与 OpenAI Chat Completion API 的关键差异：
+//   - System Prompt 不在 messages 数组中，而是作为独立的 system 参数传入
+//   - 响应使用 Content Blocks（text / tool_use）而非单一的 content + tool_calls 结构
+//   - 必须指定 maxTokens 参数（OpenAI 可省略）
 type AnthropicProvider struct {
-	client    anthropic.Client
-	model     string
+	// client Anthropic SDK 客户端，封装了 HTTP 通信、认证和重试逻辑。
+	client anthropic.Client
+	// model 模型标识符，如 "claude-sonnet-4-20250514"。
+	model string
+	// maxTokens 单次响应的最大输出 Token 数。Anthropic API 要求必须指定此参数。
 	maxTokens int64
 }
 

@@ -1,3 +1,6 @@
+// env 包的单元测试（Unit Tests）。
+// 覆盖 .env 文件解析的各种场景：正常解析、文件缺失、系统环境变量优先、
+// 以及 parseLine 的边界情况（引号处理、空行、注释等）。
 package env
 
 import (
@@ -6,6 +9,9 @@ import (
 	"testing"
 )
 
+// TestLoad_ExistingFile 验证 Load 正确解析包含各种格式的 .env 文件：
+//
+//	普通值、双引号值、单引号值、空值
 func TestLoad_ExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, ".env")
@@ -24,6 +30,7 @@ TEST_KEY_4=
 		t.Fatalf("Load failed: %v", err)
 	}
 
+	// 表驱动测试（Table-Driven Tests）：验证各种格式的键值对都被正确解析
 	tests := []struct {
 		key, want string
 	}{
@@ -41,6 +48,8 @@ TEST_KEY_4=
 	}
 }
 
+// TestLoad_FileNotFound 验证 .env 文件不存在时的优雅降级：
+// Load 应返回 nil（而非错误），使程序可以在没有 .env 文件时仍正常运行。
 func TestLoad_FileNotFound(t *testing.T) {
 	err := Load("/nonexistent/.env")
 	if err != nil {
@@ -48,6 +57,8 @@ func TestLoad_FileNotFound(t *testing.T) {
 	}
 }
 
+// TestLoad_DoesNotOverride 验证已存在的系统环境变量不会被 .env 文件覆盖。
+// 这确保了"系统环境变量 > .env 文件"的优先级策略。
 func TestLoad_DoesNotOverride(t *testing.T) {
 	os.Setenv("EXISTING_KEY", "system_value")
 	defer os.Unsetenv("EXISTING_KEY")
@@ -69,6 +80,10 @@ func TestLoad_DoesNotOverride(t *testing.T) {
 	}
 }
 
+// TestParseLine 使用表驱动测试（Table-Driven Tests）验证 parseLine 的各种边界情况：
+//
+//	普通键值对、双引号值去除、空值、带空格的键值、注释行、无等号行、
+//	无键行、不匹配引号（不应去除）、无引号值。
 func TestParseLine(t *testing.T) {
 	tests := []struct {
 		line    string
