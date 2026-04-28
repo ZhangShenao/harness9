@@ -1,0 +1,28 @@
+#!/bin/sh
+#
+# pre-commit hook: run gofmt check on all staged .go files.
+# Rejects the commit if any file is not formatted.
+#
+# Install: git config core.hooksPath .githooks
+
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+if [ -z "$staged" ]; then
+	exit 0
+fi
+
+unformatted=""
+for f in $staged; do
+	output=$(gofmt -l "$f" 2>/dev/null)
+	if [ -n "$output" ]; then
+		unformatted="$unformatted\n  $f"
+	fi
+done
+
+if [ -n "$unformatted" ]; then
+	echo "❌ pre-commit: gofmt check failed. Run 'gofmt -w' on these files:$unformatted"
+	echo ""
+	echo "  gofmt -w$unformatted"
+	exit 1
+fi
+
+exit 0
