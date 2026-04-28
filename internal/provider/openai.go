@@ -328,5 +328,3 @@ func convertToFunctionParameters(input interface{}) (shared.FunctionParameters, 
 	}
 	return params, nil
 }
-
-
