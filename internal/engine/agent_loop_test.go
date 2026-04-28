@@ -61,6 +61,23 @@ func (p *countingProvider) Generate(_ context.Context, messages []schema.Message
 	return fn(tools), nil
 }
 
+func (p *countingProvider) GenerateStream(ctx context.Context, messages []schema.Message, tools []schema.ToolDefinition) (<-chan schema.StreamChunk, error) {
+	msg, err := p.Generate(ctx, messages, tools)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan schema.StreamChunk, 2)
+	go func() {
+		defer close(ch)
+		if msg.Content != "" {
+			ch <- schema.StreamChunk{Type: schema.StreamChunkTextDelta, Delta: msg.Content}
+		}
+		ch <- schema.StreamChunk{Type: schema.StreamChunkDone, Message: msg}
+	}()
+	return ch, nil
+}
+
 // staticRegistry 返回固定工具列表，对任何 Execute 调用都返回预设的成功结果。
 // 用于测试中不需要验证工具执行逻辑的场景。
 type staticRegistry struct {

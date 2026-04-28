@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -21,6 +22,11 @@ import (
 //   - System Prompt 不在 messages 数组中，而是作为独立的 system 参数传入
 //   - 响应使用 Content Blocks（text / tool_use）而非单一的 content + tool_calls 结构
 //   - 必须指定 maxTokens 参数（OpenAI 可省略）
+//
+// 内部架构采用统一的消息转换层：Generate 和 GenerateStream 共享同一套 convertMessages /
+// convertTools 转换逻辑，仅在底层 SDK 调用方式上有所不同：
+//   - Generate 使用 client.Messages.New()（阻塞式）
+//   - GenerateStream 使用 client.Messages.NewStreaming()（流式）
 type AnthropicProvider struct {
 	// client Anthropic SDK 客户端，封装了 HTTP 通信、认证和重试逻辑。
 	client anthropic.Client
@@ -30,15 +36,6 @@ type AnthropicProvider struct {
 	maxTokens int64
 }
 
-// NewAnthropicProvider 创建 Anthropic 兼容的 Provider 实例。
-//
-// 参数:
-//   - model: 模型标识符（如 "claude-sonnet-4-20250514"、"anthropic/claude-sonnet-4.6" 等）
-//   - maxTokens: 单次响应的最大 token 数（建议 4096+）
-//
-// 环境变量:
-//   - ANTHROPIC_API_KEY: API 认证密钥，缺失时返回错误
-//   - ANTHROPIC_BASE_URL: API 端点基址，缺失时返回错误
 func NewAnthropicProvider(model string, maxTokens int64) (*AnthropicProvider, error) {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
@@ -58,17 +55,199 @@ func NewAnthropicProvider(model string, maxTokens int64) (*AnthropicProvider, er
 	}, nil
 }
 
-// Generate 实现 LLMProvider 接口，将内部 schema.Message 转换为 Anthropic SDK 的参数格式，
-// 调用 Messages API 并将响应映射回 schema.Message。
+// Generate 实现 LLMProvider 接口的阻塞式调用。
+// 通过共享的 convertMessages / convertTools 完成类型转换后，
+// 调用 Anthropic SDK 的 Messages API 获取完整响应。
+func (p *AnthropicProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+	anthropicMsgs, systemPrompt, err := p.convertMessages(msgs)
+	if err != nil {
+		return nil, err
+	}
+	anthropicTools, err := p.convertTools(availableTools)
+	if err != nil {
+		return nil, err
+	}
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(p.model),
+		MaxTokens: p.maxTokens,
+		Messages:  anthropicMsgs,
+	}
+
+	if systemPrompt != "" {
+		params.System = []anthropic.TextBlockParam{
+			{Text: systemPrompt},
+		}
+	}
+
+	if len(anthropicTools) > 0 {
+		params.Tools = anthropicTools
+	}
+
+	resp, err := p.client.Messages.New(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("Anthropic 兼容 API 请求失败: %w", err)
+	}
+
+	return p.extractMessage(resp.Content), nil
+}
+
+// GenerateStream 实现 LLMProvider 接口的流式调用。
+// 使用 Anthropic SDK 的 NewStreaming API，将 MessageStreamEventUnion 逐个读取并转换为
+// 统一的 StreamChunk 通过 channel 输出。
+//
+// Anthropic 流式事件类型映射：
+//   - content_block_start (type=tool_use) → StreamChunkToolCallStart（含 ID、Name）
+//   - content_block_delta (type=text_delta) → StreamChunkTextDelta（文本增量）
+//   - content_block_delta (type=input_json_delta) → StreamChunkToolCallDelta（参数增量）
+//
+// 工具调用参数使用 anthropicToolCallAccumulator 按 Index 累积，
+// Anthropic SDK 通过 input_json_delta 的 PartialJSON 字段逐片段传输参数。
+func (p *AnthropicProvider) GenerateStream(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (<-chan schema.StreamChunk, error) {
+	anthropicMsgs, systemPrompt, err := p.convertMessages(msgs)
+	if err != nil {
+		return nil, err
+	}
+	anthropicTools, err := p.convertTools(availableTools)
+	if err != nil {
+		return nil, err
+	}
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(p.model),
+		MaxTokens: p.maxTokens,
+		Messages:  anthropicMsgs,
+	}
+
+	if systemPrompt != "" {
+		params.System = []anthropic.TextBlockParam{
+			{Text: systemPrompt},
+		}
+	}
+
+	if len(anthropicTools) > 0 {
+		params.Tools = anthropicTools
+	}
+
+	stream := p.client.Messages.NewStreaming(ctx, params)
+
+	ch := make(chan schema.StreamChunk)
+	go func() {
+		defer close(ch)
+
+		var contentBuf strings.Builder
+		toolAccs := make(map[int]*anthropicToolCallAccumulator)
+
+		for stream.Next() {
+			event := stream.Current()
+
+			switch event.Type {
+			case "content_block_start":
+				cb := event.AsContentBlockStart()
+				if cb.ContentBlock.Type == "tool_use" {
+					idx := int(cb.Index)
+					toolAccs[idx] = &anthropicToolCallAccumulator{
+						index: idx,
+						id:    cb.ContentBlock.ID,
+						name:  cb.ContentBlock.Name,
+					}
+					if !sendStreamChunk(ctx, ch, schema.StreamChunk{
+						Type: schema.StreamChunkToolCallStart,
+						ToolCall: &schema.ToolCallDelta{
+							Index: idx,
+							ID:    cb.ContentBlock.ID,
+							Name:  cb.ContentBlock.Name,
+						},
+					}) {
+						return
+					}
+				}
+
+			case "content_block_delta":
+				delta := event.AsContentBlockDelta()
+				switch delta.Delta.Type {
+				case "text_delta":
+					td := delta.Delta.AsTextDelta()
+					contentBuf.WriteString(td.Text)
+					if !sendStreamChunk(ctx, ch, schema.StreamChunk{
+						Type:  schema.StreamChunkTextDelta,
+						Delta: td.Text,
+					}) {
+						return
+					}
+				case "input_json_delta":
+					ijd := delta.Delta.AsInputJSONDelta()
+					idx := int(delta.Index)
+					if acc, ok := toolAccs[idx]; ok {
+						acc.args.WriteString(ijd.PartialJSON)
+					}
+					if !sendStreamChunk(ctx, ch, schema.StreamChunk{
+						Type: schema.StreamChunkToolCallDelta,
+						ToolCall: &schema.ToolCallDelta{
+							Index:     idx,
+							Arguments: json.RawMessage(ijd.PartialJSON),
+						},
+					}) {
+						return
+					}
+				}
+			}
+		}
+
+		if err := stream.Err(); err != nil {
+			sendStreamChunk(ctx, ch, schema.StreamChunk{
+				Type:  schema.StreamChunkError,
+				Error: fmt.Sprintf("Anthropic 流式错误: %v", err),
+			})
+			return
+		}
+
+		msg := &schema.Message{
+			Role:    schema.RoleAssistant,
+			Content: contentBuf.String(),
+		}
+		for i := 0; i < len(toolAccs); i++ {
+			if acc, ok := toolAccs[i]; ok {
+				msg.ToolCalls = append(msg.ToolCalls, schema.ToolCall{
+					ID:        acc.id,
+					Name:      acc.name,
+					Arguments: []byte(acc.args.String()),
+				})
+			}
+		}
+
+		sendStreamChunk(ctx, ch, schema.StreamChunk{
+			Type:    schema.StreamChunkDone,
+			Message: msg,
+		})
+	}()
+
+	return ch, nil
+}
+
+// anthropicToolCallAccumulator 累积 Anthropic 流式响应中单个工具调用的完整信息。
+// Anthropic SDK 在流式模式下，工具调用的传输分为：
+//   - content_block_start: 包含 Index、ID、Name（在 StreamChunkToolCallStart 中发送）
+//   - input_json_delta: 包含 PartialJSON 片段（在 StreamChunkToolCallDelta 中发送）
+//
+// 使用 Index 作为 key 存储在 map 中，支持多个并行工具调用的独立累积。
+type anthropicToolCallAccumulator struct {
+	index int
+	id    string
+	name  string
+	args  strings.Builder
+}
+
+// convertMessages 将内部 schema.Message 转换为 Anthropic SDK 的消息参数格式。
+// Generate 和 GenerateStream 共享此方法。
 //
 // 转换规则：
-//   - schema.RoleSystem    → params.System (Anthropic 的 system prompt 不在 messages 数组中)
-//   - schema.RoleUser      → anthropic.NewUserMessage (含 ToolResultBlock 或 TextBlock)
-//   - schema.RoleAssistant → anthropic.NewAssistantMessage (含 TextBlock 和 ToolUseBlock)
-//   - schema.ToolDefinition → anthropic.ToolParam
+//   - schema.RoleSystem   → 提取为独立的 systemPrompt 返回值（Anthropic API 要求）
+//   - schema.RoleUser     → anthropic.NewUserMessage（含 ToolResultBlock 或 TextBlock）
+//   - schema.RoleAssistant → anthropic.NewAssistantMessage（含 TextBlock 和 ToolUseBlock）
 //
-// 注意：Anthropic Messages API 要求 system prompt 作为独立参数传入，而非 messages 数组的一部分。
-func (p *AnthropicProvider) Generate(ctx context.Context, msgs []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, error) {
+// 返回 (anthropicMsgs, systemPrompt, error)，systemPrompt 为空表示无系统提示词。
+func (p *AnthropicProvider) convertMessages(msgs []schema.Message) ([]anthropic.MessageParam, string, error) {
 	var anthropicMsgs []anthropic.MessageParam
 	var systemPrompt string
 
@@ -94,7 +273,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, msgs []schema.Message,
 			for _, tc := range msg.ToolCalls {
 				var inputMap map[string]interface{}
 				if err := json.Unmarshal(tc.Arguments, &inputMap); err != nil {
-					return nil, fmt.Errorf("unmarshal tool call %q arguments: %w", tc.Name, err)
+					return nil, "", fmt.Errorf("unmarshal tool call %q arguments: %w", tc.Name, err)
 				}
 				blocks = append(blocks, anthropic.ContentBlockParamUnion{
 					OfToolUse: &anthropic.ToolUseBlockParam{
@@ -108,6 +287,17 @@ func (p *AnthropicProvider) Generate(ctx context.Context, msgs []schema.Message,
 				anthropicMsgs = append(anthropicMsgs, anthropic.NewAssistantMessage(blocks...))
 			}
 		}
+	}
+
+	return anthropicMsgs, systemPrompt, nil
+}
+
+// convertTools 将内部 schema.ToolDefinition 转换为 Anthropic SDK 的工具参数格式。
+// 通过 extractSchemaFields 提取 properties 和 required 字段。
+// 返回 nil 表示无工具可用（用于 Phase 1 Thinking 的 nil tools 场景）。
+func (p *AnthropicProvider) convertTools(availableTools []schema.ToolDefinition) ([]anthropic.ToolUnionParam, error) {
+	if len(availableTools) == 0 {
+		return nil, nil
 	}
 
 	var anthropicTools []anthropic.ToolUnionParam
@@ -127,40 +317,24 @@ func (p *AnthropicProvider) Generate(ctx context.Context, msgs []schema.Message,
 		}
 		anthropicTools = append(anthropicTools, anthropic.ToolUnionParam{OfTool: &tp})
 	}
+	return anthropicTools, nil
+}
 
-	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(p.model),
-		MaxTokens: p.maxTokens,
-		Messages:  anthropicMsgs,
-	}
-
-	if systemPrompt != "" {
-		params.System = []anthropic.TextBlockParam{
-			{Text: systemPrompt},
-		}
-	}
-
-	if len(anthropicTools) > 0 {
-		params.Tools = anthropicTools
-	}
-
-	resp, err := p.client.Messages.New(ctx, params)
-	if err != nil {
-		return nil, fmt.Errorf("Anthropic 兼容 API 请求失败: %w", err)
-	}
-
+// extractMessage 从 Anthropic SDK 的 ContentBlockUnion 切片中提取 schema.Message。
+// 遍历所有 Content Block，合并 text 类型的文本和 tool_use 类型的工具调用。
+func (p *AnthropicProvider) extractMessage(content []anthropic.ContentBlockUnion) *schema.Message {
 	resultMsg := &schema.Message{
 		Role: schema.RoleAssistant,
 	}
 
-	for _, block := range resp.Content {
+	for _, block := range content {
 		switch block.Type {
 		case "text":
 			resultMsg.Content += block.Text
 		case "tool_use":
 			argsBytes, err := json.Marshal(block.Input)
 			if err != nil {
-				return nil, fmt.Errorf("marshal tool_use %q input: %w", block.Name, err)
+				continue
 			}
 			resultMsg.ToolCalls = append(resultMsg.ToolCalls, schema.ToolCall{
 				ID:        block.ID,
@@ -170,11 +344,9 @@ func (p *AnthropicProvider) Generate(ctx context.Context, msgs []schema.Message,
 		}
 	}
 
-	return resultMsg, nil
+	return resultMsg
 }
 
-// extractSchemaFields 从 interface{} 类型的 InputSchema 中提取 properties 和 required 字段。
-// 安全处理 []interface{} 到 []string 的类型转换（JSON 反序列化后 required 的实际类型）。
 func extractSchemaFields(input interface{}) (map[string]any, []string, error) {
 	m, ok := input.(map[string]interface{})
 	if !ok {

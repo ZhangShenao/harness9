@@ -42,11 +42,14 @@ harness9 的核心是一个 **Two-Stage ReAct** 循环引擎，将传统 Reasoni
 | 组件 | 代码位置 | 职责 |
 |------|---------|------|
 | `schema` | `internal/schema/message.go` | 定义跨组件共享的核心数据类型 |
-| `LLMProvider` | `internal/provider/interface.go` | 抽象 LLM 通信层，封装 API 差异 |
+| `schema.StreamChunk` | `internal/schema/stream.go` | Provider 层流式增量数据类型 |
+| `LLMProvider` | `internal/provider/interface.go` | 抽象 LLM 通信层，封装 API 差异（含阻塞 + 流式） |
 | `OpenAIProvider` | `internal/provider/openai.go` | OpenAI 兼容 API 适配器（OpenAI / OpenRouter / Azure） |
-| `ClaudeProvider` | `internal/provider/anthropic.go` | Anthropic 兼容 API 适配器（Anthropic / OpenRouter） |
+| `AnthropicProvider` | `internal/provider/anthropic.go` | Anthropic 兼容 API 适配器（Anthropic / OpenRouter） |
 | `Registry` | `internal/tools/registry.go` | 解耦工具发现与执行 |
-| `AgentEngine` | `internal/engine/agent_loop.go` | 编排 Two-Stage ReAct 主循环，驱动各组件协作 |
+| `AgentEngine.Run` | `internal/engine/agent_loop.go` | 阻塞式 Two-Stage ReAct 主循环 |
+| `AgentEngine.RunStream` | `internal/engine/stream.go` | 流式 Two-Stage ReAct 主循环，逐 token 输出 |
+| `engine.Event` | `internal/engine/stream.go` | 引擎面向客户端的流式事件类型 |
 | `env` | `internal/env/env.go` | 基于 .env 文件的环境变量配置加载 |
 
 ## 2. Two-Stage ReAct 设计理念
@@ -184,6 +187,79 @@ Role (string)
 - **`ToolDefinition.InputSchema` 使用 `interface{}`**：不同 LLM SDK 对工具参数格式要求不同（OpenAI 需要 `shared.FunctionParameters`，Anthropic 需要 `map[string]any`），使用 `interface{}` 允许各 Provider 实现直接传递原生 `map[string]interface{}`，避免额外的 JSON 往返序列化开销。各 Provider 内部负责类型转换（`convertToFunctionParameters` / `extractSchemaFields`）。
 - **`ToolCallID` 关联机制**：工具执行结果 (Observation) 通过 `ToolCallID` 与原始 `ToolCall` 关联。
 - **`ToolResult.IsError` 自愈标记**：当工具执行失败时，引擎将错误暴露给 LLM，使其能尝试修正参数并重试（Self-Healing）。
+
+### 3.3 流式数据类型
+
+#### Provider 层 — `schema.StreamChunk`（`internal/schema/stream.go`）
+
+Provider 通过 `GenerateStream` 方法返回 `<-chan StreamChunk`，每个 chunk 代表 LLM 的一次增量产出：
+
+```
+StreamChunk
+├── Type     StreamChunkType  chunk 类型标识
+├── Delta    string           文本增量（text_delta 时有效）
+├── ToolCall *ToolCallDelta   工具调用增量（tool_call_start/delta 时有效）
+├── Message  *Message         完整响应（done 时有效）
+└── Error    string           错误信息（error 时有效）
+
+ToolCallDelta
+├── Index     int             工具调用在数组中的索引
+├── ID        string          工具调用 ID（start 时有效）
+├── Name      string          工具名称（start 时有效）
+└── Arguments json.RawMessage 参数增量（delta 时有效）
+```
+
+**chunk 类型生命周期：**
+
+```
+text_delta ──────────────────────┐    (多次，逐 token)
+                                  │
+tool_call_start ─── tool_call_delta ──┤    (每个工具调用重复此模式)
+                                  │
+                                  ▼
+                               done      (流结束，携带完整 Message)
+```
+
+| StreamChunkType | 含义 | 携带数据 |
+|----------------|------|---------|
+| `text_delta` | 文本增量，逐 token | `Delta` |
+| `tool_call_start` | 新工具调用开始 | `ToolCall.ID`, `ToolCall.Name` |
+| `tool_call_delta` | 工具参数 JSON 增量 | `ToolCall.Arguments`（部分 JSON） |
+| `done` | 流结束 | `Message`（完整响应，含 ToolCalls） |
+| `error` | 出错 | `Error` |
+
+#### Engine 层 — `engine.Event`（`internal/engine/stream.go`）
+
+引擎通过 `RunStream` 方法返回 `<-chan Event`，将 Provider 的底层 StreamChunk 转化为面向客户端的语义事件：
+
+```
+Event
+├── Type EventType  事件类型
+├── Turn int        当前 Turn 编号
+└── Data any        事件载荷（类型随 Type 变化）
+```
+
+| EventType | 含义 | Data 类型 |
+|-----------|------|----------|
+| `thinking_delta` | Thinking 阶段的文本增量 | `string` |
+| `action_delta` | Action 阶段的文本增量 | `string` |
+| `tool_start` | 工具开始执行 | `*schema.ToolCallDelta`（含 Name、ID） |
+| `tool_result` | 工具执行完成 | `schema.ToolResult` |
+| `done` | 循环正常结束 | `nil` |
+| `error` | 出错 | `string` |
+
+**事件流转示例：**
+
+```
+Turn 1:
+  thinking_delta × N    ← Phase 1 逐 token 思考
+  action_delta × N      ← Phase 2 逐 token 行动（含工具调用请求）
+  tool_start            ← 工具开始执行
+  tool_result           ← 工具执行完成
+Turn 2:
+  action_delta × N      ← 最终回复（无工具调用）
+  done                  ← 循环结束
+```
 
 ## 4. Agent Loop 循环流程
 
@@ -381,22 +457,110 @@ for i, toolCall := range responseMsg.ToolCalls {
 }
 ```
 
+### 4.8 流式架构（`RunStream`）
+
+`RunStream` 是 `Run` 的流式对应方法，共享相同的 Two-Stage ReAct 循环逻辑，但通过 Go channel 逐事件输出。核心数据流：
+
+```
+┌─────────────┐  GenerateStream()  ┌──────────────────┐
+│  LLMProvider │ ───────────────── │  chan StreamChunk  │
+│  (OpenAI /   │                   │  (逐 token delta)  │
+│   Anthropic) │                   └────────┬─────────┘
+└─────────────┘                             │
+                                            ▼
+                                   ┌──────────────────┐
+                                   │   streamPhase()   │
+                                   │   读 StreamChunk   │
+                                   │   转发为 Event     │
+                                   └────────┬─────────┘
+                                            │
+                                            ▼
+┌─────────────┐  Execute()         ┌──────────────────┐
+│  Registry    │ ─────────────────  │    chan Event     │
+│  (工具执行)   │                    │  (面向客户端)      │
+└─────────────┘                    └────────┬─────────┘
+                                            │
+                                            ▼
+                                   ┌──────────────────┐
+                                   │   客户端消费者     │
+                                   │   (CLI / 飞书 /   │
+                                   │    SSE handler)   │
+                                   └──────────────────┘
+```
+
+**`streamPhase` 方法**是 `RunStream` 的核心，替代阻塞模式中直接调用 `Generate` 的位置。它调用 `GenerateStream`，从 `StreamChunk` channel 中读取并转发为语义化的 `Event`：
+
+```go
+func (e *AgentEngine) streamPhase(ctx context.Context, ch chan<- Event,
+    turn int, deltaType EventType, history []schema.Message,
+    tools []schema.ToolDefinition) *schema.Message {
+
+    stream, err := e.provider.GenerateStream(ctx, history, tools)
+    // ... 从 stream 读取，转发 text_delta → Event{Type: deltaType}
+    // ... 累积完整 Message（StreamChunkDone 携带）
+    return msg
+}
+```
+
+**流式工具执行**使用 `executeToolsStreaming`，在工具启动和完成时发送事件：
+
+```go
+sendEvent(ctx, ch, Event{Type: EventToolStart, Turn: turn, Data: tc})
+// ... 执行工具
+sendEvent(ctx, ch, Event{Type: EventToolResult, Turn: turn, Data: result})
+```
+
+**context 取消感知**：所有 channel 发送都通过 `select` 监听 `ctx.Done()`，确保取消时不会阻塞：
+
+```go
+func sendEvent(ctx context.Context, ch chan<- Event, evt Event) bool {
+    select {
+    case <-ctx.Done():
+        return false
+    case ch <- evt:
+        return true
+    }
+}
+```
+
 ## 5. 接口抽象与解耦设计
 
 ### 5.1 LLMProvider 接口
 
 ```go
 type LLMProvider interface {
+    // 阻塞式调用：返回完整响应 Message
     Generate(ctx context.Context, messages []schema.Message,
              availableTools []schema.ToolDefinition) (*schema.Message, error)
+
+    // 流式调用：通过 channel 逐 chunk 返回增量
+    GenerateStream(ctx context.Context, messages []schema.Message,
+                   availableTools []schema.ToolDefinition) (<-chan schema.StreamChunk, error)
 }
 ```
 
 **设计理念：**
 - `availableTools` 参数支持 `nil`（Phase 1 剥夺工具）和非空（Phase 2 恢复工具）
 - 引擎只依赖接口，切换模型只需替换 Provider 实现
+- 双模式共存：`Generate` 用于阻塞场景，`GenerateStream` 用于流式场景
+- `GenerateStream` 返回的 channel 在流结束后自动关闭，最后一个有效 chunk 的 Type 为 `StreamChunkDone`
 
 ### 5.2 具体实现
+
+两个 Provider 均采用 **统一的消息转换层** 架构，`Generate` 和 `GenerateStream` 共享同一套转换逻辑：
+
+```
+                    ┌──────────────────┐
+                    │  convertMessages  │ ← schema.Message → SDK 原生消息
+                    │  convertTools     │ ← schema.ToolDefinition → SDK 原生工具
+                    └───────┬──────────┘
+                            │
+               ┌────────────┼─────────────┐
+               ▼                           ▼
+        Generate()                 GenerateStream()
+        SDK.New()                  SDK.NewStreaming()
+        → *Message                 → chan StreamChunk
+```
 
 #### OpenAIProvider（`internal/provider/openai.go`）
 
@@ -423,7 +587,23 @@ p, err := provider.NewOpenAIProvider("gpt-4o")
 
 `InputSchema` 的 `interface{}` → `shared.FunctionParameters` 转换由 `convertToFunctionParameters` 函数完成：优先尝试直接类型断言，失败时通过 JSON 往返转换并报告错误。
 
-#### ClaudeProvider（`internal/provider/anthropic.go`）
+**流式实现：**
+
+`GenerateStream` 使用 OpenAI SDK 的 `client.Chat.Completions.NewStreaming()` 返回 `*ssestream.Stream[ChatCompletionChunk]`。内部使用 `openaiToolCallAccumulator` 累积工具调用参数：
+
+```go
+stream := p.client.Chat.Completions.NewStreaming(ctx, reqParams)
+
+for stream.Next() {
+    chunk := stream.Current()
+    // 1. delta.Content → StreamChunkTextDelta
+    // 2. delta.ToolCalls[].ID != "" → StreamChunkToolCallStart
+    // 3. delta.ToolCalls[].Function.Arguments → StreamChunkToolCallDelta
+}
+// 流结束后发送 StreamChunkDone（含完整 Message）
+```
+
+#### AnthropicProvider（`internal/provider/anthropic.go`）
 
 Anthropic 兼容实现，支持 Anthropic 官方和 OpenRouter 等 Anthropic 兼容端点：
 
@@ -445,6 +625,16 @@ p, err := provider.NewAnthropicProvider("claude-sonnet-4-20250514", 4096)
 | ToolUseBlock 的 Input 类型 | `json.Unmarshal` 将 `Arguments` 解析为 `map[string]interface{}` |
 | `required` 字段类型 | `extractSchemaFields` 安全处理 `[]interface{}` → `[]string` 转换 |
 | `MaxTokens` 必须显式指定 | 通过构造函数参数传入，默认 4096 |
+
+**流式实现：**
+
+`GenerateStream` 使用 Anthropic SDK 的 `client.Messages.NewStreaming()` 返回 `*ssestream.Stream[MessageStreamEventUnion]`。事件类型映射：
+
+| Anthropic 事件 | 处理 |
+|----------------|------|
+| `content_block_start` (type=tool_use) | → `StreamChunkToolCallStart`，记录 ID/Name |
+| `content_block_delta` (type=text_delta) | → `StreamChunkTextDelta` |
+| `content_block_delta` (type=input_json_delta) | → `StreamChunkToolCallDelta`，累积 partial JSON |
 
 两个 Provider 的构造函数均返回 `(*Provider, error)` 而非 `panic`，遵循 Go 的错误处理惯例，允许调用方（如 main）优雅处理配置缺失。
 
@@ -492,9 +682,31 @@ eng := engine.NewAgentEngine(p, r, workDir, true,
 | `WithMaxTurns(n)` | `int` | 50 | 单次 Run 最大 Turn 数，0 = 不限制 |
 | `WithToolTimeout(d)` | `time.Duration` | 60s | 单个工具执行超时，0 = 使用原始 context |
 
+**双模式调用：**
+
+```go
+// 阻塞式：同步等待完整结果
+err := eng.Run(ctx, prompt)
+
+// 流式：通过 channel 逐事件返回
+stream, err := eng.RunStream(ctx, prompt)
+for evt := range stream {
+    switch evt.Type {
+    case engine.EventActionDelta:
+        fmt.Print(evt.Data.(string))  // 逐 token 输出
+    case engine.EventDone:
+        // 循环结束
+    }
+}
+```
+
+两种模式共享同一个 `AgentEngine` 实例和配置，运行时可自由选择。
+
 ## 6. 日志与可观测性
 
-引擎采用结构化日志格式，统一使用 `[engine]` 前缀和 `key=value` 风格：
+引擎采用结构化日志格式，阻塞模式使用 `[engine]` 前缀，流式模式使用 `[engine-stream]` 前缀，统一 `key=value` 风格：
+
+**阻塞模式日志：**
 
 ```
 [engine] 启动 | workdir=/Users/zsa/project thinking=true maxTurns=50 toolTimeout=1m0s
@@ -510,12 +722,29 @@ eng := engine.NewAgentEngine(p, r, workDir, true,
 [engine] 循环结束 | 总Turns=2 | contextMessages=5
 ```
 
+**流式模式日志：**
+
+```
+[engine-stream] 启动 | workdir=/Users/zsa/project thinking=false maxTurns=50 toolTimeout=1m0s
+[engine-stream] Turn 1 | contextMessages=2
+[engine-stream] Turn 1 | Action (tools=1)
+[engine-stream] Turn 1 | 执行 1 个工具调用
+[engine-stream] Turn 1 | 工具启动 | name=read_file id=call_abc
+[engine-stream] Turn 1 | 工具完成 | name=read_file id=call_abc
+[engine-stream] Turn 1 | Observation 注入完成 | contextMessages=4
+[engine-stream] Turn 2 | contextMessages=4
+[engine-stream] Turn 2 | Action (tools=1)
+[engine-stream] Turn 2 | 任务完成，模型未请求工具调用
+```
+
 **日志分层：**
 
 | 层级 | 前缀 | 内容 | 输出方式 |
 |------|------|------|---------|
-| 引擎内部 | `[engine]` | Turn 计数、阶段转换、工具状态 | `log.Printf`（stderr，带时间戳） |
-| 模型输出 | `[thinking]` / `[assistant]` | LLM 产出的文本内容 | `fmt.Printf`（stdout，无时间戳） |
+| 引擎内部（阻塞） | `[engine]` | Turn 计数、阶段转换、工具状态 | `log.Printf`（stderr） |
+| 引擎内部（流式） | `[engine-stream]` | 同上 | `log.Printf`（stderr） |
+| 模型输出（阻塞） | `[thinking]` / `[assistant]` | LLM 产出的文本内容 | `fmt.Printf`（stdout） |
+| 模型输出（流式） | 无前缀 | 通过 Event channel 交给客户端处理 | 由消费者控制 |
 
 ## 7. 完整数据流图
 
@@ -557,10 +786,34 @@ Turn 2:
   → 终止条件满足，循环退出
 ```
 
+### 7.1 流式模式数据流
+
+以相同任务在流式模式（`RunStream`）下为例，客户端通过 Event channel 接收增量：
+
+```
+Turn 1:
+  streamPhase(action) → GenerateStream(ctx, history, [get_weather])
+    Event{action_delta, "让"}       ← 逐 token
+    Event{action_delta, "我"}
+    Event{action_delta, "查询"}
+    Event{tool_start, {name:"get_weather", id:"call_abc"}}
+    Event{tool_start, {name:"get_weather", id:"call_def"}}
+
+  executeToolsStreaming() → 并发执行两个工具
+    Event{tool_result, {output:"北京: 晴, 25°C", ...}}
+    Event{tool_result, {output:"上海: 多云, 22°C", ...}}
+
+Turn 2:
+  streamPhase(action) → GenerateStream(ctx, history, [get_weather])
+    Event{action_delta, "北京今天天气不错"}   ← 逐 token
+    Event{action_delta, "，适合出游！"}
+    Event{done}                              ← 循环结束
+```
+
 ## 8. Provider 实现对比
 
-| 维度 | OpenAIProvider | ClaudeProvider |
-|------|---------------|----------------|
+| 维度 | OpenAIProvider | AnthropicProvider |
+|------|---------------|------------------|
 | API 协议 | Chat Completion | Messages |
 | System prompt | 作为 messages 数组中的 system 消息 | 作为独立 `params.System` 参数 |
 | 工具调用响应 | `ToolCalls[].Function.Arguments`（JSON 字符串） | `Content[]` 中 `tool_use` block 的 `Input`（结构化对象） |
@@ -568,9 +821,13 @@ Turn 2:
 | 工具结果回传 | `openai.ToolMessage(content, toolCallID)` | `anthropic.NewToolResultBlock(toolCallID, content, isError)` |
 | InputSchema 转换 | `convertToFunctionParameters` → `shared.FunctionParameters` | `extractSchemaFields` → `properties` + `required` |
 | MaxTokens | 不需要显式指定 | 必须显式传入 |
-| 构造函数 | `NewOpenAIProvider(model) (*OpenAIProvider, error)` | `NewAnthropicProvider(model, maxTokens) (*ClaudeProvider, error)` |
+| 构造函数 | `NewOpenAIProvider(model) (*OpenAIProvider, error)` | `NewAnthropicProvider(model, maxTokens) (*AnthropicProvider, error)` |
+| 流式 SDK 方法 | `client.Chat.Completions.NewStreaming()` | `client.Messages.NewStreaming()` |
+| 流式 chunk 类型 | `ChatCompletionChunk` | `MessageStreamEventUnion` |
+| 流式文本增量 | `Choices[0].Delta.Content` | `content_block_delta` + `text_delta` |
+| 流式工具增量 | `Choices[0].Delta.ToolCalls[]` | `content_block_start(tool_use)` + `input_json_delta` |
 
-两个 Provider 的消息转换逻辑均实现为 `Generate` 方法，将 `schema.Message` → SDK 原生参数 的映射封装在 Provider 内部，引擎层无需感知 API 差异。
+两个 Provider 的消息转换逻辑均提取为 `convertMessages` / `convertTools` 方法，`Generate` 和 `GenerateStream` 共享同一套转换逻辑。`schema.Message` → SDK 原生参数的映射封装在 Provider 内部，引擎层无需感知 API 差异。
 
 ## 9. 与主流框架的对比
 
@@ -591,7 +848,7 @@ Turn 2:
 | 限制 | 当前状态 | 演进方向 |
 |------|---------|---------|
 | **上下文窗口控制** | 无 token 估算和截断，contextHistory 无限增长 | 双层压缩：micro-compact（清除旧工具输出）+ LLM summarize |
-| **流式输出** | 仅支持非流式 `Generate` | 新增 `Stream` 接口方法，支持 SSE/WebSocket |
+| **流式输出** | ✅ 已实现 `RunStream` + `GenerateStream`，支持逐 token delta | 扩展 SSE HTTP 端点，对接飞书等实时推送渠道 |
 | **权限控制** | 无 | 工具执行前统一 PermissionChecker，支持交互式确认 |
 | **Hook 系统** | 无 | PreToolUse / PostToolUse / Stop / TurnComplete 事件钩子 |
 | **自适应思考** | EnableThinking 为静态配置 | 根据任务复杂度自动决定是否启用 Phase 1 |
@@ -604,10 +861,12 @@ Turn 2:
 | **剥夺-恢复策略** | Phase 1 传 nil tools 剥夺行动能力，Phase 2 恢复工具 |
 | **单消息合并** | Thinking + Action 合并为一条 assistant 消息，保证 API 兼容性 |
 | **接口隔离** | `LLMProvider` 和 `Registry` 各司其职，引擎只依赖抽象 |
+| **双模式共存** | `Run`（阻塞）和 `RunStream`（流式）共享引擎配置，运行时按需选择 |
+| **channel 驱动流式** | Provider → `chan StreamChunk` → Engine → `chan Event`，Go 原生 CSP 模型 |
 | **函数选项** | `WithMaxTurns` / `WithToolTimeout` 可选配置，保持构造函数简洁 |
 | **并发安全** | 索引隔离写入 + WaitGroup + 显式参数传递，无数据竞争 |
 | **三重保障终止** | 自然终止 + MaxTurns 限制 + Context 取消 |
-| **可观测性** | 结构化日志 `[engine]` 前缀 + key=value 格式 |
-| **防御性编程** | Phase 1 ToolCalls 清除、工具独立超时 |
+| **可观测性** | 结构化日志 `[engine]` / `[engine-stream]` 前缀 + key=value 格式 |
+| **防御性编程** | Phase 1 ToolCalls 清除、工具独立超时、流式 context 取消感知 |
 | **延迟解析** | `json.RawMessage` 用于 Arguments 延迟反序列化；`interface{}` 用于 InputSchema 兼容多 SDK |
 | **自愈能力** | `ToolResult.IsError` 支持模型感知错误并自动重试 |
