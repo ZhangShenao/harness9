@@ -1,18 +1,24 @@
 # harness9
 
-一款轻量级、功能完备、生产可用的 Agent Harness 框架。
+> 轻量级、功能完备、生产可用的 Go Agent Harness 框架
 
-## 项目简介
+---
 
-harness9 使用 Go 语言构建，旨在提供简洁、高效、可扩展的 Agent 编排能力。对标 DeepAgents、Claude SDK、OpenClaw、OpenHarness 等主流框架。
+## 为什么选择 harness9？
 
-核心设计理念：
+大多数 Agent 框架要么过于臃肿（满屏抽象层、数百个依赖），要么过于简陋（仅能跑个 demo）。harness9 走中间路线：**最小抽象、完整功能、生产就绪**。
 
-- **简洁** — 最小化抽象层，代码直白易读
-- **完备** — 覆盖 Agent 运行所需的全部核心模块
-- **生产可用** — 错误恢复、上下文管理、超时控制等生产级特性
+```
+核心设计理念:
 
-## 架构概览
+  简洁 — 最小化抽象层，代码直白易读
+  完备 — 覆盖 Agent 运行所需的全部核心模块
+  生产可用 — 错误恢复、上下文管理、超时控制等生产级特性
+```
+
+---
+
+## 架构总览
 
 ```
                     ┌─────────────────────┐
@@ -23,59 +29,103 @@ harness9 使用 Go 语言构建，旨在提供简洁、高效、可扩展的 Age
           ┌────────────┘   │   │   └────────────┐
           ▼                ▼   ▼                 ▼
     ┌──────────┐   ┌──────────┐   ┌──────────────────┐
-    │ Provider │   │ Context  │   │   Tool Registry  │
-    │ (模型接口) │   │ (上下文) │   │  (工具注册/调用)  │
+    │ Provider │   │ Schema   │   │   Tool Registry  │
+    │ (模型接口) │   │ (类型层)  │   │  (工具注册/调用)  │
     └──────────┘   └──────────┘   └──────────────────┘
-                                         │
-                                    ┌────┴────┐
-                                    ▼         ▼
-                              ┌────────┐ ┌────────┐
-                              │ Memory │ │ Feishu │
-                              │ (记忆)  │ │ (飞书)  │
-                              └────────┘ └────────┘
+          │                               │
+    ┌─────┴────┐                    ┌────┴────┐
+    ▼          ▼                    ▼         ▼
+┌────────┐ ┌────────┐         ┌────────┐ ┌────────┐
+│ OpenAI │ │Anthropic│        │  bash  │ │read /  │
+│Provider│ │Provider │        │  Tool  │ │write   │
+└────────┘ └────────┘         └────────┘ └────────┘
 ```
 
-**Engine** 驱动 Agent 主循环：`推理 → 工具调用 → 观察 → 继续推理`
+**Engine** 驱动 Agent 主循环：**推理 → 工具调用 → 观察 → 继续推理**
 
-## 项目结构
+---
+
+## 核心特性
+
+### Two-Stage ReAct 循环
+
+harness9 独创的 **剥夺-恢复工具策略**：
 
 ```
-harness9/
-├── cmd/
-│   └── harness9/
-│       └── main.go              # 程序入口，组装各模块并启动引擎
-├── internal/
-│   ├── engine/                  # Agent 核心引擎 — MainLoop 实现
-│   │   └── engine.go            # 循环调度：推理 → 工具调用 → 观察 → 继续推理
-│   ├── provider/                # 大模型接口抽象与具体厂商 SDK 实现
-│   │   └── provider.go          # Provider 接口定义 + 具体厂商实现
-│   ├── context/                 # Token 监控、Prompt 动态组装
-│   │   └── manager.go           # 上下文窗口管理、消息截断策略
-│   ├── tools/                   # 工具注册表、Middleware、基础极简工具
-│   │   ├── registry.go          # 工具注册中心
-│   │   ├── middleware.go        # 工具中间件（日志、超时、权限等）
-│   │   ├── bash.go              # Bash 工具实现
-│   │   └── edit.go              # 文件编辑工具实现
-│   ├── memory/                  # 基于文件系统的记忆状态存取
-│   │   └── memory.go            # 会话记忆持久化
-│   └── feishu/                  # 飞书机器人交互回调
-│       └── feishu.go            # 飞书 Webhook / 事件订阅处理
-├── docs/                        # 项目文档
-├── go.mod
-├── AGENTS.md                    # 本文件 — 项目开发规范与上下文
-├── CLAUDE.md -> AGENTS.md       # 符号链接，保持同步
-└── README.md
+传统 ReAct（单阶段）:
+  Turn N: LLM(messages, tools) → 可能缺乏深思熟虑的行动
+
+Two-Stage ReAct（harness9）:
+  Turn N:
+    Phase 1: LLM(messages, tools=nil) → 被迫深度思考
+    Phase 2: LLM(messages + thinking, tools=all) → 基于思考的精准行动
 ```
+
+Phase 1 传入 `nil` 工具列表，剥夺模型的行动能力，强制其进行纯文本推理。Phase 2 恢复完整工具列表，模型基于 Phase 1 的思考制定精准行动计划。
+
+详见 [Agent Loop 核心实现原理](docs/核心功能/agent-loop.md)。
+
+### 并发工具执行
+
+同一 Turn 中的多个工具调用**并发执行**，每个工具拥有独立超时控制：
+
+```go
+// 每个工具独立超时，互不影响
+toolCtx, cancel = context.WithTimeout(ctx, e.ToolTimeout)
+results[idx] = e.registry.Execute(toolCtx, tc)
+```
+
+### 流式输出
+
+支持 `Run`（阻塞）和 `RunStream`（流式）双模式，共享同一引擎配置：
+
+```go
+// 阻塞式
+err := eng.Run(ctx, prompt)
+
+// 流式：逐 token 消费
+stream, _ := eng.RunStream(ctx, prompt)
+for evt := range stream {
+    switch evt.Type {
+    case engine.EventActionDelta:
+        fmt.Print(evt.Data.(string))
+    case engine.EventDone:
+        return
+    }
+}
+```
+
+### 自愈能力
+
+工具执行失败时，错误信息原样回传给 LLM，触发自动重试：
+
+```go
+// IsError=true 时，LLM 能看到错误原因并尝试自愈
+ToolResult{ToolCallID: id, Output: "command not found: foo", IsError: true}
+```
+
+详见 [Tool Calling 工具调用系统](docs/核心功能/tool-calling.md)。
+
+---
 
 ## 快速开始
 
 ### 环境要求
 
 - Go 1.25+
+- OpenAI 或 Anthropic API Key
 
-### 构建 & 运行
+### 安装 & 运行
 
 ```bash
+# 克隆项目
+git clone https://github.com/harness9/harness9
+cd harness9
+
+# 复制并填写 API 配置
+cp .env.example .env
+# 编辑 .env，填入 OPENAI_API_KEY 等配置
+
 # 构建
 go build ./cmd/harness9
 
@@ -87,18 +137,132 @@ go run ./cmd/harness9
 
 ```bash
 go test ./...
+go test -cover ./...
 ```
+
+### 最小示例
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "time"
+
+    "github.com/harness9/internal/engine"
+    "github.com/harness9/internal/provider"
+    "github.com/harness9/internal/tools"
+)
+
+func main() {
+    workDir := "/your/project"
+
+    p, err := provider.NewOpenAIProvider("gpt-4o")
+    if err != nil {
+        log.Fatalf("init provider: %v", err)
+    }
+
+    registry := tools.NewRegistry()
+    registry.Register(tools.NewBashTool(workDir))
+    registry.Register(tools.NewReadFileTool(workDir))
+    registry.Register(tools.NewWriteFileTool(workDir))
+
+    eng := engine.NewAgentEngine(p, registry, workDir, true,
+        engine.WithMaxTurns(50),
+        engine.WithToolTimeout(30*time.Second),
+    )
+
+    if err := eng.Run(context.Background(), "帮我列出当前目录下的所有 Go 文件"); err != nil {
+        log.Fatalf("run: %v", err)
+    }
+}
+```
+
+---
 
 ## 核心模块
 
 | 模块 | 说明 | 状态 |
-|------|------|------|
-| Engine | Agent 主循环调度 | 开发中 |
-| Provider | 大模型统一接口（OpenAI/Anthropic/Google） | 开发中 |
-| Context | Token 监控与 Prompt 组装 | 开发中 |
-| Tools | 工具注册表 + 中间件 + 内置工具 | 开发中 |
-| Memory | 会话记忆持久化 | 开发中 |
-| Feishu | 飞书机器人集成 | 开发中 |
+|------|------|:----:|
+| **Engine** | Two-Stage ReAct 主循环，阻塞 + 流式双模式 | ✅ |
+| **Provider** | LLM 统一接口，OpenAI / Anthropic 适配器 | ✅ |
+| **Schema** | 跨组件共享的核心数据类型 | ✅ |
+| **Tools** | 工具注册表 + 内置工具（bash / read_file / write_file） | ✅ |
+| **Env** | 零依赖 `.env` 配置加载器 | ✅ |
+| **Memory** | 会话记忆持久化 | 规划中 |
+| **Feishu** | 飞书机器人集成 | 规划中 |
+
+---
+
+## 项目结构
+
+```
+harness9/
+├── cmd/
+│   └── harness9/
+│       └── main.go                  # 程序入口，组装各模块并启动引擎
+├── internal/
+│   ├── engine/
+│   │   ├── agent_loop.go            # 阻塞式 Two-Stage ReAct 主循环
+│   │   ├── agent_loop_test.go       # 主循环单元测试
+│   │   └── stream.go                # 流式 Two-Stage ReAct 主循环
+│   ├── provider/
+│   │   ├── interface.go             # LLMProvider 接口定义
+│   │   ├── openai.go                # OpenAI 兼容 API 适配器
+│   │   ├── anthropic.go             # Anthropic 兼容 API 适配器
+│   │   └── mock.go                  # 测试用 Mock Provider
+│   ├── schema/
+│   │   ├── message.go               # 核心消息类型（Message、ToolCall、ToolResult 等）
+│   │   └── stream.go                # 流式增量类型（StreamChunk）
+│   ├── tools/
+│   │   ├── base.go                  # BaseTool 接口定义
+│   │   ├── registry.go              # 工具注册中心
+│   │   ├── safe_path.go             # 共享路径沙箱校验（防 Path Traversal）
+│   │   ├── safe_path_test.go        # 路径沙箱单元测试
+│   │   ├── bash.go                  # bash 工具（Shell 命令执行）
+│   │   ├── read_file.go             # read_file 工具（文件读取）
+│   │   └── write_file.go            # write_file 工具（文件写入）
+│   ├── env/
+│   │   ├── env.go                   # 零依赖 .env 配置加载器
+│   │   └── env_test.go              # 配置加载单元测试
+│   ├── memory/
+│   │   └── memory.go                # 会话记忆持久化（规划中）
+│   └── feishu/
+│       └── feishu.go                # 飞书 Webhook / 事件订阅处理（规划中）
+├── docs/
+│   └── 核心功能/
+│       ├── agent-loop.md            # Agent Loop 核心实现原理（Two-Stage ReAct 详解）
+│       └── tool-calling.md          # Tool Calling 工具调用系统详解
+├── .env.example                     # 环境变量配置模板
+├── go.mod
+├── AGENTS.md                        # 项目开发规范与上下文
+├── CLAUDE.md -> AGENTS.md           # 符号链接，保持同步
+└── README.md
+```
+
+---
+
+## 文档索引
+
+| 文档 | 内容 |
+|------|------|
+| [Agent Loop 核心实现原理](docs/核心功能/agent-loop.md) | Two-Stage ReAct 设计理念、数据模型、流式架构、Provider 对比 |
+| [Tool Calling 工具调用系统](docs/核心功能/tool-calling.md) | 工具接口、并发模型、内置工具详解、扩展指南 |
+| [AGENTS.md](AGENTS.md) | 项目开发规范、编码标准、架构决策 |
+
+---
+
+## 对标框架
+
+| 框架 | 优势 | 与 harness9 的差异 |
+|------|------|-------------------|
+| Claude Agent SDK | 深度 Anthropic 集成 | Extended Thinking 在 API 内置，不分离阶段 |
+| OpenAI Agents SDK | 官方支持，生态完整 | Handoffs 机制，非 Go 原生 |
+| OpenHarness | 显式循环设计清晰 | Python，无两阶段思考分离 |
+| OpenCode | Plan/Build Agent 切换 | TypeScript，通过独立 Agent 而非 Turn 内阶段分离 |
+
+---
 
 ## License
 
