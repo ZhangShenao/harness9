@@ -1,6 +1,10 @@
-// 内置工具：ReadFile — 安全的文件读取工具。
-// 提供 Sandbox 沙箱路径限制，防止路径遍历攻击（Path Traversal），
-// 并限制最大读取长度以保护系统资源。
+// 内置工具：ReadFile（文件读取工具）。
+//
+// 提供受限工作区（Sandboxed Workspace）内的安全文件读取能力，关键安全机制：
+//  1. 沙箱边界（Sandbox Boundary）：所有路径通过 safePath 校验，
+//     拒绝类似 "../../etc/passwd" 的路径遍历攻击（Path Traversal Attack）
+//  2. 长度截断保护（Length-Cap Guard）：使用 io.LimitReader 限制单次读取量，
+//     防止超大文件占满 LLM 的上下文窗口（Context Window）导致 Token 爆炸
 package tools
 
 import (
@@ -10,26 +14,23 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/harness9/internal/schema"
 )
 
-// maxReadLen 单次文件读取的最大字节数。超出部分会被截断并附加提示信息，
-// 防止意外将超大文件内容注入到 LLM 上下文窗口中导致 Token 爆炸。
+// maxReadLen 单次文件读取的最大字节数（Max Read Bytes）。
+// 超出部分会被截断并附加提示信息，避免无意中将超大文件内容注入到 LLM 上下文窗口。
 const maxReadLen = 4096
 
 // ReadFileTool 实现了 BaseTool 接口，提供受限工作区内的安全文件读取能力。
-// 安全机制：所有路径解析后会校验是否在工作区（WorkDir）范围内，
-// 拒绝类似 "../../etc/passwd" 的路径遍历攻击（Path Traversal Attack）。
 type ReadFileTool struct {
-	// workDir 工具允许访问的根目录（Sandbox Boundary），
+	// workDir 工具允许访问的根目录（Sandbox Boundary，沙箱边界），
 	// 所有读取操作被限制在此目录树内。
 	workDir string
 }
 
 // NewReadFileTool 创建绑定到指定工作区的文件读取工具。
-// workDir 会被 filepath.Clean 清洗，确保路径规范化。
+// workDir 会被 filepath.Clean 清洗，确保路径规范化（Path Normalization）。
 func NewReadFileTool(workDir string) *ReadFileTool {
 	return &ReadFileTool{workDir: filepath.Clean(workDir)}
 }
@@ -44,7 +45,7 @@ func (t *ReadFileTool) Name() string {
 func (t *ReadFileTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name:        t.Name(),
-		Description: "读取指定路径的文件内容。请提供相对工作区的路径。",
+		Description: "读取指定路径的文件内容。请提供相对工作区的相对路径。",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -58,8 +59,8 @@ func (t *ReadFileTool) Definition() schema.ToolDefinition {
 	}
 }
 
-// readFileArgs 定义 read_file 工具的 JSON 参数结构，
-// 对应 LLM 在 ToolCall 中传递的 Arguments 载荷（Payload）。
+// readFileArgs 定义 read_file 工具的 JSON 参数结构（Argument Payload），
+// 对应 LLM 在 ToolCall 中传递的 Arguments 载荷。
 type readFileArgs struct {
 	Path string `json:"path"`
 }
@@ -67,14 +68,14 @@ type readFileArgs struct {
 // Execute 执行文件读取操作。流程如下：
 //  1. 反序列化 JSON 参数，提取目标路径
 //  2. 通过 safePath 校验并解析为绝对路径（含沙箱边界检查）
-//  3. 读取文件内容，超过 maxReadLen 的部分被截断
+//  3. 读取文件内容，超过 maxReadLen 的部分被截断并附加提示
 func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input readFileArgs
 	if err := json.Unmarshal(args, &input); err != nil {
 		return "", fmt.Errorf("参数解析失败: %w", err)
 	}
 
-	fullPath, err := t.safePath(input.Path)
+	fullPath, err := safePath(t.workDir, input.Path)
 	if err != nil {
 		return "", err
 	}
@@ -85,7 +86,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	}
 	defer file.Close()
 
-	// 使用 LimitReader 限制读取量，+1 用于检测是否超出上限
+	// 使用 LimitReader 限制读取量；多读 1 字节用于检测是否真的超出上限。
 	content, err := io.ReadAll(io.LimitReader(file, maxReadLen+1))
 	if err != nil {
 		return "", fmt.Errorf("读取文件内容失败: %w", err)
@@ -96,26 +97,4 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	}
 
 	return string(content), nil
-}
-
-// safePath 将用户输入的相对路径解析为绝对路径，并校验是否在工作区范围内。
-// 这是防止路径遍历攻击（Path Traversal Attack）的核心安全屏障：
-// 任何试图通过 "../" 逃逸工作区的路径都会被拒绝。
-//
-// 例如：workDir="/project"，输入 "../../etc/passwd" 会被拒绝，
-// 输入 "src/main.go" 会被解析为 "/project/src/main.go"。
-func (t *ReadFileTool) safePath(inputPath string) (string, error) {
-	cleanWorkDir := filepath.Clean(t.workDir)
-	joined := filepath.Join(cleanWorkDir, inputPath)
-	absPath, err := filepath.Abs(joined)
-	if err != nil {
-		return "", fmt.Errorf("解析路径失败: %w", err)
-	}
-
-	// 安全校验：确保解析后的绝对路径仍以工作区目录为前缀
-	if !strings.HasPrefix(absPath, cleanWorkDir+string(os.PathSeparator)) && absPath != cleanWorkDir {
-		return "", fmt.Errorf("路径 '%s' 超出工作区范围", inputPath)
-	}
-
-	return absPath, nil
 }

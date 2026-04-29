@@ -31,10 +31,12 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -336,24 +338,11 @@ func (e *AgentEngine) executeToolsConcurrently(ctx context.Context, turn int, to
 				defer cancel()
 			}
 
-			log.Printf("[engine] Turn %d | 工具启动 | name=%s id=%s arguments=%s",
-				currentTurn, tc.Name, tc.ID, toJSON(tc.Arguments))
+			log.Print(formatToolStartLog(currentTurn, tc))
 
 			results[idx] = e.registry.Execute(toolCtx, tc)
 
-			if results[idx].IsError {
-				log.Printf("[engine] Turn %d | 工具失败 | name=%s id=%s result=%s",
-					currentTurn, tc.Name, tc.ID, toJSON(map[string]interface{}{
-						"is_error": true,
-						"output":   truncStr(results[idx].Output),
-					}))
-			} else {
-				log.Printf("[engine] Turn %d | 工具完成 | name=%s id=%s result=%s",
-					currentTurn, tc.Name, tc.ID, toJSON(map[string]interface{}{
-						"is_error": false,
-						"output":   truncStr(results[idx].Output),
-					}))
-			}
+			log.Print(formatToolDoneLog(currentTurn, tc, results[idx]))
 		}(i, toolCall, turn)
 	}
 
@@ -376,24 +365,166 @@ func joinContent(thinking, action string) string {
 	}
 }
 
-// toJSON 将任意值序列化为 JSON 字符串，用于日志输出。
-// 序列化失败时返回错误提示文本，不会 panic。
-func toJSON(v interface{}) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Sprintf("<marshal error: %v>", err)
-	}
-	return string(b)
-}
+// ===========================================================================
+// 工具调用日志格式化辅助（Tool-Call Log Formatting Helpers）
+// ===========================================================================
+//
+// 这些辅助函数将工具调用的 arguments / output 渲染为多行块状结构（Block-Style），
+// 替代了原先在单行内嵌入转义 JSON 字符串的写法。优化目标：
+//
+//   1. 可读性（Readability）：换行原样保留，不再以字面 "\n" 形式出现
+//   2. 结构化（Structure）：argument JSON 缩进展示，output 加 "│ " 前缀竖线
+//   3. 可扫描（Scannability）：首行保留 single-line 头部，便于 grep 关键字
+//
+// 所有续行均以同一缩进（logIndent）对齐，使日志在终端中呈现统一的"信息块"。
 
-// maxLogOutputLen 日志中单条输出的最大字节数，防止工具返回的超大内容撑爆日志。
+// maxLogOutputLen 日志中单条输出的最大字节数（Max Logged Output Bytes）。
+// 防止工具返回的超大内容撑爆日志文件 / 终端缓冲区。
 const maxLogOutputLen = 512
 
-// truncStr 截断过长的字符串，超出部分替换为截断提示。
-// 用于在日志中安全输出工具执行结果，同时保留长度信息供调试参考。
-func truncStr(s string) string {
-	if len(s) <= maxLogOutputLen {
-		return s
+// argInlineThreshold 当 arguments 压缩后的 JSON 长度小于该阈值时，
+// 直接以单行内联（Inline）形式展示；超过则切换为多行 pretty-print。
+const argInlineThreshold = 80
+
+// logIndent 日志续行（Continuation Line）的统一缩进，保证视觉对齐。
+const logIndent = "        "
+
+// formatToolStartLog 渲染"工具启动"日志条目。
+//
+// 输出形态示例：
+//
+//	[engine] Turn 1 │ 工具启动 │ tool=bash id=call_xyz
+//	        arguments: {"command":"go version"}
+//
+// 长 arguments 会被 pretty-print 为多行：
+//
+//	[engine] Turn 1 │ 工具启动 │ tool=write_file id=call_xyz
+//	        arguments:
+//	          {
+//	            "path": "src/main.go",
+//	            "content": "package main\n..."
+//	          }
+func formatToolStartLog(turn int, tc schema.ToolCall) string {
+	header := fmt.Sprintf("[engine] Turn %d │ 工具启动 │ tool=%s id=%s",
+		turn, tc.Name, tc.ID)
+	args := formatLogJSON(tc.Arguments)
+	if strings.Contains(args, "\n") {
+		return header + "\n" + logIndent + "arguments:\n" + args
 	}
-	return s[:maxLogOutputLen] + fmt.Sprintf("...[截断，全文 %d 字节]", len(s))
+	return header + "\n" + logIndent + "arguments: " + args
+}
+
+// formatToolDoneLog 渲染"工具完成 / 工具失败"日志条目。
+//
+// 输出形态示例（成功）：
+//
+//	[engine] Turn 1 │ 工具完成 │ tool=bash id=call_xyz status=ok bytes=1305 (truncated to 512)
+//	        output:
+//	        │ go version go1.25.3 darwin/arm64
+//	        │ /Users/zsa/Desktop/harness/harness9
+//
+// 输出形态示例（失败）：
+//
+//	[engine] Turn 1 │ 工具失败 │ tool=bash id=call_xyz status=error bytes=42
+//	        output:
+//	        │ command not found: foo
+func formatToolDoneLog(turn int, tc schema.ToolCall, result schema.ToolResult) string {
+	phase := "工具完成"
+	status := "ok"
+	if result.IsError {
+		phase = "工具失败"
+		status = "error"
+	}
+
+	body, total, truncated := formatLogOutput(result.Output)
+	truncSuffix := ""
+	if truncated {
+		truncSuffix = fmt.Sprintf(" (truncated to %d)", maxLogOutputLen)
+	}
+
+	return fmt.Sprintf(
+		"[engine] Turn %d │ %s │ tool=%s id=%s status=%s bytes=%d%s\n%soutput:\n%s",
+		turn, phase, tc.Name, tc.ID, status, total, truncSuffix, logIndent, body,
+	)
+}
+
+// formatLogJSON 渲染 arguments JSON 用于日志输出。
+//
+// 短 payload（≤ argInlineThreshold 字节）保持单行内联；
+// 长 payload 改用 pretty-print，并在每行前补统一缩进。
+//
+// 注意：Go 的 encoding/json 默认会将 &、<、> 转义成 \u0026 等 Unicode 形式
+// （HTML-Escape），日志中阅读极不友好。本函数显式关闭该行为，让命令字符串
+// （如 `go version && pwd`）原样可读。
+func formatLogJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "{}"
+	}
+
+	// Compact 阶段同样需关闭 HTML escape，否则短 payload 也会出现 \u0026。
+	// 注意：json.Encoder.Encode 总会附加一个尾随换行符，需手动 TrimRight。
+	var compact bytes.Buffer
+	if err := encodeJSONNoEscape(&compact, raw, false); err != nil {
+		return string(raw)
+	}
+	compactStr := strings.TrimRight(compact.String(), "\n")
+	if len(compactStr) <= argInlineThreshold {
+		return compactStr
+	}
+
+	var pretty bytes.Buffer
+	if err := encodeJSONNoEscape(&pretty, raw, true); err != nil {
+		return compactStr
+	}
+	// json.Encoder 的 Indent 不会缩进首行，需手动补齐
+	indented := strings.ReplaceAll(strings.TrimRight(pretty.String(), "\n"), "\n", "\n"+logIndent+"  ")
+	return logIndent + "  " + indented
+}
+
+// encodeJSONNoEscape 使用 json.Encoder 重新编码原始 JSON，关闭 HTML 字符转义
+// （SetEscapeHTML(false)），可选启用 indent。indent=true 时使用两个空格缩进。
+func encodeJSONNoEscape(buf *bytes.Buffer, raw json.RawMessage, indent bool) error {
+	var v interface{}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return err
+	}
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
+	if indent {
+		enc.SetIndent("", "  ")
+	}
+	return enc.Encode(v)
+}
+
+// formatLogOutput 将工具输出格式化为多行块状文本（Block-Style）：
+// 超出 maxLogOutputLen 时截断；每行以 "│ " 起头并对齐到 logIndent，便于扫读。
+//
+// 返回值：
+//   - body:      格式化后的多行文本（首行已含 logIndent 前缀）
+//   - total:     原始输出的总字节数（截断前）
+//   - truncated: 是否发生过截断
+func formatLogOutput(s string) (body string, total int, truncated bool) {
+	total = len(s)
+	if total > maxLogOutputLen {
+		s = s[:maxLogOutputLen]
+		truncated = true
+	}
+	if s == "" {
+		return logIndent + "│ <empty>", total, truncated
+	}
+
+	// 去掉末尾多余换行，避免日志中出现孤立的 "│ " 空行
+	s = strings.TrimRight(s, "\n")
+
+	lines := strings.Split(s, "\n")
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(logIndent)
+		b.WriteString("│ ")
+		b.WriteString(line)
+	}
+	return b.String(), total, truncated
 }
