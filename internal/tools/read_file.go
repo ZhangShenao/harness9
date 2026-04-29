@@ -1,12 +1,14 @@
 // 内置工具：ReadFile（文件读取工具）。
 //
-// 提供受限工作区（Sandboxed Workspace）内的安全文件读取能力，关键安全机制：
+// 提供受限工作区（Sandboxed Workspace）内的安全文件读取能力，关键机制：
 //  1. 沙箱边界（Sandbox Boundary）：所有路径通过 safePath 校验，
 //     拒绝类似 "../../etc/passwd" 的路径遍历攻击（Path Traversal Attack）
 //  2. 长度截断保护（Length-Cap Guard）：限制单次读取量，
 //     防止超大文件占满 LLM 的上下文窗口（Context Window）导致 Token 爆炸
 //  3. 分页读取（Offset / Limit）：LLM 可通过 offset（起始字节）和 limit（读取字节数）
 //     显式分段读取大文件，避免"读一次看不全"的死循环
+//  4. UTF-8 rune 边界对齐：发生截断时，回退到最近的 rune 起点，
+//     避免把多字节字符（如中文、emoji）从中间切断，保证输出始终是合法 UTF-8
 package tools
 
 import (
@@ -16,6 +18,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 
 	"github.com/harness9/internal/schema"
 )
@@ -76,8 +79,9 @@ func (t *ReadFileTool) Definition() schema.ToolDefinition {
 		Description: fmt.Sprintf(
 			"读取指定路径的文件内容，请提供相对工作区的相对路径。"+
 				"支持分页读取：通过 offset（起始字节，默认 0）和 limit（读取字节数，"+
-				"默认 %d，最大 %d）分段访问大文件。",
-			t.maxReadLen, t.maxReadLen,
+				"上限 %d）分段访问大文件。截断发生时会回退到 UTF-8 rune 边界，"+
+				"输出保证是合法 UTF-8。",
+			t.maxReadLen,
 		),
 		InputSchema: map[string]interface{}{
 			"type": "object",
@@ -94,8 +98,8 @@ func (t *ReadFileTool) Definition() schema.ToolDefinition {
 				"limit": map[string]interface{}{
 					"type": "integer",
 					"description": fmt.Sprintf(
-						"最多读取多少字节，默认 %d，上限 %d。超出将被截断并提示",
-						t.maxReadLen, t.maxReadLen,
+						"最多读取多少字节，默认/上限 %d。超出将被截断并提示下一个 offset",
+						t.maxReadLen,
 					),
 					"minimum": 1,
 				},
@@ -113,11 +117,34 @@ type readFileArgs struct {
 	Limit  int    `json:"limit"`
 }
 
+// truncateAtRuneBoundary 在不超过 limit 的前提下，把字节切片回退到最近的
+// UTF-8 rune 起点。避免因为字节截断把一个多字节字符切成两半，保证返回
+// 给 LLM 的字符串始终是合法 UTF-8。
+//
+// 只回退最多 utf8.UTFMax (4) 字节；合法 UTF-8 不可能出现 ≥ 4 个连续的
+// continuation 字节，因此窗口内至少能找到一个 rune 起点。对异常输入
+// （malformed UTF-8）fallback 到 limit 处硬切。
+func truncateAtRuneBoundary(b []byte, limit int) []byte {
+	if len(b) <= limit {
+		return b
+	}
+	stop := limit - utf8.UTFMax
+	if stop < 0 {
+		stop = 0
+	}
+	for cut := limit; cut >= stop; cut-- {
+		if utf8.RuneStart(b[cut]) {
+			return b[:cut]
+		}
+	}
+	return b[:limit]
+}
+
 // Execute 执行文件读取操作。流程如下：
 //  1. 反序列化 JSON 参数，提取目标路径、offset、limit
 //  2. 通过 safePath 校验并解析为绝对路径（含沙箱边界检查）
 //  3. 应用 offset（Seek）和 limit（min(limit, maxReadLen)）
-//  4. 读取对应字节范围，超出 limit 时截断并附加提示
+//  4. 读取对应字节范围；若超出 limit，回退到 rune 边界并附加续读提示
 func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input readFileArgs
 	if err := json.Unmarshal(args, &input); err != nil {
@@ -172,20 +199,21 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 
 	truncated := len(content) > effectiveLimit
 	if truncated {
-		content = content[:effectiveLimit]
+		// UTF-8 对齐：截断时回退到最近的 rune 起点，避免把多字节字符切半。
+		content = truncateAtRuneBoundary(content, effectiveLimit)
 	}
 
 	header := ""
 	if input.Offset > 0 || truncated {
-		header = fmt.Sprintf("[文件共 %d 字节，本次读取 offset=%d limit=%d]\n",
-			totalSize, input.Offset, effectiveLimit)
+		header = fmt.Sprintf("[文件共 %d 字节，本次读取 offset=%d limit=%d 实际返回 %d 字节]\n",
+			totalSize, input.Offset, effectiveLimit, len(content))
 	}
 
 	if truncated {
-		nextOffset := input.Offset + int64(effectiveLimit)
+		nextOffset := input.Offset + int64(len(content))
 		return header + string(content) + fmt.Sprintf(
-			"\n\n...[内容过长，已截断至 %d 字节。如需继续，调用 offset=%d]...",
-			effectiveLimit, nextOffset), nil
+			"\n\n...[内容过长，已截断。如需继续，调用 offset=%d]...",
+			nextOffset), nil
 	}
 
 	return header + string(content), nil

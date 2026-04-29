@@ -1,18 +1,33 @@
 // 内置工具：Bash（Shell 命令执行工具）。
 //
-// 让 Agent 具备完整的命令行操作能力，是 harness9 "YOLO 哲学"（Trust-the-LLM）的核心：
-// 不限制可执行命令的种类，把所有判断与决策权完全交给大模型。
+// 让 Agent 具备完整的命令行操作能力。默认行为仍然是"Trust-the-LLM / YOLO"
+// 哲学的延续 —— 不做命令白名单，把大部分判断权交给大模型 —— 但在此基础上
+// 增加了一层"基础 deny-list"防线，专门拦截几类"基本没有合法用途"的破坏性
+// 模式（rm -rf 系统路径 / fork bomb / mkfs / dd 写块设备 / curl | bash）。
 //
-// 与文件读写工具不同，Bash 工具默认不做命令白名单（Allow List）：
-// 模型可以执行 git、go、npm、curl 等任何命令，并通过 stderr/exit code 自行判断成败。
+// 默认启用 deny-list；调用 NewBashTool(workDir, WithAllowDangerous(true))
+// 可以在研究/受信任环境里显式关闭本层防线。
+//
+// deny-list 采用 fail-closed 语义：
+//   - 命令 tokenizer 解析失败（未闭合引号等）→ 直接拦截，不放行
+//   - 命中规则 → 拦截，并把人类可读的规则名回给 LLM 作为 Observation
+//   - 命中 / 拦截都返回 (string, nil) 而不是 error；agent loop 正常继续，
+//     让 LLM 基于拦截信息调整命令（Self-Healing）
 //
 // 关键安全 / 鲁棒性机制（Safety & Robustness）：
 //  1. 时间预算（Time Budgeting）：通过 context 超时阻止长时间运行的命令卡死引擎。
 //  2. 错误原样回传（Self-Correction Loopback）：命令失败时不返回 Go error，
 //     而是把 stderr 与退出信息拼成文本输出回传给 LLM，触发自愈（Self-Healing）重试。
 //  3. 长度截断保护（Length-Cap Guard）：防止巨型输出（如 ls -R /）撑爆上下文窗口。
-//  4. 基础 deny-list（Dangerous Pattern Guard）：拦截 rm -rf /、fork bomb 等
-//     明显破坏性的命令模式。关闭 allowDangerous 可完全禁用本层防线。
+//  4. 基础 deny-list（Dangerous Pattern Guard）：拦 rm -rf、fork bomb、mkfs、
+//     dd 块设备、curl|bash 等模式。命中时作为 Observation 回给 LLM。
+//
+// 已知限制（Known Limitations）：
+//   - deny-list 仅做防"误操作 / LLM 冒失"的基础屏障，不是对抗性 sandbox。
+//     攻击者可通过 base64 解码、$() 子 shell、动态命令构造等方式绕过。
+//     强沙箱需求请在容器 / Jail / seccomp 等更外层解决。
+//   - 手写 tokenizer 不展开变量（`\$HOME` 作字面量处理）、不解析子 shell 内容、
+//     不处理 heredoc。LLM 的常规输出场景这些都够用。
 package tools
 
 import (
@@ -38,31 +53,350 @@ const defaultMaxOutputLen = 8000
 // 实际生效的超时时间为 min(parent.deadline, now+hardTimeout)。
 const defaultBashHardTimeout = 30 * time.Second
 
-// dangerousPatterns 是 bash 工具在 allowDangerous=false 时拒绝执行的命令模式。
+// ============================================================================
+// 命令 Tokenizer（Hand-Rolled Lexer）
+// ============================================================================
 //
-// 仅拦截明显的"基本没有合法用途"的破坏性操作；不做宽泛的命令黑名单，
-// 保持 YOLO 哲学的核心。正则匹配在去除前导空白后的完整命令串上进行。
+// 手撸一个最小 shell 词法分析器：
+//   - 按空白（space/tab/newline）切词
+//   - 识别 `&&` / `||` / `|` / `;` / `&` 为独立的"操作符 token"
+//   - 单引号内按字面量收（不处理反斜杠转义）
+//   - 双引号内支持 `\` 对 `"` / `\` 的转义
+//   - 外部的 `\` 直接转义下一个字符
 //
-// 命中示例：
-//   - `rm -rf /`、`rm -rf /*`、`rm --recursive --force /`
-//   - `:(){ :|:& };:`（经典 fork bomb）
-//   - `mkfs.*`、`dd if=/dev/zero of=/dev/sda ...`
-//   - `curl ... | bash` / `wget ... | sh`（远程脚本直接 pipe 到 shell 执行）
-//
-// 如 LLM 确有合法需求（比如研究环境里想清空某个子目录），应调用方通过
-// WithAllowDangerous(true) 关闭本层防线，而不是让工具悄悄放行。
-var dangerousPatterns = []*regexp.Regexp{
-	// rm -rf / 或 rm -rf /* 变体
-	regexp.MustCompile(`\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|--recursive\s+--force|-rf|-fr)\b[^|&;]*\s+/\S*`),
-	// fork bomb
-	regexp.MustCompile(`:\s*\(\s*\)\s*\{[^}]*:\s*\|\s*:\s*&[^}]*\}\s*;\s*:`),
-	// mkfs（格式化任意设备）
-	regexp.MustCompile(`\bmkfs(\.[a-z0-9]+)?\s+/dev/`),
-	// dd 写入 /dev/sd*/ /dev/nvme*/ /dev/hd* 等块设备（典型数据毁坏操作）
-	regexp.MustCompile(`\bdd\b[^|;]*\bof=/dev/(sd[a-z]|nvme\d+n\d+|hd[a-z]|mmcblk\d+|xvd[a-z])`),
-	// curl | bash / wget | sh
-	regexp.MustCompile(`\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba)?sh\b`),
+// 不支持：`$VAR` 展开、`$(...)` 子 shell、heredoc、重定向（> < 等会作为字面量
+// 并入相邻 token）。对 LLM 常规命令场景足够；deny-list 的判断在命中边界上选择
+// fail-closed，未闭合引号 / 异常结构直接返回 error。
+
+// tokenize 是一个小型 shell 词法分析器，用于 deny-list 判定。
+// 返回的 token 列表中，操作符（&&/||/|/;/&）作为独立 token 出现，
+// 其他 token 是已解引号的字面量。遇到未闭合引号返回 error（fail-closed 依据）。
+func tokenize(s string) ([]string, error) {
+	var tokens []string
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() > 0 {
+			tokens = append(tokens, cur.String())
+			cur.Reset()
+		}
+	}
+	pushOp := func(op string) {
+		flush()
+		tokens = append(tokens, op)
+	}
+
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			flush()
+			i++
+
+		case c == '\\':
+			if i+1 >= len(s) {
+				return nil, fmt.Errorf("命令以裸反斜杠结尾")
+			}
+			cur.WriteByte(s[i+1])
+			i += 2
+
+		case c == '\'':
+			end := strings.IndexByte(s[i+1:], '\'')
+			if end < 0 {
+				return nil, fmt.Errorf("未闭合的单引号")
+			}
+			cur.WriteString(s[i+1 : i+1+end])
+			i = i + 1 + end + 1
+
+		case c == '"':
+			j := i + 1
+			for j < len(s) {
+				if s[j] == '\\' && j+1 < len(s) {
+					switch s[j+1] {
+					case '"', '\\', '$', '`':
+						cur.WriteByte(s[j+1])
+					default:
+						cur.WriteByte(s[j])
+						cur.WriteByte(s[j+1])
+					}
+					j += 2
+					continue
+				}
+				if s[j] == '"' {
+					break
+				}
+				cur.WriteByte(s[j])
+				j++
+			}
+			if j >= len(s) {
+				return nil, fmt.Errorf("未闭合的双引号")
+			}
+			i = j + 1
+
+		case c == '&' && i+1 < len(s) && s[i+1] == '&':
+			pushOp("&&")
+			i += 2
+		case c == '|' && i+1 < len(s) && s[i+1] == '|':
+			pushOp("||")
+			i += 2
+		case c == '|':
+			pushOp("|")
+			i++
+		case c == ';':
+			pushOp(";")
+			i++
+		case c == '&':
+			pushOp("&")
+			i++
+
+		default:
+			cur.WriteByte(c)
+			i++
+		}
+	}
+	flush()
+	return tokens, nil
 }
+
+// operatorToken 判断一个 token 是否是命令分隔操作符。
+func operatorToken(t string) bool {
+	switch t {
+	case "&&", "||", "|", ";", "&":
+		return true
+	}
+	return false
+}
+
+// splitArgvOnOperators 把扁平 token 列表按操作符拆成若干子命令 argv。
+func splitArgvOnOperators(tokens []string) [][]string {
+	var out [][]string
+	var cur []string
+	for _, t := range tokens {
+		if operatorToken(t) {
+			if len(cur) > 0 {
+				out = append(out, cur)
+				cur = nil
+			}
+			continue
+		}
+		cur = append(cur, t)
+	}
+	if len(cur) > 0 {
+		out = append(out, cur)
+	}
+	return out
+}
+
+// ============================================================================
+// Deny-list 规则
+// ============================================================================
+
+// denyRule 表示一条 deny-list 规则。label 面向 LLM 可读（命中时回显）。
+type denyRule struct {
+	label   string
+	matchFn func(string) bool
+}
+
+var (
+	forkBombRe      = regexp.MustCompile(`:\s*\(\s*\)\s*\{[^}]*:\s*\|\s*:\s*&[^}]*\}\s*;\s*:`)
+	mkfsRe          = regexp.MustCompile(`\bmkfs(\.[a-z0-9]+)?\s+/dev/`)
+	ddBlockDevRe    = regexp.MustCompile(`\bdd\b[^|;]*\bof=/dev/(sd[a-z]|nvme\d+n\d+|hd[a-z]|mmcblk\d+|xvd[a-z])`)
+	remoteToShellRe = regexp.MustCompile(`\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba)?sh\b`)
+)
+
+// rawRegexRules 在原始命令字符串上生效的规则（对引号/操作符无强依赖）。
+var rawRegexRules = []denyRule{
+	{label: "fork bomb", matchFn: regexMatcher(forkBombRe)},
+	{label: "mkfs 格式化设备", matchFn: regexMatcher(mkfsRe)},
+	{label: "dd 写入块设备", matchFn: regexMatcher(ddBlockDevRe)},
+	{label: "远程脚本直接 pipe 到 shell 执行", matchFn: regexMatcher(remoteToShellRe)},
+}
+
+func regexMatcher(re *regexp.Regexp) func(string) bool {
+	return func(s string) bool { return re.MatchString(s) }
+}
+
+// rmCommandPrefixes 是 rm 前允许的包装命令：检测时跳过它们去找真正的命令。
+var rmCommandPrefixes = map[string]bool{
+	"sudo": true, "doas": true, "exec": true, "time": true,
+	"command": true, "nohup": true, "stdbuf": true, "ionice": true, "nice": true,
+}
+
+// dangerousRmTops 是 rm 目标命中后视为危险的 / 下顶级目录。
+var dangerousRmTops = map[string]bool{
+	"bin": true, "boot": true, "dev": true, "etc": true,
+	"home": true, "lib": true, "lib64": true, "opt": true,
+	"proc": true, "root": true, "run": true, "sbin": true,
+	"srv": true, "sys": true, "usr": true, "var": true,
+}
+
+// isRmBinary 识别 rm 本体（含常见绝对路径形式）。
+func isRmBinary(tok string) bool {
+	return tok == "rm" || tok == "/bin/rm" || tok == "/usr/bin/rm"
+}
+
+// isDangerousRmArgv 判断一个子命令 argv 是否是"带 -rf（或等价）且作用在危险目标
+// 上"的 rm。覆盖的写法见包注释顶部。
+//
+// 不拦截：
+//   - 不带 -r 或不带 -f：`rm /some/file`（rm 对非空目录默认拒绝）
+//   - 目标看起来是 workdir 内的相对子路径（工具层没有 workdir 感知，交给调用方
+//     约束；本函数只拦"路径形状本身就明显危险"的情况）
+func isDangerousRmArgv(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+
+	// 跳过 sudo / exec / env KEY=VAL 等前缀，找到真正的命令。
+	i := 0
+	for i < len(argv) {
+		t := argv[i]
+		if rmCommandPrefixes[t] {
+			i++
+			continue
+		}
+		if t == "env" {
+			i++
+			for i < len(argv) && strings.Contains(argv[i], "=") && !strings.HasPrefix(argv[i], "-") {
+				i++
+			}
+			continue
+		}
+		break
+	}
+	if i >= len(argv) || !isRmBinary(argv[i]) {
+		return false
+	}
+
+	args := argv[i+1:]
+	hasR, hasF := false, false
+	var targets []string
+	stopOpts := false
+	for _, a := range args {
+		if !stopOpts && a == "--" {
+			stopOpts = true
+			continue
+		}
+		if !stopOpts && strings.HasPrefix(a, "--") {
+			switch a {
+			case "--recursive":
+				hasR = true
+			case "--force":
+				hasF = true
+			}
+			continue
+		}
+		if !stopOpts && strings.HasPrefix(a, "-") && len(a) > 1 {
+			for _, c := range a[1:] {
+				switch c {
+				case 'r', 'R':
+					hasR = true
+				case 'f', 'F':
+					hasF = true
+				}
+			}
+			continue
+		}
+		targets = append(targets, a)
+	}
+
+	if !(hasR && hasF) {
+		return false
+	}
+
+	for _, t := range targets {
+		if isDangerousRmTarget(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDangerousRmTarget 判断 rm 的目标参数是否危险。
+//
+// 判断维度（字面量层面，不做变量展开）：
+//  1. 根 / 根通配 / 根下系统顶级目录（/, /*, /., /.., /etc, /usr, ...）
+//  2. 家目录 / $HOME（~, ~/, $HOME, $HOME/, ${HOME}, ${HOME}/）
+//  3. 相对路径上爬（.. 或以 ../ 开头的路径；内部的 /../ 不算 —— 比如
+//     `./foo/../bar` 会被 rm 解析成 workdir 内部的相对路径，不拦截）
+//  4. 当前目录全量清空（. 或 *）
+func isDangerousRmTarget(t string) bool {
+	if t == "" {
+		return true
+	}
+
+	// --- 1. 绝对路径危险形态 ---
+	switch t {
+	case "/", "/.", "/..", "/*", "/.*":
+		return true
+	}
+	if strings.HasPrefix(t, "/") {
+		rest := strings.TrimPrefix(t, "/")
+		rest = strings.TrimRight(rest, "/")
+		if rest == "" {
+			return true
+		}
+		top := strings.SplitN(rest, "/", 2)[0]
+		top = strings.TrimRight(top, "*")
+		if dangerousRmTops[top] {
+			return true
+		}
+	}
+
+	// --- 2. 家目录及其子路径 ---
+	if t == "~" || strings.HasPrefix(t, "~/") ||
+		t == "$HOME" || strings.HasPrefix(t, "$HOME/") ||
+		t == "${HOME}" || strings.HasPrefix(t, "${HOME}/") {
+		return true
+	}
+
+	// --- 3. 相对路径上爬 ---
+	// 只拦"目标以 .. 或 ../ 开头"的写法；内部的 /../ 不算危险，
+	// `rm -rf ./foo/../bar` 在 workdir 内部解析，并不会逃出工作区。
+	if t == ".." || strings.HasPrefix(t, "../") {
+		return true
+	}
+
+	// --- 4. 当前目录全量清空 ---
+	if t == "." || t == "*" {
+		return true
+	}
+
+	return false
+}
+
+// checkDenyList 在命令字符串上应用所有 deny 规则。
+//
+// 流程（fail-closed）：
+//  1. 原始字符串正则规则（fork bomb / mkfs / dd / curl|bash）
+//  2. tokenize + 切分子命令 argv。tokenize 失败 → 拦截
+//  3. 每个子命令跑 isDangerousRmArgv
+//
+// 返回 (hit, label)。label 是人类可读的规则名称，用于回给 LLM。
+func checkDenyList(cmd string) (bool, string) {
+	for _, rule := range rawRegexRules {
+		if rule.matchFn(cmd) {
+			return true, rule.label
+		}
+	}
+
+	tokens, err := tokenize(cmd)
+	if err != nil {
+		return true, fmt.Sprintf("命令 shell 解析失败，fail-closed 拦截（原因: %v）", err)
+	}
+
+	for _, argv := range splitArgvOnOperators(tokens) {
+		if isDangerousRmArgv(argv) {
+			return true, "rm -rf 删除系统/家目录/上级路径"
+		}
+	}
+
+	return false, ""
+}
+
+// ============================================================================
+// BashTool
+// ============================================================================
 
 // BashTool 实现 BaseTool 接口，在 workDir 下以子进程方式执行任意 bash 命令。
 type BashTool struct {
@@ -104,7 +438,8 @@ func WithBashHardTimeout(d time.Duration) BashOption {
 }
 
 // WithAllowDangerous 关闭 deny-list 检查。仅用于显式需要执行高危命令的场景
-// （比如自动化测试里故意清理目录）。生产环境保持默认 false。
+// （比如自动化测试里故意清理目录，或研究环境里的一次性操作）。生产环境保持
+// 默认 false。
 func WithAllowDangerous(allow bool) BashOption {
 	return func(t *BashTool) {
 		t.allowDangerous = allow
@@ -134,7 +469,7 @@ func (t *BashTool) Name() string {
 func (t *BashTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name:        t.Name(),
-		Description: "在当前工作区执行任意的 bash 命令。支持链式命令(如 &&)。返回标准输出(stdout)和标准错误(stderr)的合并内容。默认会拒绝明显破坏性的命令模式（rm -rf /、fork bomb、curl | bash 等）。",
+		Description: "在当前工作区执行任意的 bash 命令。支持链式命令(如 &&)。返回标准输出(stdout)和标准错误(stderr)的合并内容。默认会拒绝几类明显破坏性的模式：rm -rf 系统路径/家目录/上级路径、fork bomb、mkfs、dd 写块设备、curl|bash 远程执行。命令无法安全解析（如未闭合引号）会被 fail-closed 拦截。",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -152,18 +487,6 @@ func (t *BashTool) Definition() schema.ToolDefinition {
 // 对应 LLM 在 ToolCall 中传递的 Arguments 载荷。
 type bashArgs struct {
 	Command string `json:"command"`
-}
-
-// isDangerous 报告命令是否命中 deny-list。
-// 匹配在去除前后空白的完整命令串上进行，支持多命令 via && / ; / | 的常见场景。
-func isDangerous(cmd string) (bool, string) {
-	trimmed := strings.TrimSpace(cmd)
-	for _, re := range dangerousPatterns {
-		if re.MatchString(trimmed) {
-			return true, re.String()
-		}
-	}
-	return false, ""
 }
 
 // Execute 执行 bash 命令。流程如下：
@@ -188,14 +511,14 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	// 基础 deny-list：拦截明显破坏性的命令模式。
-	// 注意：命中时返回 (string, nil)，把拒绝信息作为 Observation 回传给 LLM，
+	// 命中时返回 (string, nil)，把拒绝信息作为 Observation 回传给 LLM，
 	// 让模型自己调整命令，而不是直接中断循环。
 	if !t.allowDangerous {
-		if hit, pattern := isDangerous(input.Command); hit {
+		if hit, label := checkDenyList(input.Command); hit {
 			return fmt.Sprintf(
-				"Error: 命令被基础 deny-list 拦截（命中模式: %s）。"+
-					"若确需执行，请拆分命令或改用更精确的写法；工具层不会放行这类高危操作。",
-				pattern,
+				"Error: 命令被基础 deny-list 拦截（规则: %s）。"+
+					"若确需执行，请拆分命令或改用更精确的写法；工具层默认不会放行这类高危操作。",
+				label,
 			), nil
 		}
 	}

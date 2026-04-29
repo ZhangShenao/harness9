@@ -256,12 +256,9 @@ type anthropicToolCallAccumulator struct {
 //   - schema.RoleAssistant → anthropic.NewAssistantMessage（含 TextBlock 和 ToolUseBlock）
 //   - schema.RoleTool      → anthropic.NewUserMessage（ToolResultBlock，携带 is_error）
 //
-// 关键修复：RoleTool 的 Message.IsError 会被透传到 tool_result.is_error，
+// 关键点：RoleTool 的 Message.IsError 会被透传到 tool_result.is_error，
 // 使 Claude 能够明确感知"这次工具调用失败了"，触发更精准的自愈（Self-Healing）
 // 重试，而不是把错误文本当成正常输出解读。
-//
-// 向后兼容：RoleUser + ToolCallID != "" 仍被识别为 Tool Observation，
-// 便于从旧代码平滑迁移；新代码应显式使用 RoleTool 并设置 IsError。
 //
 // 返回 (anthropicMsgs, systemPrompt, error)，systemPrompt 为空表示无系统提示词。
 func (p *AnthropicProvider) convertMessages(msgs []schema.Message) ([]anthropic.MessageParam, string, error) {
@@ -278,17 +275,9 @@ func (p *AnthropicProvider) convertMessages(msgs []schema.Message) ([]anthropic.
 				anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, msg.IsError),
 			))
 		case schema.RoleUser:
-			// 向后兼容路径：旧代码可能把 Observation 放在 RoleUser + ToolCallID 上。
-			// 此分支无 IsError 信息，默认当成非错误处理，保持旧行为不变。
-			if msg.ToolCallID != "" {
-				anthropicMsgs = append(anthropicMsgs, anthropic.NewUserMessage(
-					anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, msg.IsError),
-				))
-			} else {
-				anthropicMsgs = append(anthropicMsgs, anthropic.NewUserMessage(
-					anthropic.NewTextBlock(msg.Content),
-				))
-			}
+			anthropicMsgs = append(anthropicMsgs, anthropic.NewUserMessage(
+				anthropic.NewTextBlock(msg.Content),
+			))
 		case schema.RoleAssistant:
 			var blocks []anthropic.ContentBlockParamUnion
 			if msg.Content != "" {

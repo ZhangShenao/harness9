@@ -104,7 +104,36 @@ for evt := range stream {
 ToolResult{ToolCallID: id, Output: "command not found: foo", IsError: true}
 ```
 
+引擎在注入 Observation 时会把 `IsError` 带到 `schema.Message` 上，Provider 适配器
+（Anthropic 的 `tool_result.is_error`）原样透传给 LLM，让模型明确感知到"这是失败"
+而不是从文本里去猜。
+
 详见 [Tool Calling 工具调用系统](docs/核心功能/tool-calling.md)。
+
+### 工具层默认安全基线
+
+各内置工具在"默认开箱即用"和"给调用方足够钩子"之间取舍：
+
+- **`bash`**：默认启用基础 deny-list，拦截 `rm -rf` 系统路径/家目录/上级路径、
+  fork bomb、`mkfs`、`dd` 写块设备、`curl | bash` 等明显破坏性模式。命中时
+  作为 Observation 回给 LLM 让其自己调整，不中断循环。命令字符串如果包含
+  未闭合引号等无法安全解析的结构，按 **fail-closed** 语义拦截（"无法确定 →
+  保守拦截"）。需要在研究 / 受信任环境里显式放行时用：
+
+  ```go
+  tools.NewBashTool(workDir, tools.WithAllowDangerous(true))
+  ```
+
+  其他可选项：`WithBashMaxOutputLen(n)`、`WithBashHardTimeout(d)`。
+
+- **`read_file`**：默认单次读取上限 64 KB，支持 `offset` / `limit` 参数分页读取
+  大文件；截断发生时输出保证是合法 UTF-8（在 rune 边界回退），并提示下一个
+  可用的 `offset` 便于 LLM 续读。可选 `WithMaxReadLen(n)`。
+
+- **`write_file`**：沙箱边界 + 父目录 auto-mkdir + 覆盖写入。
+
+这三者共享的路径沙箱 `safePath` 拒绝任何超出工作区的路径遍历尝试
+（`../../etc/passwd` 类）。
 
 ---
 

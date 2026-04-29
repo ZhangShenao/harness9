@@ -230,8 +230,10 @@ type openaiToolCallAccumulator struct {
 //   - schema.RoleAssistant → openai.ChatCompletionAssistantMessageParam（含 ToolCalls）
 //   - schema.RoleTool      → openai.ToolMessage（tool_call_id 关联原始请求）
 //
-// 向后兼容：RoleUser + ToolCallID != "" 仍会被识别为 Tool Observation，
-// 保持与早期版本构造的 Message 互通；新代码应显式使用 RoleTool。
+// 注意：OpenAI 的 ChatCompletion API 目前没有独立的 is_error 字段，
+// 错误信号需要在 Content 文本中体现（engine 层在注入 Observation 时已经把
+// registry.Execute 的失败 Output 原样带上），所以这里没有 Message.IsError 的
+// 透传动作。
 func (p *OpenAIProvider) convertMessages(msgs []schema.Message) []openai.ChatCompletionMessageParamUnion {
 	var result []openai.ChatCompletionMessageParamUnion
 
@@ -241,19 +243,11 @@ func (p *OpenAIProvider) convertMessages(msgs []schema.Message) []openai.ChatCom
 			result = append(result, openai.SystemMessage(msg.Content))
 
 		case schema.RoleTool:
-			// OpenAI 的 tool role message 需要 tool_call_id 关联到原始请求。
-			// 注意：OpenAI 的 ChatCompletion API 目前没有独立的 is_error 字段，
-			// 错误信号需要在 Content 文本中体现（harness9 的 registry.Execute
-			// 已经在失败时把错误信息拼进 Output）。
 			result = append(result, openai.ToolMessage(msg.Content, msg.ToolCallID))
 
 		case schema.RoleUser:
-			// 向后兼容路径：旧代码可能把 Observation 放在 RoleUser + ToolCallID 上。
-			if msg.ToolCallID != "" {
-				result = append(result, openai.ToolMessage(msg.Content, msg.ToolCallID))
-			} else {
-				result = append(result, openai.UserMessage(msg.Content))
-			}
+			result = append(result, openai.UserMessage(msg.Content))
+
 		case schema.RoleAssistant:
 			astParam := openai.ChatCompletionAssistantMessageParam{}
 
