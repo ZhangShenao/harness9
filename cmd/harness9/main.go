@@ -16,27 +16,38 @@ import (
 )
 
 func main() {
+	// 绑定工作路径
 	workDir, err := os.Getwd()
 	if err != nil {
 		log.Fatalf("[main] 获取工作目录失败: %v", err)
 	}
 
+	// 加载环境变量
 	if err := env.Load(filepath.Join(workDir, ".env")); err != nil {
 		log.Fatalf("[main] 加载环境配置失败: %v", err)
 	}
 
+	// 指定 LLMProvider
 	llm, err := provider.NewOpenAIProvider("openai/gpt-5.4-mini")
 	if err != nil {
 		log.Fatalf("[main] 创建 Provider 失败: %v", err)
 	}
 
+	// 创建ToolRegistry并注册Tools
 	registry := tools.NewRegistry()
-	readFileTool := tools.NewReadFileTool(workDir)
-	registry.Register(readFileTool)
+	registry.Register(tools.NewReadFileTool(workDir))
+	registry.Register(tools.NewWriteFileTool(workDir))
+	registry.Register(tools.NewBashTool(workDir))
 
+	// 创建Agent Engine，并关闭慢思考模式
 	eng := engine.NewAgentEngine(llm, registry, workDir, false)
 
-	prompt := "查看下我当前的工作路径下 poem.txt 文件，总结其核心内容"
+	prompt := `
+	帮我完成以下几件事情：
+	1. 通过控制台命令，查看我本地Go语言的具体版本
+	2. 使用Go语言，编写一个简单的 hello.go 脚本，打印字符串 “hello harness9!”
+	3. 编译脚本，并实际执行，确认输出结果
+	`
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
