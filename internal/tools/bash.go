@@ -26,8 +26,12 @@
 //   - deny-list 仅做防"误操作 / LLM 冒失"的基础屏障，不是对抗性 sandbox。
 //     攻击者可通过 base64 解码、$() 子 shell、动态命令构造等方式绕过。
 //     强沙箱需求请在容器 / Jail / seccomp 等更外层解决。
-//   - 手写 tokenizer 不展开变量（`\$HOME` 作字面量处理）、不解析子 shell 内容、
+//   - 手写 tokenizer 不展开变量（`$HOME` 作字面量处理）、不解析子 shell 内容、
 //     不处理 heredoc。LLM 的常规输出场景这些都够用。
+//   - `sh -c "..."` / `bash -c "..."` 内嵌的字符串参数不做递归解析：tokenize
+//     后看到的是 [sh, -c, "内嵌命令"]，内嵌命令作为一整个字符串 token 传给
+//     isDangerousRmArgv 时不会命中 rm 本体。和 $() / heredoc 是同一等级的
+//     "LLM 有心就能绕"限制，需要强隔离请走容器层。
 package tools
 
 import (
