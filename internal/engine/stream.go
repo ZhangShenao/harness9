@@ -233,11 +233,14 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 			results := e.executeToolsStreaming(ctx, ch, turnCount, responseMsg.ToolCalls)
 
 			// --- Observation 阶段：将工具结果追加到上下文 ---
+			// 与 Run 保持一致：使用 RoleTool 并透传 IsError，让 Provider 适配器可以把
+			// 失败信号原样映射到底层 API（如 Anthropic 的 tool_result.is_error）。
 			for i, toolCall := range responseMsg.ToolCalls {
 				observationMsg := schema.Message{
-					Role:       schema.RoleUser,
+					Role:       schema.RoleTool,
 					Content:    results[i].Output,
 					ToolCallID: toolCall.ID,
+					IsError:    results[i].IsError,
 				}
 				contextHistory = append(contextHistory, observationMsg)
 			}

@@ -216,11 +216,16 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 		results := e.executeToolsConcurrently(ctx, turnCount, responseMsg.ToolCalls)
 
 		// --- Observation 阶段 ---
+		// 使用 RoleTool（而非 RoleUser）显式表达"这是工具观察结果"，同时把
+		// ToolResult.IsError 透传到 Message.IsError，让 Provider 适配器可以把失败信号
+		// 原样映射到底层 API（如 Anthropic 的 tool_result.is_error），帮助 LLM 识别
+		// 失败结果而非误当正常输出。
 		for i, toolCall := range responseMsg.ToolCalls {
 			observationMsg := schema.Message{
-				Role:       schema.RoleUser,
+				Role:       schema.RoleTool,
 				Content:    results[i].Output,
 				ToolCallID: toolCall.ID,
+				IsError:    results[i].IsError,
 			}
 			contextHistory = append(contextHistory, observationMsg)
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/harness9/internal/schema"
@@ -180,14 +181,22 @@ func (p *OpenAIProvider) GenerateStream(ctx context.Context, msgs []schema.Messa
 			Role:    schema.RoleAssistant,
 			Content: contentBuf.String(),
 		}
-		for i := 0; i < len(toolAccs); i++ {
-			if acc, ok := toolAccs[i]; ok {
-				msg.ToolCalls = append(msg.ToolCalls, schema.ToolCall{
-					ID:        acc.id,
-					Name:      acc.name,
-					Arguments: []byte(acc.args.String()),
-				})
-			}
+		// 按 Index 升序收集工具调用。
+		// 旧实现使用 `for i := 0; i < len(toolAccs); i++` 遍历 map，
+		// 当 SDK 传回的 index 有跳号（例如 0 和 2，缺 1）时会漏掉 index 2。
+		// 改成显式按 keys 排序后迭代，对任意 index 分布都正确。
+		indices := make([]int, 0, len(toolAccs))
+		for idx := range toolAccs {
+			indices = append(indices, idx)
+		}
+		sort.Ints(indices)
+		for _, idx := range indices {
+			acc := toolAccs[idx]
+			msg.ToolCalls = append(msg.ToolCalls, schema.ToolCall{
+				ID:        acc.id,
+				Name:      acc.name,
+				Arguments: []byte(acc.args.String()),
+			})
 		}
 
 		sendStreamChunk(ctx, ch, schema.StreamChunk{
@@ -216,9 +225,13 @@ type openaiToolCallAccumulator struct {
 // Generate 和 GenerateStream 共享此方法，避免重复的转换逻辑。
 //
 // 转换规则：
-//   - schema.RoleSystem   → openai.SystemMessage
-//   - schema.RoleUser     → openai.UserMessage 或 openai.ToolMessage（带 ToolCallID 时）
+//   - schema.RoleSystem    → openai.SystemMessage
+//   - schema.RoleUser      → openai.UserMessage
 //   - schema.RoleAssistant → openai.ChatCompletionAssistantMessageParam（含 ToolCalls）
+//   - schema.RoleTool      → openai.ToolMessage（tool_call_id 关联原始请求）
+//
+// 向后兼容：RoleUser + ToolCallID != "" 仍会被识别为 Tool Observation，
+// 保持与早期版本构造的 Message 互通；新代码应显式使用 RoleTool。
 func (p *OpenAIProvider) convertMessages(msgs []schema.Message) []openai.ChatCompletionMessageParamUnion {
 	var result []openai.ChatCompletionMessageParamUnion
 
@@ -227,7 +240,15 @@ func (p *OpenAIProvider) convertMessages(msgs []schema.Message) []openai.ChatCom
 		case schema.RoleSystem:
 			result = append(result, openai.SystemMessage(msg.Content))
 
+		case schema.RoleTool:
+			// OpenAI 的 tool role message 需要 tool_call_id 关联到原始请求。
+			// 注意：OpenAI 的 ChatCompletion API 目前没有独立的 is_error 字段，
+			// 错误信号需要在 Content 文本中体现（harness9 的 registry.Execute
+			// 已经在失败时把错误信息拼进 Output）。
+			result = append(result, openai.ToolMessage(msg.Content, msg.ToolCallID))
+
 		case schema.RoleUser:
+			// 向后兼容路径：旧代码可能把 Observation 放在 RoleUser + ToolCallID 上。
 			if msg.ToolCallID != "" {
 				result = append(result, openai.ToolMessage(msg.Content, msg.ToolCallID))
 			} else {

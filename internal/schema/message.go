@@ -22,6 +22,16 @@ const (
 	// RoleAssistant 模型输出角色（Assistant）：一条 assistant 消息可能包含纯文本推理
 	// （Reasoning）、一个或多个工具调用请求（Parallel ToolCall），或两者的组合。
 	RoleAssistant Role = "assistant"
+
+	// RoleTool 工具执行结果角色（Tool Observation）：工具调用完成后，引擎将 ToolResult
+	// 以 RoleTool 消息形式追加到上下文。Provider 适配器负责将此角色映射到各家 API 的
+	// 原生工具结果格式（OpenAI 的 role=tool，Anthropic 的 tool_result block）。
+	//
+	// 历史上 harness9 使用 RoleUser + ToolCallID != "" 来表达"这是 Observation"，
+	// 但把工具结果和人类输入混在同一角色里既模糊语义，也让 Anthropic 的 is_error 字段
+	// 无处安放。RoleTool 显式表达"这是工具观察结果"，配合 Message.IsError 可完整透传
+	// 工具失败信号给 LLM，便于模型自愈（Self-Healing）重试。
+	RoleTool Role = "tool"
 )
 
 // Message 是对话上下文的基本单元。每个 Turn 会将新消息追加到 Context History 中，
@@ -42,9 +52,14 @@ type Message struct {
 	// 引擎并发执行所有调用，并将每个结果作为独立的 Observation 消息回传。
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
-	// ToolCallID 用于 Observation（user 角色）消息中，标识此消息是对哪个 ToolCall
+	// ToolCallID 用于 Observation（RoleTool 消息）中，标识此消息是对哪个 ToolCall
 	// 的响应（Request-Response 关联），使 LLM 能够将 Observation 与其原始请求进行匹配。
 	ToolCallID string `json:"tool_call_id,omitempty"`
+
+	// IsError 仅在 Role == RoleTool 时有意义。为 true 时，Provider 适配器会把该信号
+	// 透传给底层 API（如 Anthropic 的 tool_result.is_error），让 LLM 明确感知到
+	// "这是失败结果"，触发自愈（Self-Healing）重试，而不是误把错误文本当成正常输出。
+	IsError bool `json:"is_error,omitempty"`
 }
 
 // ToolCall 代表模型发出的单个工具调用请求。模型指定要调用的已注册工具名称，

@@ -428,8 +428,14 @@ func TestToolErrorResult(t *testing.T) {
 	}
 
 	lastMsg := p.calls[1].messages[len(p.calls[1].messages)-1]
-	if lastMsg.Role != schema.RoleUser {
-		t.Fatal("observation should be user role")
+	if lastMsg.Role != schema.RoleTool {
+		t.Fatalf("observation should be tool role, got %s", lastMsg.Role)
+	}
+	if !lastMsg.IsError {
+		t.Fatal("observation for a failed tool call should have IsError=true")
+	}
+	if lastMsg.ToolCallID != "c1" {
+		t.Fatalf("observation ToolCallID mismatch: got %q, want %q", lastMsg.ToolCallID, "c1")
 	}
 	if !strings.Contains(lastMsg.Content, "command not found") {
 		t.Fatal("observation should contain error output")

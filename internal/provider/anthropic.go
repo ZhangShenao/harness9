@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -206,14 +207,22 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, msgs []schema.Me
 			Role:    schema.RoleAssistant,
 			Content: contentBuf.String(),
 		}
-		for i := 0; i < len(toolAccs); i++ {
-			if acc, ok := toolAccs[i]; ok {
-				msg.ToolCalls = append(msg.ToolCalls, schema.ToolCall{
-					ID:        acc.id,
-					Name:      acc.name,
-					Arguments: []byte(acc.args.String()),
-				})
-			}
+		// 按 Index 升序收集工具调用。
+		// 旧实现使用 `for i := 0; i < len(toolAccs); i++` 遍历 map，
+		// 当 SDK 传回的 index 有跳号（例如 0 和 2，缺 1）时会漏掉 index 2。
+		// 改成显式按 keys 排序后迭代，对任意 index 分布都正确。
+		indices := make([]int, 0, len(toolAccs))
+		for idx := range toolAccs {
+			indices = append(indices, idx)
+		}
+		sort.Ints(indices)
+		for _, idx := range indices {
+			acc := toolAccs[idx]
+			msg.ToolCalls = append(msg.ToolCalls, schema.ToolCall{
+				ID:        acc.id,
+				Name:      acc.name,
+				Arguments: []byte(acc.args.String()),
+			})
 		}
 
 		sendStreamChunk(ctx, ch, schema.StreamChunk{
@@ -242,9 +251,17 @@ type anthropicToolCallAccumulator struct {
 // Generate 和 GenerateStream 共享此方法。
 //
 // 转换规则：
-//   - schema.RoleSystem   → 提取为独立的 systemPrompt 返回值（Anthropic API 要求）
-//   - schema.RoleUser     → anthropic.NewUserMessage（含 ToolResultBlock 或 TextBlock）
+//   - schema.RoleSystem    → 提取为独立的 systemPrompt 返回值（Anthropic API 要求）
+//   - schema.RoleUser      → anthropic.NewUserMessage（TextBlock）
 //   - schema.RoleAssistant → anthropic.NewAssistantMessage（含 TextBlock 和 ToolUseBlock）
+//   - schema.RoleTool      → anthropic.NewUserMessage（ToolResultBlock，携带 is_error）
+//
+// 关键修复：RoleTool 的 Message.IsError 会被透传到 tool_result.is_error，
+// 使 Claude 能够明确感知"这次工具调用失败了"，触发更精准的自愈（Self-Healing）
+// 重试，而不是把错误文本当成正常输出解读。
+//
+// 向后兼容：RoleUser + ToolCallID != "" 仍被识别为 Tool Observation，
+// 便于从旧代码平滑迁移；新代码应显式使用 RoleTool 并设置 IsError。
 //
 // 返回 (anthropicMsgs, systemPrompt, error)，systemPrompt 为空表示无系统提示词。
 func (p *AnthropicProvider) convertMessages(msgs []schema.Message) ([]anthropic.MessageParam, string, error) {
@@ -255,10 +272,17 @@ func (p *AnthropicProvider) convertMessages(msgs []schema.Message) ([]anthropic.
 		switch msg.Role {
 		case schema.RoleSystem:
 			systemPrompt = msg.Content
+		case schema.RoleTool:
+			// 核心修复：IsError 原样透传给 Anthropic，让 Claude 准确感知工具失败。
+			anthropicMsgs = append(anthropicMsgs, anthropic.NewUserMessage(
+				anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, msg.IsError),
+			))
 		case schema.RoleUser:
+			// 向后兼容路径：旧代码可能把 Observation 放在 RoleUser + ToolCallID 上。
+			// 此分支无 IsError 信息，默认当成非错误处理，保持旧行为不变。
 			if msg.ToolCallID != "" {
 				anthropicMsgs = append(anthropicMsgs, anthropic.NewUserMessage(
-					anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false),
+					anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, msg.IsError),
 				))
 			} else {
 				anthropicMsgs = append(anthropicMsgs, anthropic.NewUserMessage(
