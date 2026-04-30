@@ -170,7 +170,7 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 			// 检查 context 是否已取消（支持超时和手动中断）
 			select {
 			case <-ctx.Done():
-				sendEvent(ctx, ch, Event{Type: EventError, Data: ctx.Err().Error()})
+				ch <- Event{Type: EventError, Data: ctx.Err().Error()}
 				return
 			default:
 			}
