@@ -29,6 +29,7 @@ export default defineConfig({
             { text: 'Planning 模块：Plan Mode、TodoStore 与执行自动化', link: '/blog/planning-module/' },
             { text: 'Agent Skill 系统 — Progressive Disclosure 思想下的 LLM 能力扩展协议', link: '/blog/agent-skills/' },
             { text: 'Context Engineering — 一个 Agent 如何在有限的 Token 窗口里保持清醒', link: '/blog/context-engineering/' },
+            { text: 'Hooks 与 Human-in-the-Loop：harness9 的工具权限拦截体系', link: '/blog/hooks-human-in-the-loop/' },
           ],
         },
       ],
