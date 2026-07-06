@@ -94,7 +94,7 @@ cmd/harness9/*.go            # TUI/CLI 入口逻辑
 
 ![封面](./images/cover.png)
 
-> 🎨 **封面图 Prompt**（竖屏，适配微信公众号手机传播）
+> 🎨 **封面图 Prompt**（横版，适配文章头图 / 社交分享卡片）
 >
 > *[文章标题]*
 >
@@ -177,7 +177,7 @@ cmd/harness9/*.go            # TUI/CLI 入口逻辑
 
 **每篇文章末尾必须生成一张封面图 Prompt**，文件固定命名为 `cover.png`，要求：
 
-- **竖屏比例 9:16**：适配微信公众号手机端传播，视觉冲击力强
+- **横版比例 16:9**：适配文章头图 / 社交分享卡片，尺寸偏小（建议 ~1280×720），避免大图拖慢加载
 - **精美艺术风格**：封面是文章的门面，不用技术图表，改用**场景叙事式插画**——用一个吉卜力故事场景来隐喻文章的核心主题
 - **核心思想可视化**：用画面传递本文最重要的一个概念，让读者扫一眼封面就能感知文章的气质
 - **文字极简**：封面图本身不写标题文字（标题由公众号排版层覆盖），Prompt 中不要求渲染文字
@@ -191,8 +191,8 @@ lush painterly details, rich layered composition with foreground mid-ground back
 warm golden hour lighting or misty dawn atmosphere, vibrant yet harmonious color palette,
 expressive characters or symbolic objects that embody the theme,
 hand-painted texture, no text, no labels, no diagrams,
-cinematic vertical composition, portrait orientation,
-breathtaking beauty, emotional resonance, 9:16 aspect ratio
+cinematic wide composition, landscape orientation,
+breathtaking beauty, emotional resonance, 16:9 aspect ratio, compact small-size render ~1280x720
 ```
 
 **场景选取原则：**
@@ -211,8 +211,8 @@ Studio Ghibli cinematic illustration style, Hayao Miyazaki aesthetic,
 lush painterly details, rich layered composition with foreground mid-ground background,
 warm golden hour lighting, vibrant yet harmonious color palette,
 expressive character, hand-painted texture, no text, no labels, no diagrams,
-cinematic vertical composition, portrait orientation,
-breathtaking beauty, emotional resonance, 9:16 aspect ratio
+cinematic wide composition, landscape orientation,
+breathtaking beauty, emotional resonance, 16:9 aspect ratio, compact small-size render ~1280x720
 ```
 
 ---
@@ -347,7 +347,7 @@ harness9 是一款 Local-First、轻量级、功能完备、生产可用的通�
 - [ ] `website/.vitepress/config.ts` 侧边栏是否已添加本篇博客条目？
 - [ ] 文章末尾是否有独立的 `## 封面图` 章节？
 - [ ] 封面图文件名是否为 `cover.png`，Markdown 引用路径是否为 `./images/cover.png`？
-- [ ] 封面图 Prompt 是否为竖屏 9:16 比例？
+- [ ] 封面图 Prompt 是否为横版 16:9 比例、且标注了偏小尺寸（~1280×720）？
 - [ ] 封面图 Prompt 是否采用场景叙事式插画（非技术图表），且包含 Ghibli cinematic 风格词？
 - [ ] 封面图场景是否对应文章核心主题的自然类比（非直接画技术组件）？
 
@@ -361,6 +361,6 @@ harness9 是一款 Local-First、轻量级、功能完备、生产可用的通�
 4. **代码来源必须真实**：引用的每一行代码都必须存在于实际源码中
 5. **图片 prompt 密度**：不能吝啬，遇到可视化价值高的内容点必须配图，全文正文图 ≥ 6 张
 6. **图片风格统一**：正文技术图均使用吉卜力简约画风（16:9），不混用其他风格
-7. **封面图必须存在**：每篇文章末尾必须生成封面图 Prompt，竖屏 9:16，场景叙事式，文件名固定 `cover.png`
+7. **封面图必须存在**：每篇文章末尾必须生成封面图 Prompt，横版 16:9、尺寸偏小（~1280×720），场景叙事式，文件名固定 `cover.png`
 8. **封面图禁止画技术图**：封面是情感入口，只用场景隐喻，绝不直接画架构图、流程图或组件图
 9. **唯一输出路径**：博客文章只写入 `website/blog/<slug>/index.md`，**禁止同时写入 `docs/博客/` 或其他目录**，避免产生重复副本
