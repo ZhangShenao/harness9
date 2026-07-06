@@ -488,27 +488,3 @@ Runner.Run
 **SubAgent 不是什么魔法，它最核心的价值就是一个词————隔离**：创建阶段用 `Registry` 划定"存在哪些 SubAgent "的边界，委派阶段用一个普通 `task` 工具划定"如何发起委派"。`ResolveTools` 用于隔离权限，`MemorySession` 用于隔离上下文。
 
 ---
-
-## 封面图
-
-![封面](./images/cover.png)
-
-> 🎨 **封面图 Prompt**（横版，适配文章头图 / 社交分享卡片）
->
-> *SubAgent：把任务交给信得过的伙伴*
->
-> ```
-> A wise old forest guardian owl perched on a branch, carefully wrapping a small glowing
-> scroll and handing it down to a young fox standing at the base of an ancient tree, the fox
-> wears a tiny satchel representing its limited toolset, in the background other animals wait
-> patiently in a line to receive their own scrolls, soft lanterns hang from branches marking
-> a boundary the fox cannot cross, misty forest atmosphere with dappled sunlight breaking
-> through the canopy,
-> Studio Ghibli cinematic illustration style, Hayao Miyazaki aesthetic,
-> lush painterly details, rich layered composition with foreground mid-ground background,
-> warm golden hour lighting or misty dawn atmosphere, vibrant yet harmonious color palette,
-> expressive characters or symbolic objects that embody the theme,
-> hand-painted texture, no text, no labels, no diagrams,
-> cinematic wide composition, landscape orientation,
-> breathtaking beauty, emotional resonance, 16:9 aspect ratio, compact small-size render ~1280x720
-> ```
