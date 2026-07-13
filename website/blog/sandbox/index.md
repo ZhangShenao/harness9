@@ -121,7 +121,7 @@ const (
 )
 ```
 
-`Start` 方法有个关键设计：**反复问几次"好了没"，而不是问一次就当真**。`docker run -d` 拿到容器 ID 并不代表容器已经真正准备好干活了，尤其是要拉取新镜像或者启动比较重的场景时更明显。所以 `Start` 拿到 dockerID 之后，会进入一个每 200 毫秒问一次的轮询循环，反复执行 `docker inspect --format={{.State.Running}}`，直到看到返回 `true`，或者等到 `StartTimeout`（默认 30 秒）到点还没成功，就转成 `StateFailed`：
+`Start` 方法有个关键设计：**反复问几次"好了没"，而不是问一次就当真**。`docker run -d` 拿到容器 ID 并不代表容器已经真正准备好干活了，尤其是要拉取新镜像或者启动比较重的场景时更明显。所以 `Start` 拿到 dockerID 之后，会进入一个每 200 毫秒问一次的轮询循环，反复执行 <code v-pre>docker inspect --format={{.State.Running}}</code>，直到看到返回 `true`，或者等到 `StartTimeout`（默认 30 秒）到点还没成功，就转成 `StateFailed`：
 
 ```go
 for {
