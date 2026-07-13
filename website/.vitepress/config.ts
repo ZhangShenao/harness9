@@ -31,6 +31,7 @@ export default defineConfig({
             { text: 'Context Engineering — 一个 Agent 如何在有限的 Token 窗口里保持清醒', link: '/blog/context-engineering/' },
             { text: 'Hooks 与 Human-in-the-Loop：harness9 的工具权限拦截体系', link: '/blog/hooks-human-in-the-loop/' },
             { text: 'Sub-Agent：harness9 如何让主代理把任务外包出去', link: '/blog/sub-agent/' },
+            { text: 'Sandbox：把 Agent 的手脚关进一座悬浮孤岛', link: '/blog/sandbox/' },
           ],
         },
       ],
