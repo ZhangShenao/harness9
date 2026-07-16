@@ -1,0 +1,47 @@
+name: Star History
+
+# GitHub 于 2026-06-30 起限制 stargazers API，仅允许仓库自身的 owner/collaborator
+# 读取 starred_at 时间戳，导致 star-history.com 等第三方服务无法再为非自有仓库生成
+# 实时图表。本工作流使用仓库自带的 GITHUB_TOKEN（对本仓库天然具备访问权限）定期离线
+# 生成静态 SVG 并提交回仓库，README 直接引用该本地文件，不再依赖第三方服务的可用性。
+on:
+  schedule:
+    - cron: "0 0 * * *" # 每天 UTC 00:00
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: star-history
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update Chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 生成 star-history.svg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: go run ./cmd/starhistory -output star-history.svg
+
+      - name: 提交变更
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add star-history.svg
+          if git diff --cached --quiet; then
+            echo "star-history.svg 无变化，跳过提交"
+            exit 0
+          fi
+          git commit -m "chore: 更新 star history 图表"
+          git push

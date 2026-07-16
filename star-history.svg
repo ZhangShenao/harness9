@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 420" width="860" height="420" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
+  <style>
+    .bg { fill: #ffffff; }
+    .grid { stroke: #d0d7de; stroke-width: 1; }
+    .axis { fill: #57606a; font-size: 12px; }
+    .title { fill: #24292f; font-size: 16px; font-weight: 600; }
+    .footer { fill: #8c959f; font-size: 11px; }
+    .area { fill: #2f81f7; opacity: 0.12; }
+    .line { stroke: #2f81f7; stroke-width: 2; fill: none; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; }
+      .grid { stroke: #30363d; }
+      .axis { fill: #8b949e; }
+      .title { fill: #c9d1d9; }
+      .footer { fill: #6e7681; }
+      .area { fill: #58a6ff; opacity: 0.15; }
+      .line { stroke: #58a6ff; }
+    }
+  </style>
+  <rect class="bg" x="0" y="0" width="860" height="420"/>
+  <text class="title" x="56" y="26">ZhangShenao/harness9 Star History</text>
+  <line class="grid" x1="56" y1="380.0" x2="836" y2="380.0"/><line class="grid" x1="56" y1="297.0" x2="836" y2="297.0"/><line class="grid" x1="56" y1="214.0" x2="836" y2="214.0"/><line class="grid" x1="56" y1="131.0" x2="836" y2="131.0"/><line class="grid" x1="56" y1="48.0" x2="836" y2="48.0"/>
+  <text class="axis" x="48" y="384.0" text-anchor="end">0</text><text class="axis" x="48" y="301.0" text-anchor="end">39</text><text class="axis" x="48" y="218.0" text-anchor="end">78</text><text class="axis" x="48" y="135.0" text-anchor="end">117</text><text class="axis" x="48" y="52.0" text-anchor="end">156</text>
+  <path class="area" d="M 56.0,363.0 L 150.1,360.9 L 163.6,358.8 L 203.9,356.6 L 217.4,352.4 L 230.8,348.2 L 271.2,339.7 L 284.6,335.4 L 311.5,333.3 L 325.0,312.1 L 338.4,303.6 L 351.9,293.0 L 365.3,280.2 L 378.8,259.0 L 392.2,233.5 L 405.7,210.2 L 419.1,189.0 L 432.6,163.5 L 446.0,150.7 L 459.4,140.1 L 472.9,108.3 L 620.8,104.0 L 674.6,101.9 L 688.1,99.8 L 741.9,97.7 L 809.1,95.5 L 836.0,91.3 L 836.0,380.0 L 56.0,380.0 Z"/>
+  <path class="line" d="M 56.0,363.0 L 150.1,360.9 L 163.6,358.8 L 203.9,356.6 L 217.4,352.4 L 230.8,348.2 L 271.2,339.7 L 284.6,335.4 L 311.5,333.3 L 325.0,312.1 L 338.4,303.6 L 351.9,293.0 L 365.3,280.2 L 378.8,259.0 L 392.2,233.5 L 405.7,210.2 L 419.1,189.0 L 432.6,163.5 L 446.0,150.7 L 459.4,140.1 L 472.9,108.3 L 620.8,104.0 L 674.6,101.9 L 688.1,99.8 L 741.9,97.7 L 809.1,95.5 L 836.0,91.3"/>
+  <text class="axis" x="56.0" y="400" text-anchor="middle">2026-05-19</text><text class="axis" x="211.8" y="400" text-anchor="middle">2026-05-30</text><text class="axis" x="367.6" y="400" text-anchor="middle">2026-06-11</text><text class="axis" x="523.9" y="400" text-anchor="middle">2026-06-22</text><text class="axis" x="679.7" y="400" text-anchor="middle">2026-07-04</text><text class="axis" x="836.0" y="400" text-anchor="middle">2026-07-16</text>
+  <text class="footer" x="836" y="414" text-anchor="end">自动生成 · 2026-07-16 07:45 UTC</text>
+</svg>

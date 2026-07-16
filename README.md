@@ -579,7 +579,9 @@ harness9/
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ZhangShenao/harness9&type=Date)](https://star-history.com/#ZhangShenao/harness9&Date)
+[![Star History Chart](star-history.svg)](https://github.com/ZhangShenao/harness9/stargazers)
+
+> GitHub 于 2026-06-30 起限制了 stargazers API 的访问权限（仅 owner/collaborator 可读），star-history.com 等第三方实时徽章因此普遍失效。上图由 [`.github/workflows/star-history.yml`](.github/workflows/star-history.yml) 每日用仓库自身 `GITHUB_TOKEN` 离线生成并提交为静态文件，不依赖任何第三方服务的实时可用性。
 
 ---
 
