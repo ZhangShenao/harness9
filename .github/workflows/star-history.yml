@@ -2,8 +2,12 @@ name: Star History
 
 # GitHub 于 2026-06-30 起限制 stargazers API，仅允许仓库自身的 owner/collaborator
 # 读取 starred_at 时间戳，导致 star-history.com 等第三方服务无法再为非自有仓库生成
-# 实时图表。本工作流使用仓库自带的 GITHUB_TOKEN（对本仓库天然具备访问权限）定期离线
-# 生成静态 SVG 并提交回仓库，README 直接引用该本地文件，不再依赖第三方服务的可用性。
+# 实时图表。
+#
+# 注意：默认的 secrets.GITHUB_TOKEN（github-actions[bot] 身份）实测不被 GitHub 认作
+# owner/collaborator，会被同样的限制拒绝（403）。生成步骤必须使用仓库 owner/collaborator
+# 账号生成的 Personal Access Token（存为 secrets.STARGAZERS_PAT），而非默认 GITHUB_TOKEN。
+# 提交回仓库的 git push 不受此限制，继续使用默认 GITHUB_TOKEN 即可。
 on:
   schedule:
     - cron: "0 0 * * *" # 每天 UTC 00:00
@@ -31,7 +35,7 @@ jobs:
 
       - name: 生成 star-history.svg
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.STARGAZERS_PAT }}
         run: go run ./cmd/starhistory -output star-history.svg
 
       - name: 提交变更
