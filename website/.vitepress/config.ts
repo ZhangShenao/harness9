@@ -32,6 +32,7 @@ export default defineConfig({
             { text: 'Hooks 与 Human-in-the-Loop：harness9 的工具权限拦截体系', link: '/blog/hooks-human-in-the-loop/' },
             { text: 'Sub-Agent：harness9 如何让主代理把任务外包出去', link: '/blog/sub-agent/' },
             { text: 'Sandbox：把 Agent 的手脚关进一座悬浮孤岛', link: '/blog/sandbox/' },
+            { text: 'Observability：给 Agent 装一台看清内部运转的望远镜', link: '/blog/observability/' },
           ],
         },
       ],
