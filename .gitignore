@@ -47,3 +47,7 @@ swe-bench-lite.jsonl
 # SWE-bench 运行产物（predictions / trajectory 日志 / run_summary / 官方评分 JSON），均为生成物
 swebench-results/
 *.harness9-lite-*.json
+
+# Terminal-Bench (Harbor) pilot：预编译二进制与评测结果均为生成物，不纳入版本控制
+benchmarks/terminal_bench/bin/
+benchmarks/terminal_bench/runs/
