@@ -129,12 +129,13 @@ out, err := c.CombinedOutput()
 
 ### P0 — bash 后台任务挂起（决定性、内核级）
 
-1. **`internal/tools/bash.go` `runLocal`**：不再用 `exec.CommandContext` + `CombinedOutput()` 的"一次性等待+读取"模式执行原始命令字符串。推荐两条互补路径：
-   - **路线 A（进程组隔离）**：用 `syscall.SysProcAttr{Setpgid: true}` 给顶层 `bash -c` 进程分配独立进程组；超时或取消时改用 `syscall.Kill(-pgid, syscall.SIGKILL)` 杀整个进程组而非单个 PID——解决"SIGKILL 打不穿孙进程"的问题，但**打不穿已经因 `&` 完全脱离进程组、且被 `nohup` 忽略了 HUP 的后台任务**（`kv-store-grpc` 场景恰好如此，因为任务要求"保持运行"，杀死它反而是错误行为）。
-   - **路线 B（流式读取 + 不等待孙进程）**：改用 `StdoutPipe()`/`StderrPipe()` + `cmd.Start()` 后立即用 goroutine 流式读取，只等待**顶层进程**（`bash -c` 本身）退出（`cmd.Wait()` 在部分平台仍会等 fd 全关闭，需要配合 `Setpgid`+显式关闭 pipe 写端或改用 `pty`/中间层脚本包裹用户命令为 `cmd 2>&1 & disown; wait $!`-类模式规避）。更稳妥的落地：在传给 bash 的命令外包一层 `timeout`-safe 的 subshell 隔离，即把 LLM 原始 `command` 用 `bash -c '{ %s ; } 3>&- ' ` 或显式在 harness 侧对识别出末尾 `&` 的模式追加 `disown`/重定向 stdin/stdout/stderr 到 `/dev/null` 的兜底逻辑。
-   - 二者选一均可解决 kv-store-grpc 场景；**建议路线 A 优先**（改动小、语义清晚，只需在 `exec.Cmd` 构造时加 `SysProcAttr`，超时时改为杀进程组），路线 B 作为后续增强。
-2. **补充自动化测试**：在 `internal/tools/bash_test.go` 中新增一个表驱动用例，精确复现本文档 §1.3 的命令模式（`cd X && nohup <long-running> > file 2>&1 & echo ...`），断言在远小于 120s 的时间内返回，而不是等满超时——防止此问题在未来的实现变更中悄悄复发。
-3. **`runInSandbox`（Docker 路径）同构缺陷，已通过完整调用链源码交叉验证**：`DockerEnvironment.RunBash`（`internal/sandbox/docker_environment.go` 第 35–44 行）把 LLM 的原始命令整体传给 `docker exec -w workDir containerID bash -c cmd`，实际执行通过其 `run` 字段（`cmdRunner` 函数类型）完成；生产环境下这个字段在 `internal/sandbox/manager.go` 第 56 行被注入为 `realCmdRunner`（`internal/sandbox/container.go` 第 52–55 行）——也就是说 `RunBash` 最终确实落到 `exec.CommandContext("docker", args...).CombinedOutput()`，与 `bash.go` `runLocal` 是**同一个 Go 标准库模式**，调用链已完整追溯（`RunBash` → `e.run` → `realCmdRunner` 注入点），不是"猜测两者用了类似写法"。只要 `cmd` 内部包含 `A && B &` 这种复合后台任务，容器内 fork 出的中间子 shell 同样会继承 `docker exec` 进程的 stdout/stderr 管道写端，Go 侧的 `CombinedOutput()` 一样会等到容器内后台进程退出才返回。**唯一未验证的一环**：当前 pilot 环境 Docker 二进制本身不可用（两条日志都记录了 `docker: executable file not found in $PATH`），未能端到端实测复现容器内的挂起现象本身——源码调用链已确认，但"bash 在 `docker exec` 场景下的 job-control 行为与本机场景完全一致"这一步仍是合理推断而非实测。理应视为与 `runLocal` 同一等级的缺陷，需要在修复 `bash.go` 时同步修复 `internal/sandbox/container.go` 的 `realCmdRunner`（两处收敛到同一套进程组隔离逻辑），而不是只修一处。
+1. **【已修复，commit `5e80576`（+ review 修正 `27c6ce4`）】`internal/tools/bash.go` `runLocal`**：本节原先讨论的"路线 A（进程组隔离）/路线 B（流式读取）"都没有采用——两者都需要额外处理"SIGKILL 打不穿已脱离进程组的孙进程"这类边界情况。**实际采用了更简单、已实验验证的第三条路径**：把 `c.Stdout`/`c.Stderr` 直接赋值为 `*os.File`（临时文件）而非走 `CombinedOutput()`。Go 对 `*os.File` 类型的 Stdout/Stderr 走原始 fd 直传，不经 pipe + 拷贝 goroutine，`Wait()` 只等待直接子进程（`bash -c` 本身）退出——完全不需要进程组/信号管理，天然不会误杀"任务要求保持运行"的后台任务。已用真实命令验证：`cd X && nohup sleep 20 > file 2>&1 & echo ...` 从挂起 20s 降到 ~5ms 返回，且事后确认后台进程仍在运行未被杀。
+2. **【已修复，commit `5e80576`】补充自动化测试**：`internal/tools/bash_test.go` 新增 `TestBashTool_Execute_BackgroundedProcessDoesNotHang`，精确复现本文档 §1.3 的命令模式，断言 3 秒内返回且后台进程未被误杀（按精确 PID 判活，而非命令行子串匹配，避免共享 CI 机器上的误命中）。
+3. **【已订正：Docker 路径未复现，未做改动】`runInSandbox`（Docker 路径）**：原先推测 `DockerEnvironment.RunBash`（经 `internal/sandbox/manager.go:56` 注入的 `realCmdRunner`）与 `runLocal` 用同一个 `CombinedOutput()` 模式，理应存在同构挂起缺陷；这是一个**基于源码调用链的合理推断，从未端到端实测**（当时 pilot 环境没有 Docker 二进制）。修复 P0 时用真实 Docker 容器补做了这项验证（6+ 组复现变体，含与 §1.3 完全一致的命令模式），**结果是不能复现**：`docker exec` 是连接 dockerd 的瘦客户端，命令执行与 I/O 多路复用发生在守护进程的 API/socket 协议层，不是宿主机 OS 级的 pipe fd 继承语义——`realCmdRunner` 端的 `Wait()` 不会像本地 fork 的 `bash -c "... &"` 那样被容器内继续运行的后台进程拖住。**结论：`internal/sandbox/container.go` 的 `realCmdRunner` 未做任何改动**（改一个没有复现的"缺陷"违反 YAGNI），改为新增一条回归守卫测试
+（`internal/sandbox/docker_environment_integration_test.go` 的
+`TestDockerEnvironmentIntegration_RunBash_BackgroundedProcessDoesNotHang`，commit `a8f881e`）——
+如果未来某个 Docker/OS 组合确实出现了这种挂起，这个测试会失败并报警。这是本文档"对抗式复核"方法论
+的又一次生效：源码层面看起来合理的推断，实测后被驳回。
 
 ### P1 — LLM 生成重试的错误分类（中杠杆）
 
@@ -167,7 +168,9 @@ out, err := c.CombinedOutput()
 **结论：不建议现在扩大到全量 89 题**。18 个任务的样本量已经挖出 1 个可复现、有源码证据的内核级缺陷（kv-store-grpc 的 bash 挂起）和 1 类命中 3 个任务的 P1 基础设施韧性问题——与 SWE-bench 当年"24 实例即可挖干净"的经验一致，样本量本身不是当前的瓶颈。在修复 P0 之前扩大规模，只会让"需要起后台服务"这类任务反复暴露同一个已知缺陷，边际信息量低；而每个任务真实耗时 3–15 分钟 + Docker 环境搭建，本轮 18+10=28 次真实执行合计约 2.5 小时，扩大到 89 题的成本不是可以忽略的。
 
 **建议顺序**：
-1. 落地 P0（`internal/tools/bash.go` `runLocal` 改为进程组隔离 + `internal/sandbox/container.go` `realCmdRunner` 同步修复 + 补充 §4 item 2 提到的回归测试）和 P1（`generateWithRetry` 按错误类别区分重试预算）。
+1. 【已完成】落地 P0（`internal/tools/bash.go` `runLocal` 改用临时文件承接输出，commit `5e80576`；
+   Docker 路径经真实容器验证未复现，未做改动，见 §4 item 3）和 P1（`generateWithRetry` 按错误
+   类别区分重试预算）。
 2. 排查并修复 compile-compcert / merge-diff-arc-agi-task / sqlite-with-gcov 三个任务命中的 TLS 证书信任问题（这 3 个任务目前从未被真正测试过，网络环境问题不解决，扩大规模也测不出它们的真实能力）。
 3. 修复后再评估是否扩大到全量 89 题——彼时的目标应该是"验证 P0/P1 修复是否解决了同类问题、有没有暴露新的根因类型"，而不是单纯为了对标官方 leaderboard 刷分。
 
