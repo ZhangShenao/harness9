@@ -11,10 +11,10 @@ hero:
   actions:
     - theme: brand
       text: 快速开始 →
-      link: /docs/quick-start
+      link: /zh/docs/quick-start
     - theme: alt
       text: 查看文档
-      link: /docs/tui
+      link: /zh/docs/tui
 
 features:
   - icon: 🎯
@@ -81,4 +81,4 @@ cd /your/project && harness9
 
 > 在 TTY 环境中自动进入全屏 TUI；管道/CI 环境退回 CLI REPL 模式。
 >
-> 更多配置选项见 [快速启动指南](/docs/quick-start)。
+> 更多配置选项见 [快速启动指南](/zh/docs/quick-start)。
