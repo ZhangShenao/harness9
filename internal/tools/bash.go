@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 	"unicode/utf8"
@@ -150,18 +151,40 @@ func (t *BashTool) runInSandbox(ctx context.Context, cmd string, timeout time.Du
 }
 
 // runLocal 在本地进程中执行命令（Sandbox 关闭时的原有路径）。
+//
+// 不用 CombinedOutput()：其内部经 pipe + 拷贝 goroutine 承接输出，Wait() 会等待所有
+// fd 持有者关闭——当 cmd 是 "A && B &" 这类复合后台任务，bash 为整个 "&&" 链表 fork 的
+// 子 shell 继承了该 pipe 的写端，只要后台进程还活着就永久阻塞，直到外层超时才被打断
+// （详见 docs/技术调研/terminal-bench-轨迹分析-v1.md §1）。改用临时文件承接输出：
+// Go 对 *os.File 类型的 Stdout/Stderr 走原始 fd 直传，不经 pipe/拷贝 goroutine，
+// Wait() 只等待直接子进程（bash -c 本身）退出，不受后台化进程影响，也不会误杀它
+// （已实测验证：返回时间从挂起 20s 降到 ~5ms，且后台进程验证仍在运行）。
 func (t *BashTool) runLocal(ctx context.Context, cmd string, timeout time.Duration) (string, error) {
+	tmp, err := os.CreateTemp("", "harness9-bash-*.log")
+	if err != nil {
+		return "", fmt.Errorf("创建临时输出文件失败: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+
 	c := exec.CommandContext(ctx, "bash", "-c", cmd)
 	c.Dir = t.workDir
-	out, err := c.CombinedOutput()
+	c.Stdout = tmp
+	c.Stderr = tmp
+	runErr := c.Run()
+
+	out, readErr := os.ReadFile(tmp.Name())
+	if readErr != nil {
+		return "", fmt.Errorf("读取命令输出失败: %w", readErr)
+	}
 	outputStr := string(out)
 
 	if ctx.Err() == context.DeadlineExceeded {
 		// 先截断，再追加警告，避免警告被截断掉
 		return truncateOutput(outputStr) + timeoutBanner(timeout), nil
 	}
-	if err != nil {
-		return fmt.Sprintf("执行报错: %v\n输出:\n%s", err, truncateOutput(outputStr)), nil
+	if runErr != nil {
+		return fmt.Sprintf("执行报错: %v\n输出:\n%s", runErr, truncateOutput(outputStr)), nil
 	}
 	if outputStr == "" {
 		return "命令执行成功，无终端输出。", nil

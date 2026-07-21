@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -132,6 +133,48 @@ func TestBashTool_Execute_ParentContextCancelled(t *testing.T) {
 	// string) — never an empty string or a spurious success message.
 	if out == "" || strings.Contains(out, "成功") {
 		t.Errorf("killed command should return informative output, got: %q", out)
+	}
+}
+
+// TestBashTool_Execute_BackgroundedProcessDoesNotHang 验证形如 "A && B &" 的复合后台任务
+// 命令能立刻返回（不等待后台进程退出），且后台进程本身不会被误杀。
+// 复现 docs/技术调研/terminal-bench-轨迹分析-v1.md §1（R1）：CombinedOutput() 内部经
+// pipe + 拷贝 goroutine，Wait() 会等待所有 fd 持有者（包括 bash 为 "&&" 链表 fork 的
+// 子 shell）关闭；只要后台任务还活着，就永久阻塞直到外层超时。
+func TestBashTool_Execute_BackgroundedProcessDoesNotHang(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewBashTool(dir, WithBashTimeout(5*time.Second))
+
+	cmd := fmt.Sprintf(`cd %s && nohup sleep 20 > bg.log 2>&1 & echo "started"`, dir)
+	args, err := json.Marshal(bashArgs{Command: cmd})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	out, execErr := tool.Execute(context.Background(), args)
+	elapsed := time.Since(start)
+
+	if execErr != nil {
+		t.Fatalf("bash should never return Go error, got: %v", execErr)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("应在后台进程退出前就返回（不应等待 sleep 20），实际耗时 %v", elapsed)
+	}
+	if !strings.Contains(out, "started") {
+		t.Errorf("应捕获到前台部分的输出，got %q", out)
+	}
+
+	t.Cleanup(func() {
+		_ = exec.Command("pkill", "-f", "sleep 20").Run()
+	})
+
+	// 确认后台进程没有被误杀——不能用"杀进程组"解决挂起，否则会杀掉任务明确要求
+	// "保持运行"的后台服务（如启动一个长驻服务器）。
+	time.Sleep(200 * time.Millisecond)
+	checkOut, _ := exec.Command("pgrep", "-f", "sleep 20").CombinedOutput()
+	if strings.TrimSpace(string(checkOut)) == "" {
+		t.Error("后台进程应仍在运行，不应被本次修复误杀")
 	}
 }
 
