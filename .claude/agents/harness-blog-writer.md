@@ -288,21 +288,21 @@ summary: ""
 
 **完成写入后，还需更新 VitePress 侧边栏配置：**
 
-读取 `website/.vitepress/config.ts`，在 `sidebar['/blog/']` 数组的 items 列表中追加新条目：
+读取 `website/.vitepress/config.ts`，在中文（`zh`）locale 的 `sidebar['/zh/blog/']` 数组的 items 列表中追加新条目：
 
 ```ts
-{ text: '<文章标题>', link: '/blog/<slug>/' }
+{ text: '<文章标题>', link: '/zh/blog/<slug>/' }
 ```
 
-如果 `'/blog/'` 侧边栏尚不存在，则创建整段：
+如果 `'/zh/blog/'` 侧边栏尚不存在，则创建整段：
 
 ```ts
-'/blog/': [
+'/zh/blog/': [
   {
     text: '技术博客',
     items: [
-      { text: '所有文章', link: '/blog/' },
-      { text: '<文章标题>', link: '/blog/<slug>/' },
+      { text: '所有文章', link: '/zh/blog/' },
+      { text: '<文章标题>', link: '/zh/blog/<slug>/' },
     ],
   },
 ],
@@ -317,7 +317,7 @@ summary: ""
 
 harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **官网**：[https://zhangshenao.github.io/harness9/zh/](https://zhangshenao.github.io/harness9/zh/)
 - **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
 ⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
