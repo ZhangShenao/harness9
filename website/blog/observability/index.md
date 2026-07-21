@@ -1,89 +1,89 @@
 ---
-title: "Observability：给 Agent 装一台看清内部运转的望远镜"
+title: "Observability: Giving the Agent a Telescope Into Its Own Machinery"
 date: 2026-07-20
 tags: [harness9, agent, golang, observability, opentelemetry, langfuse]
-summary: "harness9 的 Observability 模块用三个已有扩展点 ———— EngineObserver、LLMProvider 装饰器、ToolHook ———— 把 OpenTelemetry 接进 Agent 的每一次运行，核心引擎不知道自己被观测。本文讲清楚 Span 为什么是四层嵌套、6 个 Metrics 怎么选、以及接入 Langfuse 之后为什么能自动看到 Trace 时间线和 Token 费用。"
+summary: "harness9's Observability module wires OpenTelemetry into every Agent run through three extension points that already existed — EngineObserver, an LLMProvider decorator, and ToolHook — so the core engine has no idea it's being observed. This post walks through why the Span tree has exactly four nested layers, how the 6 Metrics were chosen, and why hooking up Langfuse gives you an automatic Trace timeline and token cost breakdown for free."
 ---
 
-# Observability：给 Agent 装一台看清内部运转的望远镜
+# Observability: Giving the Agent a Telescope Into Its Own Machinery
 
-## 关于 harness9
+## About harness9
 
-harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
+harness9 is a Local-First, lightweight, feature-complete, production-ready general-purpose Agent framework for Go.
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
-- **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
+- **Website**: [https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **GitHub**: [https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
-⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
+⭐ Stars are the most direct way to support open-source work — Issues and PRs are welcome.
 
 ---
 
 ## TL;DR
 
-- Span 树只有四层：`harness9.interaction → harness9.turn → harness9.llm_request / harness9.tool`，每一层都对应 Agent Engine 的真实执行阶段，不是硬凑的层级
-- 可观测性接入靠的是三个已经存在的接口 ———— `EngineObserver`、`LLMProvider`、`ToolHook` ———— 核心引擎代码一行都没改
-- 6 个 Metrics 分两类：耗时用 Histogram（看分布），计数用 Counter（看总量），工具相关的两个还带上了"工具名 + 成功/失败"这两个标签，方便按维度筛选
-- Langfuse 是一个专门给 LLM 应用做可观测的平台，接上它之后，每次 Agent 运行会自动变成一条能展开查看的时间线，还能自动算出这次对话花了多少钱
-- Langfuse 的属性名是有讲究的：写对名字数据才会显示在界面上，名字如果错了数据照样可以上报，但界面上什么都看不到
+- The Span tree has exactly four layers: `harness9.interaction → harness9.turn → harness9.llm_request / harness9.tool`, each one mapping to a real execution phase of the Agent Engine, not an arbitrarily invented hierarchy
+- Observability is wired in through three interfaces that already existed — `EngineObserver`, `LLMProvider`, and `ToolHook` — not a single line of the core engine was changed
+- The 6 Metrics fall into two categories: durations use Histogram (to see the distribution), counts use Counter (to see the running total); the two tool-related metrics also carry "tool name + success/failure" as labels, so you can slice the data by dimension
+- Langfuse is a platform purpose-built for observability in LLM applications; once it's connected, every Agent run automatically turns into an expandable timeline, and it computes how much that conversation cost in real money
+- Langfuse's attribute names matter: get the names right and the data shows up in the UI; get them wrong and the data still gets reported, but nothing renders on screen
 
-## 本文你将学到
+## What you'll learn from this post
 
-- Span 四层嵌套分别对应引擎运行的哪几个阶段，父子关系是怎么串起来的
-- 三个已有接口是怎么被复用来承载可观测性逻辑的，为什么这样做比直接改核心代码更好
-- 6 个 Metrics 怎么分类、每个类型该用 Counter 还是 Histogram
-- Langfuse 到底是什么、解决了什么问题，harness9 为什么选它
-- 属性名怎么写 Langfuse 才认得出来，token 费用是怎么被自动算出来的
+- Which stage of the engine's execution each of the four nested Span layers maps to, and how the parent-child relationships are threaded together
+- How the three pre-existing interfaces were repurposed to carry observability logic, and why that's better than editing the core code directly
+- How the 6 Metrics are categorized, and when to use Counter versus Histogram for each type
+- What Langfuse actually is, what problem it solves, and why harness9 chose it
+- How to name attributes so Langfuse recognizes them, and how token cost gets computed automatically
 
 ---
 
-## 先看一眼 Trace 长啥样
+## First, a look at what a Trace looks like
 
-harness9 跑一次 Agent 任务，接入 Langfuse 之后，看到的是这样一棵树：
+Run an Agent task with harness9 hooked up to Langfuse, and what you see is a tree that looks like this:
 
 ```
 harness9.interaction   [session.id="abc123"]
 │
-├── harness9.turn   [第 1 轮]
-│   ├── harness9.llm_request   [调用了一次 LLM，用了多少 token]
-│   ├── harness9.tool   [bash 执行，成功]
-│   └── harness9.tool   [read_file 执行，成功]
+├── harness9.turn   [Turn 1]
+│   ├── harness9.llm_request   [one LLM call, so many tokens used]
+│   ├── harness9.tool   [bash executed, succeeded]
+│   └── harness9.tool   [read_file executed, succeeded]
 │
-└── harness9.turn   [第 2 轮]
+└── harness9.turn   [Turn 2]
     └── harness9.llm_request   [...]
 ```
 
-这棵树是怎么长出来的、每一层是谁画的、Langfuse 又是怎么把它渲染成一条能点开看的时间线 ———— 这是本文要讲的全部内容。
+How this tree grows, who draws each layer, and how Langfuse renders it into a clickable timeline — that's everything this post is about.
 
 ---
 
-## Span 树的层级
+## The layers of the Span tree
 
-把 Agent 的一次运行拆开看，天然就只有四个阶段：一次完整的对话、对话里的每一轮、每一轮里调用的那次 LLM、每一轮里执行的每个工具。harness9 的 Span 层级就是照着这四个阶段画的，一层不多一层不少：
+Break down a single Agent run and there are naturally only four stages: one complete conversation, each turn within that conversation, the one LLM call made in each turn, and each tool executed within that turn. harness9's Span hierarchy is drawn directly from these four stages — no more, no less:
 
-| Span | 对应引擎的哪个阶段 |
+| Span | Which engine stage it maps to |
 |------|------------------|
-| `harness9.interaction` | 用户发一句话到 Agent 最终给出结果，整个过程 |
-| `harness9.turn` | ReAct Loop 里的一轮：一次 LLM 调用 + 这一轮触发的工具执行 |
-| `harness9.llm_request` | 具体的一次 LLM API 调用 |
-| `harness9.tool` | 具体的一次工具执行 |
+| `harness9.interaction` | The entire process, from the user's message to the Agent's final result |
+| `harness9.turn` | One turn of the ReAct Loop: one LLM call plus whatever tool executions it triggers |
+| `harness9.llm_request` | One concrete LLM API call |
+| `harness9.tool` | One concrete tool execution |
 
-再往下拆就是 HTTP 请求细节了，没必要拆；`interaction` 和 `turn` 合并的话，"哪一轮变慢了"这个最常被问到的问题就没法回答了。四层刚好卡在"有意义"和"没必要"之间。
+Going any deeper gets into HTTP request internals, which isn't worth splitting out; merging `interaction` and `turn` together, on the other hand, would make it impossible to answer the single most common question — "which turn got slow?" Four layers sits exactly at the line between "meaningful" and "unnecessary."
 
-这四层 Span 分别由三个不同的组件在不同时间创建：`interaction` 和 `turn` 由一个叫 `OTELEngineObserver` 的东西在循环的开始/结束处创建，`llm_request` 由包装了 LLM 调用的 `TracingProvider` 创建，`tool` 由工具执行前后的 `ObservabilityHook` 创建。它们能拼成一棵完整的树，靠的是 Go 里的 `context.Context` 一路往下传 ———— 上一层创建 Span 时把它记进 ctx，下一层创建 Span 时从 ctx 里发现"上面已经有一个 Span 了"，就自动认它做父节点。
+These four Span layers are created by three different components at three different moments: `interaction` and `turn` are created by something called `OTELEngineObserver` at the start/end of the loop; `llm_request` is created by `TracingProvider`, which wraps the LLM call; and `tool` is created by `ObservabilityHook` before and after each tool execution. They form a single coherent tree because Go's `context.Context` is threaded all the way down — when a layer creates a Span, it records it into the ctx; when the next layer creates its own Span, it discovers "there's already a Span up there" in the ctx and automatically adopts it as the parent.
 
-唯一需要小心的地方是：harness9 引擎中间还夹着"压缩历史消息"、"加载会话"这类逻辑，它们可能会不小心替换掉 ctx。为了防止这种情况把父子关系搞断，`OTELEngineObserver` 在传递 ctx 的同时，多留了一份备份，下一层创建 Span 前会先检查备份还在不在，不在就用备份补回来。说白了就是"关键信息多存一份，防止半路弄丢"。
+The one thing to watch out for: harness9's engine has logic in the middle — like "compact conversation history" or "load session" — that can inadvertently swap out the ctx. To keep this from silently breaking the parent-child chain, `OTELEngineObserver` keeps a backup copy alongside the ctx it passes down; before the next layer creates a Span, it checks whether that backup is still there, and restores it if not. In short: keep an extra copy of anything critical, in case it gets lost along the way.
 
-![图：Span 四层与引擎运行阶段的对应关系](./images/span-four-layers-01.png)
+![Diagram: how the four Span layers map to engine execution stages](/blog/observability/images/span-four-layers-01.png)
 
 ---
 
-## 无侵入式可观测
+## Non-invasive observability
 
-给系统加可观测性，最偷懒的做法是在每个关键位置插一段"打点"代码 ———— LLM 调用前后插一段，工具执行前后插一段。问题是插的地方一多，核心逻辑就被这些和业务无关的代码淹没了。
+The laziest way to add observability to a system is to sprinkle instrumentation code at every key point — a snippet before and after each LLM call, a snippet before and after each tool execution. The problem is that once you've sprinkled enough of these, the core logic gets buried under code that has nothing to do with the actual business.
 
-harness9 的做法是不新增插桩点，而是找三个**本来就存在**的接口，把可观测性挂上去。
+harness9's approach is to add zero new instrumentation points, and instead hang observability off three interfaces that **already existed**.
 
-**第一条路径**：引擎在运行的几个关键节点（开始、每一轮开始、每一轮结束、结束）会通知一个叫 `EngineObserver` 的监听者。这个接口本来就是给"想知道引擎在干什么"的外部代码准备的，`OTELEngineObserver` 只是实现了它：
+**Path one**: at a handful of key moments during execution (start, start of each turn, end of each turn, end), the engine notifies a listener called `EngineObserver`. This interface already existed for any external code that wants to know what the engine is doing — `OTELEngineObserver` simply implements it:
 
 ```go
 type EngineObserver interface {
@@ -94,51 +94,51 @@ type EngineObserver interface {
 }
 ```
 
-引擎不知道监听者是谁，甚至不知道有没有监听者 ———— 没配置的话就用一个什么都不做的空实现顶替。
+The engine doesn't know who the listener is, or even whether one exists at all — if none is configured, a no-op implementation stands in for it.
 
-**第二条路径**：LLM 调用走的是一个叫 `LLMProvider` 的接口，`TracingProvider` 直接实现同一个接口，内部真正干活的还是原来那个 Provider，它只是在外面套了一层壳，调用前后记一下 Span：
+**Path two**: LLM calls go through an interface called `LLMProvider`, and `TracingProvider` implements that exact same interface. The real work underneath is still done by the original Provider — `TracingProvider` just wraps it in a shell that records a Span before and after the call:
 
 ```go
 func (p *TracingProvider) Generate(ctx context.Context, messages []schema.Message, tools []schema.ToolDefinition) (*schema.Message, *schema.Usage, error) {
 	ctx, span := p.tracer.Start(ctx, SpanLLMRequest)
 	defer span.End()
-	return p.inner.Generate(ctx, messages, tools) // 真正干活的还是原来那个 Provider
+	return p.inner.Generate(ctx, messages, tools) // the real work is still done by the original Provider
 }
 ```
 
-引擎那边完全感觉不到差别 ———— 它拿到的还是同一个接口类型，只是运行时这个接口背后换了个实现。
+The engine can't tell the difference at all — it's still holding the same interface type, just with a different implementation swapped in behind it at runtime.
 
-**第三条路径**：工具执行前后本来就有一套叫 `ToolHook` 的拦截机制，专门给"危险命令拦截"、"权限审批"这类需要**改变**执行结果的场景用的。`ObservabilityHook` 也实现了这个接口，但它从不拦截、不修改，只是在旁边看着记录：
+**Path three**: tool execution already has a `ToolHook` interception mechanism, originally built for scenarios that need to **change** the outcome of execution — like blocking dangerous commands or requiring permission approval. `ObservabilityHook` also implements this interface, but it never blocks or modifies anything — it just watches from the side and records:
 
 ```go
 func (h *ObservabilityHook) BeforeExecute(ctx context.Context, tc schema.ToolCall) (context.Context, hooks.HookDecision, error) {
 	ctx, span := h.tracer.Start(ctx, SpanToolExecution, ...)
-	return ctx, hooks.Allow(), nil // 永远放行，只看不管
+	return ctx, hooks.Allow(), nil // always allow, purely observational
 }
 ```
 
-三条路径的共同点是：可观测性要用到的每一个"钩子"，harness9 里早就有一个为了别的目的而存在的接口在那个位置等着。挂上去就行，不用再开一个新口子。
+What all three paths have in common: for every "hook" observability needs, harness9 already had an interface sitting right there — originally built for some other purpose. All you have to do is hang your logic on it; there's no need to open a new entry point.
 
-![图：三条接入路径与核心引擎的关系](./images/three-entry-points-02.png)
+![Diagram: the three entry points and their relationship to the core engine](/blog/observability/images/three-entry-points-02.png)
 
 ---
 
-## 定义核心 Metric
+## Defining the core Metrics
 
-Span 记的是"这一次发生了什么、花了多久"，Metrics 记的是"长期看趋势怎么样" ———— 过去一小时 token 花得多不多，工具最近失败率是不是变高了。harness9 定义了 6 个 Metrics：
+Spans record "what happened this one time and how long it took"; Metrics record "what the trend looks like over time" — whether token spend has been high over the past hour, whether a tool's recent failure rate has been creeping up. harness9 defines 6 Metrics:
 
-| 指标 | 类型 | 说明 |
+| Metric | Type | Description |
 |------|------|------|
-| `harness9.llm.request.duration` | Histogram | LLM 单次调用耗时 |
-| `harness9.llm.tokens.input` | Counter | 累计输入 token |
-| `harness9.llm.tokens.output` | Counter | 累计输出 token |
-| `harness9.tool.calls.total` | Counter | 工具调用次数 |
-| `harness9.tool.execution.duration` | Histogram | 工具执行耗时 |
-| `harness9.agent.turns.total` | Counter | Agent 总轮数 |
+| `harness9.llm.request.duration` | Histogram | Duration of a single LLM call |
+| `harness9.llm.tokens.input` | Counter | Cumulative input tokens |
+| `harness9.llm.tokens.output` | Counter | Cumulative output tokens |
+| `harness9.tool.calls.total` | Counter | Number of tool calls |
+| `harness9.tool.execution.duration` | Histogram | Duration of tool execution |
+| `harness9.agent.turns.total` | Counter | Total number of Agent turns |
 
-类型选择很直接：**看耗时用 Histogram，看总量用 Counter**。耗时这种数据只看平均值没意义 ———— 大部分请求 2 秒完成，但偶尔一次 20 秒，这两个信息都得留住，Histogram 能告诉你分布长什么样。Token 消耗、调用次数这种只增不减的数字，Counter 一个累加器就够了。
+The choice of type is straightforward: **use Histogram for durations, Counter for totals**. Duration data is meaningless if you only look at the average — most requests finish in 2 seconds, but occasionally one takes 20 seconds, and you need to preserve both facts; a Histogram tells you what the distribution actually looks like. For numbers that only ever go up — token consumption, call counts — a simple Counter accumulator is enough.
 
-工具相关的两个指标，额外挂了"工具名"和"成功还是失败"两个标签：
+The two tool-related metrics carry two extra labels: "tool name" and "success or failure":
 
 ```go
 attrSet := attribute.NewSet(
@@ -149,29 +149,29 @@ h.toolDuration.Record(ctx, elapsed, metric.WithAttributeSet(attrSet))
 h.toolCallsTotal.Add(ctx, 1, metric.WithAttributeSet(attrSet))
 ```
 
-没有这两个标签，"工具总共调用了多少次"只是一个孤零零的数字，看不出是 `bash` 慢还是 `read_file` 慢，也看不出最近哪个工具的失败率在悄悄上升。加上标签之后，这个数字就能按维度拆开来看了。
+Without these two labels, "total number of tool calls" is just a lonely number — you can't tell whether `bash` is slow or `read_file` is slow, and you can't tell which tool's failure rate has quietly been rising lately. With the labels attached, that number can be sliced open along each dimension.
 
 ---
 
-## 为什么选择 Langfuse？
+## Why Langfuse?
 
-Langfuse 是一个专门给 LLM 应用做可观测的开源平台。普通的监控平台（Grafana、Jaeger）是给传统后端服务设计的，看的是 HTTP 请求耗时、数据库查询次数这类指标；Langfuse 是照着"LLM 应用"这个场景专门设计的，天生就懂"一次对话"、"一次模型调用"、"用了多少 token"这些概念。
+Langfuse is an open-source platform purpose-built for observability in LLM applications. General-purpose monitoring platforms (Grafana, Jaeger) were designed for traditional backend services, and look at metrics like HTTP request latency and database query counts; Langfuse is designed specifically around the "LLM application" scenario, and natively understands concepts like "a conversation," "a model call," and "how many tokens were used."
 
-它解决的核心问题有两个：第一，把一次 Agent 运行变成一条可以展开、可以点进去看细节的时间线 ———— 哪一步调用了 LLM、传了什么消息、模型回了什么、每个工具执行花了多久，全部摆在一张图上；第二，自动算钱 ———— 每次 LLM 调用花了多少 input token、多少 output token，Langfuse 直接按模型定价换算出这次调用大概花了多少钱，不用自己维护一张价目表去手动计算。
+It solves two core problems. First, it turns a single Agent run into an expandable, drill-down timeline — which step called the LLM, what messages were sent, what the model replied, how long each tool execution took, all laid out on one diagram. Second, it computes cost automatically — for every LLM call, how many input tokens and how many output tokens were used, and Langfuse converts that directly into an estimated cost using the model's pricing, without harness9 having to maintain its own pricing table and do the math by hand.
 
-harness9 选择接入 Langfuse，是因为它原生支持 OpenTelemetry ———— 也就是说，harness9 只需要按标准协议把 Span 和 Metrics 发出去，不需要为 Langfuse 单独写一套 SDK 或者适配层。同一套 OTEL 数据，理论上换个地址也能发给 Grafana、Jaeger 这些平台，只是 Langfuse 对 LLM 场景的界面展示做得更贴切。
+harness9 chose to integrate with Langfuse because it natively supports OpenTelemetry — meaning harness9 only has to emit Spans and Metrics over the standard protocol, without writing a dedicated SDK or adapter layer just for Langfuse. In principle, the same OTEL data stream could be pointed at Grafana or Jaeger instead just by changing the endpoint; it's just that Langfuse's UI is more tailored to the LLM use case.
 
 ---
 
-## Langfuse 接入细节
+## Langfuse integration details
 
-OTEL 本身只规定"有 Span 这个东西、Span 上能挂属性"，属性叫什么名字、Langfuse 拿它来干什么，完全是两边私下的约定。harness9 往 Span 上报属性时，用的是 Langfuse 认识的名字。
+OTEL itself only specifies "there's a thing called a Span, and it can carry attributes" — what those attribute names are, and what Langfuse does with them, is a private agreement between the two sides. When harness9 reports attributes on a Span, it uses the names Langfuse recognizes.
 
-道理很简单，可以打个比方：这就像寄快递要在包裹上贴清楚"收件人"和"寄件人"，贴对了地方，分拣中心才知道往哪儿送；名字贴错了，包裹照样能到，但没人知道该往哪儿摆。
+The logic is simple, and there's an easy analogy: it's like shipping a package — you have to clearly label "recipient" and "sender" on the box. Label it correctly, and the sorting center knows where to route it. Get the label wrong, and the package still arrives somewhere, but nobody knows where it's supposed to go.
 
-具体来说，"一次完整对话"（也就是最外层的 `interaction`）的输入输出，要写成 `langfuse.trace.input` / `langfuse.trace.output`；而"对话里的某一步"（比如一次 LLM 调用、一次工具执行）的输入输出，要写成 `langfuse.observation.input` / `langfuse.observation.output`。两套名字分别对应 Langfuse 界面上"整个 Trace 的输入输出"和"每个子节点各自的输入输出"这两块展示区域。如果图省事都写成不带 `trace`/`observation` 的 `langfuse.input`/`langfuse.output`，Langfuse 会把这些属性当成普通元数据存起来，界面上该显示内容的地方就是一片空白。
+Specifically, the input/output of "one complete conversation" (i.e. the outermost `interaction`) must be written as `langfuse.trace.input` / `langfuse.trace.output`; while the input/output of "one step within the conversation" (e.g. one LLM call, one tool execution) must be written as `langfuse.observation.input` / `langfuse.observation.output`. These two sets of names correspond respectively to the "input/output of the entire Trace" display area and the "input/output of each individual child node" display area in the Langfuse UI. If you take the shortcut of writing everything as the plain `langfuse.input`/`langfuse.output` — without the `trace`/`observation` qualifier — Langfuse will store those attributes as ordinary metadata, and the area of the UI meant to display that content will just be blank.
 
-Token 费用的自动计算靠的是另一套约定好的名字 ———— `gen_ai.usage.input_tokens` 和 `gen_ai.usage.output_tokens`，这是 OTEL 官方给"大模型调用"这类场景定的标准名字。harness9 只要把每次调用实际消耗的 token 数字写进这两个属性：
+Automatic token cost calculation relies on another set of agreed-upon names — `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens` — which are the standard names OTEL officially defines for "large model call" scenarios. All harness9 has to do is write the actual number of tokens consumed by each call into these two attributes:
 
 ```go
 span.SetAttributes(
@@ -180,18 +180,17 @@ span.SetAttributes(
 )
 ```
 
-Langfuse 看到这两个属性名，就知道该按对应模型的价目表算一遍费用，展示成"25,269 prompt → 1,027 completion"这样的费用估算，不用 harness9 自己维护任何定价逻辑。
+Once Langfuse sees these two attribute names, it knows to run the numbers through the corresponding model's pricing table, and displays a cost estimate like "25,269 prompt → 1,027 completion" — harness9 doesn't have to maintain any pricing logic of its own.
 
-![图：属性名怎么对应到 Langfuse 的展示区域](./images/langfuse-attr-mapping-03.png)
+![Diagram: how attribute names map to Langfuse display areas](/blog/observability/images/langfuse-attr-mapping-03.png)
 
-最终展示在 Langfuse 上的 Trace 看板长这样：
-![图：Langfuse Trace 看板](./images/langfuse-trace-board-04.png)
-
----
-
-## 结语
-
-harness9 的可观测性模块最值得记住的不是它接了 OTEL、接了 Langfuse，而是它证明了一件事：给系统装上"看清内部"的能力，不一定要在系统内部埋满探针。找到已经存在的边界 ———— 一个监听接口、一层装饰器、一个钩子 ———— 让观测者挂在边界上，核心逻辑可以永远不知道自己正在被观测。如果你的系统里还没有这样的边界，那么在加可观测性之前，或许应该先问一句：这一层抽象，是不是本来就该存在？
+Here's what the resulting Trace dashboard looks like in Langfuse:
+![Diagram: Langfuse Trace dashboard](/blog/observability/images/langfuse-trace-board-04.png)
 
 ---
 
+## Closing thoughts
+
+The most important thing to remember about harness9's Observability module isn't that it hooks up OTEL or that it hooks up Langfuse — it's that it demonstrates something: giving a system the ability to "see clearly inside itself" doesn't require littering the internals with probes. Find the boundaries that already exist — a listener interface, a decorator layer, a hook — and let the observer hang off that boundary, so the core logic never has to know it's being watched at all. If your system doesn't have boundaries like this yet, maybe the question to ask before adding observability is: shouldn't this layer of abstraction have existed in the first place?
+
+---

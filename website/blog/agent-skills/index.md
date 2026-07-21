@@ -1,78 +1,78 @@
 ---
-title: "Agent Skill 系统 — Progressive Disclosure 思想下的 LLM 能力扩展协议"
+title: "The Agent Skills System: Extending LLM Capabilities via Progressive Disclosure"
 date: 2026-06-15
 tags: [harness9, agent, golang, skills, progressive-disclosure, prompt-engineering]
-summary: "harness9 的 Agent Skill 系统以 Progressive Disclosure 为核心思想，将 LLM 的领域能力封装为可按需加载的独立模块。启动时只注入能力索引，运行时由 LLM 自主判断并通过 use_skill 工具拉取全文。这篇文章拆解它的协议设计、加载机制和注入策略，以及这一设计与 RAG 和传统 System Prompt 扩展的本质差异。"
+summary: "harness9's Agent Skills system is built around Progressive Disclosure — it packages domain expertise for the LLM into independent modules that load on demand. At startup only an index of capabilities is injected; at runtime the LLM decides for itself and pulls the full content via the use_skill tool. This post breaks down the protocol design, loading mechanism, and injection strategy, along with how this design fundamentally differs from RAG and traditional System Prompt extension."
 ---
 
-# Agent Skill 系统 — Progressive Disclosure 思想下的 LLM 能力扩展协议
+# The Agent Skills System: Extending LLM Capabilities via Progressive Disclosure
 
 ## TL;DR
 
-harness9 的 Agent Skill 系统解决一个核心矛盾：**Agent 需要大量领域知识来完成复杂任务，但把所有知识塞进 System Prompt 会让 LLM 失焦、token 爆炸。**
+harness9's Agent Skills system solves a core tension: **an Agent needs a large amount of domain knowledge to handle complex tasks, but stuffing all of that knowledge into the System Prompt causes the LLM to lose focus and blows up token usage.**
 
-解法是 **Progressive Disclosure（渐进式披露）**——把 Skill 拆成两层：
+The solution is **Progressive Disclosure** — splitting a Skill into two layers:
 
-| 层次 | 内容 | 注入时机 | token 开销 |
+| Layer | Content | Injection timing | Token cost |
 |------|------|---------|-----------|
-| **索引层**（frontmatter） | name + description，一行 | 每次对话，System Prompt 第三段 | 固定，极低（~20 token/条） |
-| **内容层**（body） | 完整领域知识正文 | 仅在 LLM 主动调用 `use_skill` 时 | 按需，用完即留在 ToolResult |
+| **Index layer** (frontmatter) | name + description, one line | Every conversation, third section of the System Prompt | Fixed, very low (~20 tokens per entry) |
+| **Content layer** (body) | Full domain-knowledge body | Only when the LLM actively calls `use_skill` | On demand, stays in the ToolResult once used |
 
-**关键决策**：召回判断权交给 LLM，不用 RAG 向量检索。LLM 读取索引后，根据当前任务语义自主决定调用哪个 Skill——这意味着 `description` 字段的质量就是 Skill 召回准确度的唯一控制旋钮。
+**The key decision**: recall is delegated to the LLM instead of RAG vector search. After reading the index, the LLM autonomously decides which Skill to invoke based on the semantics of the current task — which means the quality of the `description` field is the single dial controlling Skill recall accuracy.
 
-**运行路径**（一次 Skill 使用）：
+**Execution path** (one Skill usage):
 ```
-用户输入 → LLM 读索引 → tool_call: use_skill("go-refactor")
-  → GetFullContent 读磁盘 → Skill 正文作为 ToolResult 返回
-  → 下一 Turn LLM 以 Skill 正文为知识背景执行任务
+User input → LLM reads index → tool_call: use_skill("go-refactor")
+  → GetFullContent reads from disk → Skill body returned as ToolResult
+  → Next Turn, LLM executes the task with the Skill body as background knowledge
 ```
 
-**与主流方案的本质差异**：
-- vs 全量注入：System Prompt 里永远只有索引，body 从不污染 System Prompt
-- vs RAG 检索：不需要 embedding 模型，召回是语义判断而非相似度计算
-- vs LangChain Tool：Skill 无副作用、不执行，是声明式知识容器
+**Fundamental differences from mainstream approaches**:
+- vs. full injection: the System Prompt always contains only the index — the body never pollutes the System Prompt
+- vs. RAG retrieval: no embedding model is needed, recall is a semantic judgment rather than a similarity computation
+- vs. LangChain Tool: a Skill has no side effects and doesn't execute — it's a declarative knowledge container
 
-**适合场景**：团队编码规范、部署 SOP、调试指南、API 使用手册——任何"需要时才看、不需要就放架子上"的结构化知识。
-
----
-
-## 关于 harness9
-
-harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
-
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
-- **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
-
-Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
+**Suited for**: team coding conventions, deployment SOPs, debugging guides, API usage manuals — any structured knowledge that you "check when needed and shelve otherwise."
 
 ---
 
-## 本文你将学到
+## About harness9
 
-- 你将看清 harness9 为何选择"索引先行、全文按需"的两阶段 Skill 设计，而不是将领域知识直接嵌入 System Prompt
-- 你将理解 Progressive Disclosure（渐进式披露）在 LLM 工程中的具体含义，以及它与 RAG 检索在召回策略上的根本差异
-- 你将看懂 `Index`、`UseSkillTool`、`DefaultPromptBuilder` 三个组件如何分工，构成完整的"发现—拉取—注入"协议链
-- 你将理解 frontmatter 驱动的 Skill 文件格式如何在"开发者可读"与"机器可解析"之间取得平衡
-- 你将看清 CLI 斜杠命令与 TUI Tab 补全如何绕过 LLM 判断层，作为人工触发的快速通道
+harness9 is a Local-First, lightweight, feature-complete, production-ready general-purpose Go Agent framework.
 
----
+- **Website**: [https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **GitHub**: [https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
-## System Prompt 里塞知识，会发生什么？
-
-把团队编码规范、部署 SOP、调试指南全部塞进 System Prompt，是最直觉的做法。它也是最快耗尽上下文窗口的做法。
-
-一个中等规模项目，稍微认真地写三到五份规范文档，System Prompt 很快膨胀到 8,000–15,000 tokens。GPT-4o 的 128K 窗口看起来很宽，但实际上下文窗口要被对话历史、工具结果、多轮推理共同消耗。System Prompt 里那些"今天不相关"的知识，仍然占用注意力资源——更糟糕的是，LLM 的注意力分配并非均匀的，过长的 System Prompt 会让模型在关键信息上"失焦"。
-
-harness9 的 Agent Skill 系统给出了一个不同的答案：**不要把能力塞进去，而是告诉 LLM 能力在哪里、什么时候去拿。**
-
-![图：System Prompt 膨胀与 Skill 索引的对比](./images/prompt-inflation-vs-skill-index-01.png)
-
+A star is the most direct way to support this open-source work — issues and PRs are welcome.
 
 ---
 
-## Skill 文件长什么样？
+## What you'll learn from this post
 
-harness9 的 Skill 以目录为单位组织，每个 Skill 是一个独立的子目录，固定包含一个 `SKILL.md` 文件：
+- Why harness9 chose an "index-first, full-content-on-demand" two-stage Skill design instead of embedding domain knowledge directly in the System Prompt
+- What Progressive Disclosure concretely means in LLM engineering, and how it fundamentally differs from RAG retrieval in its recall strategy
+- How the three components `Index`, `UseSkillTool`, and `DefaultPromptBuilder` divide labor to form a complete "discover — pull — inject" protocol chain
+- How the frontmatter-driven Skill file format balances "developer readability" against "machine parseability"
+- How CLI slash commands and TUI Tab completion bypass the LLM's decision layer as a fast path for manual triggering
+
+---
+
+## What happens when you stuff knowledge into the System Prompt?
+
+Cramming team coding conventions, deployment SOPs, and debugging guides all into the System Prompt is the most intuitive approach. It's also the fastest way to exhaust the context window.
+
+For a mid-sized project, writing three to five reasonably thorough spec documents will quickly balloon the System Prompt to 8,000–15,000 tokens. GPT-4o's 128K window looks generous, but in practice the context window is shared with conversation history, tool results, and multi-turn reasoning. Knowledge in the System Prompt that's "irrelevant today" still consumes attention resources — worse, an LLM's attention allocation isn't uniform, and an overly long System Prompt causes the model to lose focus on the critical information.
+
+harness9's Agent Skills system offers a different answer: **don't stuff capabilities in — tell the LLM where the capability lives and when to go fetch it.**
+
+![Diagram: System Prompt bloat vs. Skill index](/blog/agent-skills/images/prompt-inflation-vs-skill-index-01.png)
+
+
+---
+
+## What does a Skill file look like?
+
+harness9 organizes Skills by directory — each Skill is an independent subdirectory that must contain a `SKILL.md` file:
 
 ```
 {workdir}/skills/
@@ -84,7 +84,7 @@ harness9 的 Skill 以目录为单位组织，每个 Skill 是一个独立的子
     └── SKILL.md
 ```
 
-`SKILL.md` 的格式是带 YAML frontmatter 的标准 Markdown：
+The format of `SKILL.md` is standard Markdown with a YAML frontmatter block:
 
 ```markdown
 ---
@@ -93,20 +93,20 @@ description: Use when refactoring Go code — team conventions and patterns
 trigger: "refactor, clean up, restructure, simplify"
 ---
 
-# Go 重构指南
+# Go Refactoring Guide
 
-## 重构前必做
+## Before you refactor
 
-1. 运行 `go vet ./...` 确认无静态分析错误
-2. 运行 `go test ./...` 确认测试全部通过
-3. 查看 git diff 确认修改范围
+1. Run `go vet ./...` to confirm there are no static-analysis errors
+2. Run `go test ./...` to confirm all tests pass
+3. Review the git diff to confirm the scope of the change
 ```
 
-frontmatter 只有三个字段：`name`（唯一标识）、`description`（向 LLM 展示的索引描述）、`trigger`（可选的触发词提示，仅作文档说明，不做自动匹配）。
+The frontmatter has only three fields: `name` (unique identifier), `description` (the index description shown to the LLM), and `trigger` (an optional trigger-word hint — documentation only, not used for automatic matching).
 
-这个设计的关键在于 **frontmatter 与 body 的分离**。frontmatter 是注入 System Prompt 的部分——只有 name 和 description；body 是按需加载的部分——完整的领域知识正文。两者物理上在同一个文件里，逻辑上属于不同的加载阶段。
+The key to this design is **separating frontmatter from body**. The frontmatter is what gets injected into the System Prompt — just name and description; the body is loaded on demand — the full domain-knowledge text. The two live in the same physical file but belong to different loading stages logically.
 
-`parseFrontmatter` 的实现极度简洁，零依赖，手写解析：
+The implementation of `parseFrontmatter` is deliberately minimal, zero-dependency, hand-rolled parsing:
 
 ```go
 func parseFrontmatter(content string) (name, description, trigger, body string) {
@@ -121,307 +121,307 @@ func parseFrontmatter(content string) (name, description, trigger, body string) 
     }
     fm := rest[:idx]
     body = strings.TrimPrefix(rest[idx+len("\n---\n"):], "\n")
-    // ...逐行 key:value 解析
+    // ...line-by-line key:value parsing
 }
 ```
 
-没有引入 YAML 解析库。这是有意为之的权衡：frontmatter 的字段集是固定且极小的（三个字段），手写解析完全覆盖需求，同时避免了一个间接依赖。harness9 的设计哲学之一是"极少的直接依赖数"，Skill 格式解析是这一哲学的具体体现。
+No YAML parsing library was introduced. This is a deliberate trade-off: the frontmatter's field set is fixed and tiny (three fields), so hand-rolled parsing fully covers the need while avoiding an extra indirect dependency. One of harness9's design philosophies is "keep the number of direct dependencies minimal," and Skill format parsing is a concrete embodiment of that philosophy.
 
-![图：Skill 文件格式解析流程](./images/skill-file-parsing-02.png)
+![Diagram: Skill file format parsing flow](/blog/agent-skills/images/skill-file-parsing-02.png)
 
 
 ---
 
-## 为什么不用 RAG？
+## Why not RAG?
 
-Progressive Disclosure（渐进式披露）这个词来自 UX 设计领域，指的是"只在用户需要时展示复杂信息"。harness9 把它搬进了 LLM 工程的上下文管理层。
+Progressive Disclosure is a term from the UX design world, meaning "only reveal complex information when the user needs it." harness9 carries this idea into the context-management layer of LLM engineering.
 
-要理解它的价值，先对比两种常见的替代方案：
+To understand its value, first compare two common alternatives:
 
-**方案 A：全量注入 System Prompt**。所有 Skill 全文在启动时写入 System Prompt。简单，但 token 固定消耗，LLM 注意力被非相关内容分散，且每次对话都携带这些"可能永远不会用到"的内容。
+**Option A: Full injection into the System Prompt.** All Skill bodies are written into the System Prompt at startup. Simple, but token cost is fixed, the LLM's attention gets diluted by irrelevant content, and every conversation carries content that "may never be used."
 
-**方案 B：RAG 检索**。用 embedding 向量检索相关 Skill，把最相关的片段注入上下文。token 效率高，但引入了向量数据库依赖、嵌入模型调用、相似度阈值调参等工程复杂度。更关键的是，召回是被动的——检索时机和检索策略由框架决定，而非 LLM。
+**Option B: RAG retrieval.** Use embedding vectors to retrieve relevant Skills and inject the most relevant snippets into the context. Token-efficient, but it introduces the engineering complexity of a vector database dependency, embedding-model calls, and similarity-threshold tuning. More importantly, recall is passive — the timing and strategy of retrieval are decided by the framework, not the LLM.
 
-**harness9 的方案**：LLM 主动拉取。System Prompt 只注入 Skill 索引（每条一行，name + description），LLM 在执行任务时自主判断需要哪个 Skill，通过调用 `use_skill` 工具拉取全文，工具结果作为 Observation 注入当前轮次的上下文。
+**harness9's approach**: the LLM actively pulls. The System Prompt only injects the Skill index (one line per entry, name + description); the LLM decides for itself which Skill is needed while executing a task, calls the `use_skill` tool to pull the full content, and the tool result is injected as an Observation into the current turn's context.
 
-这里有一个关键的架构决策：**召回的判断权交给了 LLM，而不是框架层的检索算法**。
+There's a key architectural decision here: **the judgment call on recall is handed to the LLM, not to a retrieval algorithm at the framework layer**.
 
-这意味着：
-- 不需要 embedding 模型，不需要向量数据库
-- LLM 可以基于完整的任务语义判断需要哪个 Skill，而不是基于 token 相似度
-- Skill 的描述文案（description 字段）成了影响召回质量的核心变量——这是可以被开发者精确控制的文本，而不是浮动的相似度分数
+This means:
+- No embedding model or vector database is required
+- The LLM can judge which Skill is needed based on the full semantics of the task, rather than token similarity
+- The Skill's description text (the `description` field) becomes the core variable affecting recall quality — a piece of text developers can control precisely, not a fluctuating similarity score
 
-缺点也是显然的：LLM 必须先看到任务，才能判断需要哪个 Skill，这比 RAG 多一次 LLM 调用轮次。这是 harness9 明确选择接受的权衡。
+The downside is equally obvious: the LLM must see the task first before it can judge which Skill it needs, which costs one extra LLM turn compared to RAG. This is a trade-off harness9 explicitly chose to accept.
 
-### Progressive Disclosure 背后的四个工程原理
+### Four engineering principles behind Progressive Disclosure
 
-Progressive Disclosure 不只是"延迟加载"，它背后有三层更深的工程原理。
+Progressive Disclosure isn't just "lazy loading" — there are three deeper engineering principles behind it.
 
-**原理一：LLM 注意力分配不是均匀的**
+**Principle one: LLM attention allocation isn't uniform**
 
-Transformer 的注意力机制并不会对上下文里的每个 token 一视同仁。实验性地观察（以及 [Lost in the Middle](https://arxiv.org/abs/2307.03172) 等研究）表明：上下文窗口里越靠前和越靠后的内容，被"关注到"的概率越高；中间部分容易被压低。
+A Transformer's attention mechanism doesn't treat every token in the context equally. Empirical observations (as well as research such as [Lost in the Middle](https://arxiv.org/abs/2307.03172)) show that content near the beginning and end of the context window is more likely to be "attended to," while content in the middle tends to get suppressed.
 
-这意味着，把 10 个 Skill 的全文（假设每个 1,000 token，共 10,000 token）堆在 System Prompt 里，实际上大部分内容处于"注意力低谷"。LLM 会知道那里有什么，但不一定能精准引用。
+This means that if you stack the full text of 10 Skills (say, 1,000 tokens each, 10,000 tokens total) into the System Prompt, most of that content ends up in an "attention trough." The LLM will know something is there but won't necessarily reference it precisely.
 
-反过来，当 LLM 通过 `use_skill` 拉取 Skill 正文后，内容作为 ToolResult 出现在**当前 Turn 的末尾**——这是注意力最高的位置。相同的文本，因为出现位置不同，被模型有效利用的概率更高。
+Conversely, when the LLM pulls a Skill's body via `use_skill`, the content appears as a ToolResult at **the end of the current turn** — the position of highest attention. The same text, purely because of where it appears, is more likely to be effectively used by the model.
 
-Progressive Disclosure 不只节省 token，更重要的是**把知识放在对 LLM 来说最有效的注意力位置上**。
+Progressive Disclosure doesn't just save tokens — more importantly, it **places knowledge at the position in the context that's most effective for the LLM's attention**.
 
-**原理二：索引是元认知层，正文是执行层**
+**Principle two: the index is a metacognitive layer, the body is an execution layer**
 
-这是 harness9 设计里最精妙的一点。System Prompt 里的 Skill 索引（name + description）不是供 LLM"阅读"的内容，而是供 LLM"决策"的信号。
+This is the most elegant part of harness9's design. The Skill index in the System Prompt (name + description) isn't content for the LLM to "read" — it's a signal for the LLM to "decide" with.
 
 ```
-## 可用 Skills
+## Available Skills
 - go-refactor: Use when refactoring Go code — team conventions and patterns
 - deploy-prod: Use when deploying to production environment
 ```
 
-LLM 读到这两行，不会去"理解 Go 重构规范"，而是把它们存成一种元认知：**"我有这两项能力，当任务属于这类时我可以调用。"** 这是认知负担极低的操作——仅仅是记住"能力边界"，不是消化知识。
+When the LLM reads these two lines, it doesn't try to "understand the Go refactoring conventions" — it stores them as a piece of metacognition: **"I have these two capabilities, and I can invoke them when a task falls into these categories."** This is an extremely low-cognitive-load operation — it's merely remembering "capability boundaries," not digesting knowledge.
 
-当用户提问"帮我清理这个 handler，太乱了"时，LLM 不需要检索，直接从元认知层触发：`go-refactor` 的 description 里有 `refactoring`，匹配。于是发起 `use_skill("go-refactor")` 调用。
+When a user asks "help me clean up this handler, it's a mess," the LLM doesn't need to search — it fires directly from the metacognitive layer: `go-refactor`'s description contains "refactoring," a match. So it issues a `use_skill("go-refactor")` call.
 
-**这是语义路由，不是相似度匹配**。LLM 理解了任务语义，再主动查找合适的知识——而不是把任务 embedding 后和所有 Skill 做向量距离计算。两者在准确率曲线上的行为完全不同：RAG 对"措辞接近但语义不同"的输入容易误召回，而 LLM 语义判断对措辞变化更鲁棒。
+**This is semantic routing, not similarity matching**. The LLM understands the semantics of the task and then actively looks up the appropriate knowledge — rather than embedding the task and computing vector distances against every Skill. The two behave completely differently on accuracy curves: RAG is prone to false recall when wording is close but meaning differs, while an LLM's semantic judgment is more robust to wording variation.
 
-**原理三：description 字段是唯一的召回控制杆**
+**Principle three: the description field is the only recall control lever**
 
-在 RAG 系统里，召回质量受到多个变量影响：embedding 模型选择、分块策略（chunk size / overlap）、相似度阈值、文档预处理方式……这些参数大多不透明，调参需要实验。
+In a RAG system, recall quality is influenced by multiple variables: choice of embedding model, chunking strategy (chunk size / overlap), similarity threshold, document preprocessing method — most of these parameters are opaque and tuning them requires experimentation.
 
-Progressive Disclosure 把这些变量压缩成了一个：**`description` 字段的文本质量**。
+Progressive Disclosure compresses all these variables into one: **the text quality of the `description` field**.
 
-这是一个完全透明、可精确控制的文本变量。开发者可以像优化 prompt 一样优化 description：
+This is a fully transparent, precisely controllable text variable. Developers can optimize the description the way they'd optimize a prompt:
 
 ```yaml
-# 差的 description：含糊，触发条件模糊
-description: "Go 代码相关的规范"
+# A poor description: vague, unclear trigger conditions
+description: "Conventions related to Go code"
 
-# 好的 description：行为触发词明确，任务场景具体
+# A good description: explicit behavioral trigger words, concrete task scenario
 description: "Use when refactoring Go code — covers naming, error handling, interface design, and test coverage conventions for this team"
 ```
 
-description 写得越精确，LLM 的召回越准确。这是工程师可以直接干预和调优的文本，没有任何黑箱成分。
+The more precise the description, the more accurate the LLM's recall. This is text engineers can directly intervene in and tune — with no black-box component involved.
 
-更进一步：harness9 允许 Skill 文件在运行时被修改（`GetFullContent` 不缓存，每次读磁盘），意味着 description 也可以在不重启 Agent 的情况下热更新。这给了开发者一种迭代 Skill 描述文案的快速反馈循环。
+Going further: harness9 allows Skill files to be modified at runtime (`GetFullContent` doesn't cache — it reads from disk every time), which means the description can also be hot-updated without restarting the Agent. This gives developers a fast feedback loop for iterating on Skill description copy.
 
-**原理四：ToolResult 位置 vs System Prompt 位置的上下文生命周期差异**
+**Principle four: the difference in context lifecycle between ToolResult position and System Prompt position**
 
-Skill 内容注入 ToolResult（而非 System Prompt）还有一个重要的架构含义：**生命周期受 Compactor 管理**。
+Injecting Skill content into a ToolResult (rather than the System Prompt) carries another important architectural implication: **its lifecycle is managed by the Compactor**.
 
-harness9 的 SummarizationCompactor 在上下文到达 80% 阈值时触发，将历史消息（包括 ToolResult）压缩为摘要。这意味着 Skill 的全文内容最终会被摘要，不会永久占用上下文。
+harness9's SummarizationCompactor triggers when the context reaches the 80% threshold, compressing historical messages (including ToolResults) into a summary. This means the full text of a Skill will eventually be summarized — it won't permanently occupy the context.
 
-相比之下，System Prompt 是不参与压缩的固定开销——放进去就永远在那里，即使那个知识早已用完。把 Skill body 放在 ToolResult 里，是把它纳入了上下文的"正常消耗—压缩—释放"生命周期，而不是永久锁在 System Prompt 里。
+By contrast, the System Prompt is a fixed cost that never participates in compaction — once it's in there, it stays forever, even after that knowledge has long since been used up. Putting the Skill body in a ToolResult brings it into the context's normal "consume — compact — release" lifecycle, rather than locking it permanently into the System Prompt.
 
-下面这张时序图展示了完整的 Progressive Disclosure 运作路径：
+The following sequence diagram shows the complete Progressive Disclosure workflow:
 
 ```
-启动时
+At startup
   ┌─────────────────────────────────────────────────┐
-  │  System Prompt（固定开销）                        │
+  │  System Prompt (fixed cost)                      │
   │  ...                                             │
-  │  ## 可用 Skills                                  │  ← 索引层：元认知信号
-  │  - go-refactor: Use when refactoring Go code...  │    每条 ~20 token，n 个 Skill
-  │  - deploy-prod: Use when deploying to prod...    │    固定消耗，不随 Skill 正文大小变化
+  │  ## Available Skills                             │  ← Index layer: metacognitive signal
+  │  - go-refactor: Use when refactoring Go code...  │    ~20 tokens per entry, n Skills
+  │  - deploy-prod: Use when deploying to prod...    │    Fixed cost, independent of Skill body size
   └─────────────────────────────────────────────────┘
 
-Turn N（LLM 判断需要 Skill）
-  LLM 输出: tool_call → use_skill("go-refactor")
-  框架: GetFullContent → 读磁盘 → 返回 Skill body
+Turn N (LLM decides a Skill is needed)
+  LLM output: tool_call → use_skill("go-refactor")
+  Framework: GetFullContent → read from disk → return the Skill body
 
   ┌─────────────────────────────────────────────────┐
-  │  ToolResult（动态，在会话历史里）                  │
-  │  [go-refactor 完整正文，1,200 token]              │  ← 内容层：执行时注意力最高点
-  │  # Go 重构指南                                    │    随任务需要而出现
-  │  ## 重构前必做                                    │    最终被 Compactor 摘要压缩
-  │  1. 运行 go vet...                               │
+  │  ToolResult (dynamic, part of session history)   │
+  │  [go-refactor full body, 1,200 tokens]           │  ← Content layer: peak attention at execution time
+  │  # Go Refactoring Guide                          │    Appears only when the task needs it
+  │  ## Before you refactor                          │    Eventually summarized by the Compactor
+  │  1. Run go vet...                                │
   └─────────────────────────────────────────────────┘
 
-后续轮次压缩时
-  SummarizationCompactor 将 ToolResult 摘要为
-  "[已加载 go-refactor 规范，要点：go vet 先行、接口在调用方定义...]"
-  → Skill body 完成使命，Token 释放
+On the next compaction round
+  SummarizationCompactor compresses the ToolResult into
+  "[Loaded go-refactor conventions, key points: go vet first, interfaces defined by the caller...]"
+  → The Skill body has served its purpose, tokens are released
 ```
 
-**三种方案的对比总结**：
+**Summary comparison of the three approaches**:
 
-| 维度 | 全量注入 | RAG 检索 | Progressive Disclosure |
+| Dimension | Full injection | RAG retrieval | Progressive Disclosure |
 |------|---------|---------|----------------------|
-| Skill 数量扩展性 | 差（线性增长） | 好 | 好（索引线性，body 按需） |
-| 工程复杂度 | 极低 | 高（向量库 + embedding 模型） | 低（零外部依赖） |
-| 召回准确率控制 | N/A | 调参（不透明） | 优化 description（透明） |
-| LLM 注意力效率 | 低（知识在中段，注意力低谷） | 中（片段注入位置不确定） | 高（ToolResult 在当前 Turn 末尾） |
-| 上下文生命周期 | 永久占用 System Prompt | 进入会话历史 | 进入会话历史，受 Compactor 管理 |
-| 额外 LLM 调用轮次 | 0 | 0（框架触发） | +1（LLM 决策调用） |
+| Skill-count scalability | Poor (linear growth) | Good | Good (index scales linearly, body on demand) |
+| Engineering complexity | Very low | High (vector DB + embedding model) | Low (zero external dependencies) |
+| Recall-accuracy control | N/A | Tuning (opaque) | Optimize description (transparent) |
+| LLM attention efficiency | Low (knowledge in the middle, attention trough) | Medium (snippet injection position is uncertain) | High (ToolResult at the end of the current turn) |
+| Context lifecycle | Permanently occupies the System Prompt | Enters session history | Enters session history, managed by the Compactor |
+| Extra LLM turns | 0 | 0 (framework-triggered) | +1 (LLM decision call) |
 
-额外的 +1 Turn 是 Progressive Disclosure 唯一付出的代价。harness9 认为这是值得的——换来的是透明的召回控制、更好的注意力效率、以及零外部依赖。
+The extra +1 turn is the only cost Progressive Disclosure pays. harness9 considers it worthwhile — in exchange it gets transparent recall control, better attention efficiency, and zero external dependencies.
 
-![图：三种 Skill 召回策略对比](./images/skill-retrieval-comparison-03.png)
+![Diagram: comparison of three Skill recall strategies](/blog/agent-skills/images/skill-retrieval-comparison-03.png)
 
 
 ---
 
-## 三层懒加载
+## Three layers of lazy loading
 
-harness9 的 Skill 加载分三个明确的层次，各层职责不重叠：
+harness9's Skill loading is split into three clearly defined layers, with no overlapping responsibilities.
 
-**第一层：`LoadSkills`（启动时，目录扫描）**
+**Layer one: `LoadSkills` (at startup, directory scan)**
 
 ```go
 func LoadSkills(skillsDir string) (*Index, error) {
     entries, err := os.ReadDir(skillsDir)
     if errors.Is(err, fs.ErrNotExist) {
-        return &Index{}, nil  // 目录不存在，静默返回空 Index
+        return &Index{}, nil  // Directory doesn't exist — silently return an empty Index
     }
     // ...
     for _, entry := range entries {
         if !entry.IsDir() {
-            continue  // 只处理子目录，顶层散落文件被忽略
+            continue  // Only process subdirectories; loose top-level files are ignored
         }
         filePath := filepath.Join(skillsDir, entry.Name(), "SKILL.md")
         data, err := os.ReadFile(filePath)
         // ...
         name, desc, trigger, _ := parseFrontmatter(string(data))
         if name == "" || desc == "" {
-            // 跳过无效 frontmatter，打印 warn 日志
+            // Skip invalid frontmatter, print a warn log
             continue
         }
         loaded = append(loaded, Skill{
             Name: name, Description: desc, Trigger: trigger,
-            filePath: filePath,  // 只记录路径，不缓存正文
+            filePath: filePath,  // Only the path is recorded, not the body
         })
     }
     return &Index{skills: loaded}, nil
 }
 ```
 
-注意 `Skill.filePath` 是未导出字段，且此时只记录文件路径，**不读取文件正文**。这是懒加载的物理证据：启动阶段的 I/O 只有 frontmatter，body 不进内存。
+Note that `Skill.filePath` is an unexported field, and at this point only the file path is recorded — **the file body is not read**. This is the physical evidence of lazy loading: startup-time I/O only touches the frontmatter, and the body never enters memory.
 
-**第二层：`Index`（运行时，索引与按需读取）**
+**Layer two: `Index` (at runtime, indexing plus on-demand reads)**
 
 ```go
 func (idx *Index) GetFullContent(name string) (string, error) {
     for _, s := range idx.skills {
         if s.Name == name {
-            data, err := os.ReadFile(s.filePath)  // 每次调用时读磁盘
+            data, err := os.ReadFile(s.filePath)  // Read from disk on every call
             if err != nil {
-                return "", fmt.Errorf("读取 skill %q 失败: %w", name, err)
+                return "", fmt.Errorf("failed to read skill %q: %w", name, err)
             }
             _, _, _, body := parseFrontmatter(string(data))
             return strings.TrimSpace(body), nil
         }
     }
-    return "", fmt.Errorf("skill %q 不存在，可用技能: %s", name, idx.availableNames())
+    return "", fmt.Errorf("skill %q does not exist, available skills: %s", name, idx.availableNames())
 }
 ```
 
-`GetFullContent` 每次调用都重新读磁盘。没有内存缓存。这个决策值得关注：Skill 文件通常是开发者运行期间可能修改的内容（调整规范、更新 SOP），不缓存意味着修改立即生效，下次 `use_skill` 调用拿到的就是新版本。对于一个开发期工具，这个取舍是合理的。
+`GetFullContent` re-reads from disk on every call. There's no in-memory cache. This decision is worth noting: Skill files are typically content a developer might modify while the Agent is running (adjusting conventions, updating an SOP), and not caching means edits take effect immediately — the next `use_skill` call picks up the new version. For a development-time tool, this trade-off makes sense.
 
-**第三层：`UseSkillTool`（工具层，执行 LLM 决策）**
+**Layer three: `UseSkillTool` (the tool layer, executing the LLM's decision)**
 
 ```go
 func (t *UseSkillTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
     var a useSkillArgs
     if err := json.Unmarshal(args, &a); err != nil {
-        return "", fmt.Errorf("参数解析失败: %w", err)
+        return "", fmt.Errorf("failed to parse arguments: %w", err)
     }
     if a.SkillName == "" {
-        return "", fmt.Errorf("skill_name 不能为空")
+        return "", fmt.Errorf("skill_name must not be empty")
     }
     return t.index.GetFullContent(a.SkillName)
 }
 ```
 
-`UseSkillTool` 是工具注册表中的普通工具，通过 Go 的结构类型（Structural Typing）隐式满足 `tools.BaseTool` 接口——注意代码注释里明确写了"无需 import tools 包"，这避免了一个循环导入。
+`UseSkillTool` is an ordinary tool in the tool registry, satisfying the `tools.BaseTool` interface implicitly via Go's structural typing — note the code comment explicitly states "no need to import the tools package," which avoids a circular import.
 
-![图：三层加载机制时序](./images/skill-loading-sequence-04.png)
+![Diagram: three-layer loading mechanism sequence](/blog/agent-skills/images/skill-loading-sequence-04.png)
 
 
 ---
 
-## Skill 索引注入在哪里？
+## Where does the Skill index get injected?
 
-`DefaultPromptBuilder.Build()` 按照固定顺序组装 System Prompt，Skills 索引在第三段：
-
-```
-1. 基础 prompt（角色定义 + 工作目录 + 当前日期 + 工作准则）
-2. AGENTS.md（用户项目规范，不存在时静默跳过）
-3. 可用 Skills（索引摘要，Index 为空时跳过整块）
-4. 任务管理（todo_write 指引，仅在工具已注册时注入）
-5. 大输出文件检索（OffloadHook 指引）
-6. 长期记忆（MEMORY.md 物化视图）
-```
-
-Skills 段落的实际文本形态：
+`DefaultPromptBuilder.Build()` assembles the System Prompt in a fixed order, with the Skills index as the third section:
 
 ```
-## 可用 Skills
+1. Base prompt (role definition + working directory + current date + operating principles)
+2. AGENTS.md (user project conventions, silently skipped if absent)
+3. Available Skills (index summary, the whole block is skipped when the Index is empty)
+4. Task management (todo_write guidance, injected only when the tool is registered)
+5. Large-output file retrieval (OffloadHook guidance)
+6. Long-Term Memory (MEMORY.md materialized view)
+```
 
-需要时使用 `use_skill` 工具加载任意 Skill 的完整内容。
+The actual text form of the Skills section:
+
+```
+## Available Skills
+
+Use the `use_skill` tool to load the full content of any Skill when needed.
 
 - go-refactor: Use when refactoring Go code — team conventions and patterns
 - deploy-prod: Use when deploying to production environment
 - debugging-guide: Use when debugging runtime errors or performance issues
 ```
 
-`Index.Summary()` 生成的是每行 `- name: description\n` 格式的纯文本列表，token 消耗极低。三个 Skill 的索引大约占 60–90 tokens，无论 Skill 正文多长，System Prompt 里这一段的 token 开销是固定的。
+`Index.Summary()` generates a plain-text list in the form `- name: description\n` per line, with very low token cost. The index for three Skills costs roughly 60–90 tokens — no matter how long the Skill bodies are, the token cost of this section in the System Prompt is fixed.
 
-这里有一个测试用例值得作为规范性文档引用：
+There's a test case here worth citing as a normative reference:
 
 ```go
-// Progressive Disclosure：skill 全文不能出现在 System Prompt 中
+// Progressive Disclosure: the skill's full body must not appear in the System Prompt
 if strings.Contains(prompt, "Always run go vet first.") {
     t.Error("prompt must NOT contain skill body content (progressive disclosure violated)")
 }
 ```
 
-这条断言不只是测试，它是协议的**不变量声明**：body 永远不能渗透进 System Prompt。
+This assertion isn't just a test — it's a declaration of the protocol's **invariant**: the body must never leak into the System Prompt.
 
-![图：System Prompt 分段结构与 Skill 索引位置](./images/system-prompt-anatomy-05.png)
+![Diagram: System Prompt section structure and the Skill index position](/blog/agent-skills/images/system-prompt-anatomy-05.png)
 
 
 ---
 
-## LLM 怎么用 Skill？
+## How does the LLM use a Skill?
 
-一次完整的 Skill 使用，在 ReAct 循环中的形态如下：
+Here's what one complete Skill usage looks like within the ReAct loop:
 
 ```
-Turn N（用户提交任务）:
-  LLM 收到 System Prompt（含 Skills 索引）+ 用户 prompt
-  LLM 输出: tool_call → use_skill(skill_name="go-refactor")
+Turn N (user submits a task):
+  The LLM receives the System Prompt (with the Skills index) + the user prompt
+  LLM output: tool_call → use_skill(skill_name="go-refactor")
 
-  框架执行 use_skill:
+  The framework executes use_skill:
     Index.GetFullContent("go-refactor")
-    → 读取 skills/go-refactor/SKILL.md
-    → parseFrontmatter → 返回 body
+    → reads skills/go-refactor/SKILL.md
+    → parseFrontmatter → returns the body
 
-  工具结果作为 Observation 注入 Turn N 上下文
+  The tool result is injected as an Observation into the Turn N context
 
 Turn N+1:
-  LLM 收到完整的 go-refactor 指南内容（在 ToolResult 中）
-  LLM 在这份指南的指导下执行实际重构任务
-  LLM 输出: 后续工具调用（read_file、edit_file 等）
+  The LLM receives the full go-refactor guide content (in the ToolResult)
+  The LLM executes the actual refactoring task guided by this guide
+  LLM output: subsequent tool calls (read_file, edit_file, etc.)
 ```
 
-Skill 的全文内容出现在 `ToolResult`（工具观察结果）里，而不是 System Prompt 里。这是上下文注入位置的关键差异：ToolResult 是会话历史的一部分，随着压缩轮次可以被摘要或裁剪；System Prompt 是永久开销，不参与压缩。
+The full text of a Skill appears in the `ToolResult` (the tool observation), not in the System Prompt. This is the key difference in context injection position: a ToolResult is part of session history and can be summarized or trimmed across compaction rounds; the System Prompt is a permanent cost that never participates in compaction.
 
-![图：Skill 调用在 ReAct 循环中的位置](./images/skill-in-react-loop-06.png)
+![Diagram: where a Skill call sits in the ReAct loop](/blog/agent-skills/images/skill-in-react-loop-06.png)
 
 
 ---
 
-## 两种触发方式
+## Two trigger paths
 
-harness9 的 Skill 系统设计了两条触发路径，对应不同的使用场景。
+harness9's Skills system is designed with two trigger paths, corresponding to different usage scenarios.
 
-**路径一：Tool Calling（主路径）**
+**Path one: tool calling (the main path)**
 
-LLM 自主判断，通过 `use_skill` 工具调用触发。这是生产场景的主流路径，LLM 根据任务语义决定是否需要 Skill，以及需要哪个。
+The LLM decides on its own, triggering via a `use_skill` tool call. This is the mainstream path in production, where the LLM decides whether it needs a Skill — and which one — based on the semantics of the task.
 
-**路径二：Slash Command（人工快速通道）**
+**Path two: slash command (a manual fast path)**
 
-![图：通过Slash Command执行Skill](./images/slash-command-skill.png)
+![Diagram: executing a Skill via a slash command](/blog/agent-skills/images/slash-command-skill.png)
 
-CLI REPL 模式下，用户可以直接输入 `/skill-name` 绕过 LLM 判断：
+In CLI REPL mode, a user can type `/skill-name` directly to bypass the LLM's decision:
 
 ```go
 func resolvePrompt(input string, idx *skills.Index) (prompt string, ok bool) {
@@ -434,7 +434,7 @@ func resolvePrompt(input string, idx *skills.Index) (prompt string, ok bool) {
 
     body, err := idx.GetFullContent(name)
     if err != nil {
-        log.Print(logfmt.FormatMsg("skills", fmt.Sprintf("激活失败: %v", err)))
+        log.Print(logfmt.FormatMsg("skills", fmt.Sprintf("activation failed: %v", err)))
         return "", false
     }
     if extra == "" {
@@ -444,49 +444,49 @@ func resolvePrompt(input string, idx *skills.Index) (prompt string, ok bool) {
 }
 ```
 
-`/go-refactor 清理 main.go` 会把 Skill 正文和附加指令拼接后作为 prompt 直接发给 LLM。这相当于把 Skill 内容从 ToolResult 层提升到了 User Message 层——LLM 在第一个 Turn 就能看到完整的 Skill 内容，不需要额外的工具调用轮次。
+`/go-refactor clean up main.go` concatenates the Skill body with the extra instruction and sends it directly to the LLM as the prompt. This effectively promotes the Skill content from the ToolResult layer to the User Message layer — the LLM sees the full Skill content in the very first turn, with no extra tool-call round needed.
 
-TUI 模式下，Tab 补全会把 Skills 名称和内置命令合并在一个补全列表里，`/` 前缀触发，并用青色（`Color("14")`）高亮区分。这是一个细节：`skillStyle` 和普通命令用不同颜色，视觉上的区分反映了语义上的区分——Skill 是用户定义的领域能力，内置命令是框架控制命令。
+In TUI mode, Tab completion merges Skill names with built-in commands into a single completion list, triggered by the `/` prefix, and highlighted in cyan (`Color("14")`) to distinguish them. This is a small but telling detail: `skillStyle` uses a different color from ordinary commands — the visual distinction mirrors a semantic one: a Skill is user-defined domain capability, while a built-in command is a framework control command.
 
-![图：两条 Skill 触发路径对比](./images/skill-trigger-paths-07.png)
+![Diagram: comparison of the two Skill trigger paths](/blog/agent-skills/images/skill-trigger-paths-07.png)
 
 
 ---
 
-## Skill 调用失败了怎么办？
+## What happens when a Skill call fails?
 
-`GetFullContent` 在 Skill 不存在时的错误信息是刻意设计的：
+The error message `GetFullContent` produces when a Skill doesn't exist is deliberately designed:
 
 ```go
-return "", fmt.Errorf("skill %q 不存在，可用技能: %s", name, idx.availableNames())
+return "", fmt.Errorf("skill %q does not exist, available skills: %s", name, idx.availableNames())
 ```
 
-错误信息包含了所有可用的 Skill 名称。由于这个错误会通过 `IsError: true` 的 `ToolResult` 返回给 LLM，LLM 可以读到"我调用的 Skill 不存在，但可用的有这些"，然后根据这个列表修正调用，或者选择另一个 Skill，或者直接回答用户说没有对应的领域知识。这是 harness9 工具失败设计的通用模式——错误不终止循环，而是作为 Observation 让 LLM 自愈。
+The error message includes all available Skill names. Since this error is returned to the LLM as a `ToolResult` with `IsError: true`, the LLM can read "the Skill I called doesn't exist, but here are the ones available," and then correct its call based on that list, choose a different Skill, or simply tell the user directly that no corresponding domain knowledge exists. This is harness9's general pattern for tool-failure design — an error doesn't terminate the loop; it becomes an Observation that lets the LLM self-heal.
 
-Skill 目录不存在时返回空 `Index`，静默不报错。`Index.IsEmpty()` 为 true 时，`DefaultPromptBuilder` 跳过整个 Skills 段落。框架的零配置运行原则：没有 Skill 文件，Agent 照常工作，只是没有这个能力扩展机制。
-
----
-
-## Skill 不是 Tool，也不是 Memory
-
-LangChain 的 `Tool` 是可执行的函数，有输入输出，执行会产生副作用。
-
-OpenAI Agents SDK 的 `file_search` 是 RAG 检索，把相关文档片段注入上下文，召回权在 embedding 模型。
-
-harness9 的 Skill 是**声明式的领域知识容器**，不执行，不产生副作用，内容是静态的 Markdown 文本，加载后作为 LLM 的认知上下文而非工具调用结果。
-
-它更接近于一种"协议约定"：Skill 的 `description` 字段是 LLM 决策层的输入，Skill 的 `body` 是 LLM 执行层的输入，两者分属不同的时间点和上下文位置。
-
-CrewAI 的 Agent Role 是在 Agent 初始化时固定的，无法在运行时扩展。harness9 的 Skill 是运行时按需拉取的，LLM 在一次 Interaction 中可以先后加载多个 Skill，每个 Skill 对应一个子任务的领域知识，任务完成后这些内容留在会话历史里，等待被压缩器处理。
+When the Skills directory doesn't exist, an empty `Index` is returned, silently, with no error. When `Index.IsEmpty()` is true, `DefaultPromptBuilder` skips the entire Skills section. This follows the framework's zero-configuration principle: with no Skill files, the Agent works as usual — it just lacks this capability-extension mechanism.
 
 ---
 
-## 结语
+## A Skill is neither a Tool nor Memory
 
-harness9 的 Agent Skill 系统核心只有一个判断：**LLM 比检索算法更擅长判断"现在需要什么知识"。**
+LangChain's `Tool` is an executable function with inputs and outputs, and its execution produces side effects.
 
-这个判断成立的前提是：任务语义对 LLM 是透明的，而 Skill 的描述文案对 LLM 是足够清晰的。这把工程师的工作重心从"调参 embedding 相似度阈值"转移到了"写好 Skill 的 description"——一件更接近人类直觉的事。
+The OpenAI Agents SDK's `file_search` is RAG retrieval — it injects relevant document snippets into the context, with recall authority residing in the embedding model.
 
-留一个思考：当 Skill 数量增长到数十个时，索引本身也会消耗可观的 token。harness9 当前没有对索引做进一步的分层或分组——这是下一个有趣的设计问题。
+harness9's Skill is a **declarative domain-knowledge container** — it doesn't execute, produces no side effects, and its content is static Markdown text that, once loaded, becomes part of the LLM's cognitive context rather than a tool-call result.
+
+It's closer to a "protocol convention": a Skill's `description` field is input to the LLM's decision layer, while its `body` is input to the LLM's execution layer — the two belong to different points in time and different positions in the context.
+
+CrewAI's Agent Role is fixed when the Agent is initialized and can't be extended at runtime. harness9's Skill is pulled on demand at runtime — within a single Interaction, the LLM can load multiple Skills in sequence, each supplying the domain knowledge for one sub-task; once the task is done, that content stays in session history awaiting processing by the compactor.
+
+---
+
+## Closing thoughts
+
+At its core, harness9's Agent Skills system rests on a single judgment: **an LLM is better than a retrieval algorithm at judging "what knowledge is needed right now."**
+
+That judgment holds as long as the semantics of the task are transparent to the LLM and the Skill's description text is clear enough. It shifts an engineer's focus from "tuning embedding similarity thresholds" to "writing a good Skill description" — a task much closer to human intuition.
+
+One thing worth pondering: as the number of Skills grows into the dozens, the index itself will start consuming a noticeable number of tokens. harness9 currently does no further layering or grouping of the index — that's an interesting design problem for the next iteration.
 
 ---

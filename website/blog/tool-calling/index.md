@@ -1,67 +1,67 @@
 ---
-title: "harness9 工具调用系统 — 从接口契约到并发沙箱的工程实践"
+title: "harness9's Tool Calling System: From Interface Contracts to Concurrent Sandboxing"
 date: 2026-06-01
 tags: [harness9, harness, agent, golang, tool-calling, concurrency, sandbox]
-summary: "深入 harness9 工具调用系统的每一层设计：BaseTool 接口抽象、并发执行模型、路径级锁、safePath 沙箱、edit_file 四级模糊匹配，以及贯穿全局的自愈机制——错误不是终点，而是下一轮推理的输入。"
+summary: "A deep dive into every layer of harness9's tool calling system: the BaseTool interface abstraction, the concurrent execution model, path-level locking, the safePath sandbox, edit_file's four-tier fuzzy matching, and the self-healing mechanism that runs through the whole design — errors aren't a dead end, they're input for the next round of reasoning."
 ---
 
-# harness9 工具调用系统 — 从接口契约到并发沙箱的工程实践
+# harness9's Tool Calling System: From Interface Contracts to Concurrent Sandboxing
 
-## 关于 harness9
+## About harness9
 
-harness9 是一款轻量、完备、生产可用的 Go 语言 Agent Harness 框架。
+harness9 is a lightweight, feature-complete, production-ready Agent Harness framework written in Go.
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
-- **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
+- **Website**: [https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **GitHub**: [https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
-Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
+A star is the most direct way to support this open-source project. Issues and PRs are welcome.
 
 ---
 
 ## TL;DR
 
-harness9 的工具调用（Tool Calling）系统围绕三个核心决策展开：**接口在使用者侧定义**、**并发执行保序写入**、**错误原样回传触发自愈**。路径沙箱与路径级读写锁是生产可用的安全底线，edit_file 的四级模糊匹配是对 LLM 输出不稳定性的系统性对抗。
+harness9's tool calling system revolves around three core decisions: **interfaces are defined on the consumer side**, **concurrent execution with order-preserving writes**, and **errors are passed back verbatim to trigger self-healing**. The path sandbox and path-level read/write locks form the production-grade security baseline, and edit_file's four-tier fuzzy matching is a systematic countermeasure against the instability of LLM output.
 
 ---
 
-## 一、数据类型层：三个类型撑起整个协议
+## 1. The Data Type Layer: Three Types That Carry the Entire Protocol
 
-工具调用系统的契约从 `internal/schema/message.go` 中三个类型出发。
+The tool calling system's contract starts from three types in `internal/schema/message.go`.
 
 ```go
 type ToolCall struct {
     ID        string
     Name      string
-    Arguments json.RawMessage // 延迟反序列化，解析责任在具体工具
+    Arguments json.RawMessage // Deferred deserialization — parsing is the tool's responsibility
 }
 
 type ToolResult struct {
     ToolCallID string
     Output     string
-    IsError    bool  // true 时引擎将错误原文回传给 LLM
+    IsError    bool  // when true, the engine passes the raw error text back to the LLM
 }
 
 type ToolDefinition struct {
     Name        string
     Description string
-    InputSchema any   // 各 Provider 自行适配 SDK 类型
+    InputSchema any   // each provider adapts this to its own SDK type
 }
 ```
 
-`Arguments` 使用 `json.RawMessage` 是一个蓄意的设计选择。引擎层不知道、也不需要知道每个工具的参数结构。类型安全边界被推迟到工具实现内部，代价是每个工具都要自行调用 `json.Unmarshal`，收益是引擎与工具完全解耦——新增工具不需要改引擎任何一行代码。
+Using `json.RawMessage` for `Arguments` is a deliberate design choice. The engine layer doesn't know — and doesn't need to know — the argument structure of any given tool. The type-safety boundary is pushed down into each tool's implementation: the cost is that every tool must call `json.Unmarshal` itself, and the payoff is that the engine and the tools are fully decoupled — adding a new tool requires zero changes to the engine.
 
-`InputSchema` 使用 `any` 同理。内置工具以 `map[string]interface{}` 形式声明 JSON Schema，各 Provider 适配器再把它转换为自家 SDK 要求的类型（OpenAI 的 `shared.FunctionParameters`、Anthropic 的 `map[string]any`），schema 包本身不感知厂商差异。
+`InputSchema` uses `any` for the same reason. Built-in tools declare their JSON Schema as `map[string]interface{}`, and each provider adapter converts it into whatever type its own SDK expects (OpenAI's `shared.FunctionParameters`, Anthropic's `map[string]any`). The `schema` package itself stays oblivious to vendor differences.
 
-![图：核心数据类型协议层](./images/schema-types-01.jpg)
+![Diagram: core data type protocol layer](/blog/tool-calling/images/schema-types-01.jpg)
 
 
 ---
 
-## 二、接口层：定义在使用者侧
+## 2. The Interface Layer: Defined on the Consumer Side
 
-harness9 的接口设计遵循 Go 惯例：接口声明在依赖方，而非实现方。
+harness9's interface design follows Go convention: interfaces are declared by the dependent, not the implementer.
 
-`BaseTool` 接口定义在 `internal/tools/base.go`，`Registry` 接口也在同一个包：
+The `BaseTool` interface lives in `internal/tools/base.go`, and the `Registry` interface is in the same package:
 
 ```go
 type BaseTool interface {
@@ -77,9 +77,9 @@ type Registry interface {
 }
 ```
 
-引擎包（`internal/engine`）依赖 `tools.Registry` 接口，而非 `registryImpl` 具体类型。这意味着测试时可以注入任意 mock，生产代码不需要任何改动。
+The engine package (`internal/engine`) depends on the `tools.Registry` interface, not on the concrete `registryImpl` type. That means tests can inject any mock they like, with zero changes needed to production code.
 
-`Registry.Execute` 的签名值得注意——它接收 `schema.ToolCall`，返回 `schema.ToolResult`，而不是 `(string, error)`。这个封装在注册表层完成了一次关键的语义转换：工具执行失败不再是 Go 层面的 `error`，而是 `IsError=true` 的 `ToolResult`。引擎可以把这条失败记录作为普通 Observation 注入上下文，LLM 在下一轮推理时看到错误信息，自行决定如何处理。
+The signature of `Registry.Execute` is worth pausing on — it takes a `schema.ToolCall` and returns a `schema.ToolResult`, rather than `(string, error)`. This wrapping performs a key semantic conversion at the registry layer: a tool execution failure is no longer a Go-level `error`, but a `ToolResult` with `IsError=true`. The engine can inject that failure record into the context as an ordinary Observation, and the LLM sees the error information on its next turn and decides for itself how to respond.
 
 ```go
 func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema.ToolResult {
@@ -87,7 +87,7 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
     if !exists {
         return schema.ToolResult{
             ToolCallID: call.ID,
-            Output:     fmt.Sprintf("Error: 系统中不存在名为 '%s' 的工具。", call.Name),
+            Output:     fmt.Sprintf("Error: no tool named '%s' exists in the system.", call.Name),
             IsError:    true,
         }
     }
@@ -103,27 +103,27 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 }
 ```
 
-错误不终止循环，错误是下一轮推理的原材料——这是 harness9 自愈（Self-Healing）能力的物质基础。
+Errors don't terminate the loop — errors are raw material for the next round of reasoning. This is the material foundation of harness9's self-healing capability.
 
-![图：Registry 执行路径与自愈回路](./images/registry-selfheal-02.jpg)
+![Diagram: Registry execution path and self-healing loop](/blog/tool-calling/images/registry-selfheal-02.jpg)
 
 
 ---
 
-## 三、并发执行模型：预分配切片 + 索引写入
+## 3. The Concurrent Execution Model: Pre-Allocated Slices + Indexed Writes
 
-主流 LLM（GPT、Claude）可以在单次响应中发出多个 `ToolCall`。harness9 在引擎层并发执行它们：
+Mainstream LLMs (GPT, Claude) can emit multiple `ToolCall`s in a single response. harness9 executes them concurrently at the engine layer:
 
 ```go
 func (e *AgentEngine) executeTools(ctx context.Context, turn int,
     toolCalls []schema.ToolCall, logPrefix string, em emitter) []schema.ToolResult {
 
-    results := make([]schema.ToolResult, len(toolCalls)) // 预分配
+    results := make([]schema.ToolResult, len(toolCalls)) // pre-allocated
     var wg sync.WaitGroup
 
     var sem chan struct{}
     if e.maxConcurrentTools > 0 {
-        sem = make(chan struct{}, e.maxConcurrentTools) // 并发度限制
+        sem = make(chan struct{}, e.maxConcurrentTools) // concurrency limit
     }
 
     for i, toolCall := range toolCalls {
@@ -141,7 +141,7 @@ func (e *AgentEngine) executeTools(ctx context.Context, turn int,
                 defer cancel()
             }
             // ...
-            results[idx] = e.registry.Execute(toolCtx, tc) // 索引写入
+            results[idx] = e.registry.Execute(toolCtx, tc) // indexed write
         }(i, toolCall)
     }
     wg.Wait()
@@ -149,34 +149,34 @@ func (e *AgentEngine) executeTools(ctx context.Context, turn int,
 }
 ```
 
-两个并发安全细节值得单独拎出来说：
+Two concurrency-safety details are worth calling out on their own:
 
-**预分配 + 索引写入**：`results` 在启动 goroutine 之前就已分配好长度，每个 goroutine 通过闭包捕获的 `idx` 写入固定位置，不同 goroutine 写不同槽位，无竞态条件，也不需要任何锁。Go 的内存模型保证这种模式是安全的。
+**Pre-allocation + indexed writes**: `results` is allocated to its final length before any goroutine is launched, and each goroutine writes to a fixed slot via the `idx` captured in its closure. Different goroutines write to different slots, so there's no race condition and no lock is needed. Go's memory model guarantees this pattern is safe.
 
-**每工具独立超时**：每个 goroutine 内部通过 `context.WithTimeout(ctx, e.toolTimeout)` 创建子上下文。一个工具超时只会取消自己的子上下文，不会影响同 Turn 内其他工具的执行。这是 `toolCtx` 而非共享 `ctx` 传给 `registry.Execute` 的原因。
+**Independent per-tool timeouts**: each goroutine creates its own child context via `context.WithTimeout(ctx, e.toolTimeout)`. A timeout on one tool only cancels its own child context — it has no effect on other tools running in the same turn. That's why `toolCtx`, rather than the shared `ctx`, is what gets passed to `registry.Execute`.
 
-并发度通过 `maxConcurrentTools` 选项控制——信道作信号量，`sem <- struct{}{}` 阻塞表示占位，`<-sem` 释放槽位。设为 0 时不限制并发度。
+Concurrency level is controlled via the `maxConcurrentTools` option — a channel acts as a semaphore, `sem <- struct{}{}` blocking to acquire a slot and `<-sem` releasing it. Setting it to 0 means no limit.
 
-引擎的默认配置是 `maxTurns=50, toolTimeout=60s`，为生产场景提供合理的上限兜底。
+The engine's default configuration is `maxTurns=50, toolTimeout=60s`, giving production scenarios a reasonable upper bound as a safety net.
 
-![图：并发工具执行时序](./images/concurrent-tools-timing-03.jpg)
+![Diagram: concurrent tool execution timeline](/blog/tool-calling/images/concurrent-tools-timing-03.jpg)
 
 
 ---
 
-## 四、路径沙箱：safePath 的两层防线
+## 4. The Path Sandbox: safePath's Two Lines of Defense
 
-`bash` 工具不做命令限制，`read_file` 和 `write_file` 则受到 `safePath` 保护。两者的安全哲学截然不同，但都是刻意的选择。
+The `bash` tool imposes no command restrictions, while `read_file` and `write_file` are protected by `safePath`. The two take opposite security philosophies, and both are deliberate choices.
 
-`safePath` 的核心逻辑在 `internal/tools/safe_path.go`：
+The core logic of `safePath` lives in `internal/tools/safe_path.go`:
 
 ```go
 func safePath(workDir, inputPath string) (string, error) {
-    // 绝对路径输入先检：在 Join 前直接拦截敏感路径
+    // Check absolute-path inputs first: intercept sensitive paths before Join
     if filepath.IsAbs(inputPath) {
         cleanInput := filepath.Clean(inputPath)
         if isSensitivePath(cleanInput) {
-            return "", fmt.Errorf("路径 '%s' 是受保护的敏感路径，禁止访问", inputPath)
+            return "", fmt.Errorf("path '%s' is a protected sensitive path, access denied", inputPath)
         }
     }
 
@@ -185,39 +185,39 @@ func safePath(workDir, inputPath string) (string, error) {
     absPath, err := filepath.Abs(joined)
     // ...
 
-    // 前缀必须是 cleanWorkDir + PathSeparator，不能只是 cleanWorkDir
-    // 否则 "/project-evil" 会被误判为 "/project" 的合法子路径
+    // The prefix must be cleanWorkDir + PathSeparator, not just cleanWorkDir —
+    // otherwise "/project-evil" would be wrongly accepted as a valid subpath of "/project"
     if !strings.HasPrefix(absPath, cleanWorkDir+string(os.PathSeparator)) && absPath != cleanWorkDir {
-        return "", fmt.Errorf("路径 '%s' 超出工作区范围", inputPath)
+        return "", fmt.Errorf("path '%s' is outside the workspace", inputPath)
     }
 
-    if isSensitivePath(absPath) { // 二次检查：Join 后再过一遍
-        return "", fmt.Errorf("路径 '%s' 是受保护的敏感路径，禁止访问", inputPath)
+    if isSensitivePath(absPath) { // second check: re-verify after Join
+        return "", fmt.Errorf("path '%s' is a protected sensitive path, access denied", inputPath)
     }
     return absPath, nil
 }
 ```
 
-两层防线各有针对的攻击向量：
+Each of the two lines of defense targets a distinct attack vector:
 
-第一层（绝对路径预检）针对直接提供绝对路径的情形，在 `filepath.Join` 前就拦截，防止攻击者通过 `/home/user/.ssh/id_rsa` 绕过相对路径沙箱。
+The first line (absolute-path pre-check) targets cases where an attacker supplies an absolute path directly, intercepting it before `filepath.Join` runs — this prevents bypassing the relative-path sandbox via something like `/home/user/.ssh/id_rsa`.
 
-第二层（Join 后前缀校验）针对 `../../etc/passwd` 这类相对路径穿越。`filepath.Abs` 会把 `Join("/project", "../../etc/passwd")` 解析成 `/etc/passwd`，然后前缀校验发现它不以 `/project/` 开头，直接拒绝。
+The second line (post-Join prefix check) targets relative-path traversal like `../../etc/passwd`. `filepath.Abs` resolves `Join("/project", "../../etc/passwd")` down to `/etc/passwd`, and the prefix check then finds it doesn't start with `/project/` and rejects it outright.
 
-注释里那个 `/project-evil` 细节是真实 bug 的防范——纯字符串前缀匹配时 `/project-evil` 会通过 `/project` 的检查，但加上 `PathSeparator` 就不会了。
+The `/project-evil` detail in the comment guards against a real bug — a naive string-prefix match would let `/project-evil` slip past a check for `/project`, but adding `PathSeparator` closes that hole.
 
-硬编码的敏感路径列表包含 `~/.ssh`、`~/.aws`、`~/.kube`、`~/.gnupg`、`~/.netrc`、`~/.config/gcloud`——这些是凭证泄漏风险最高的目录，无论 `workDir` 设置成什么都会被拒绝。
+The hardcoded list of sensitive paths includes `~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`, `~/.netrc`, and `~/.config/gcloud` — the directories with the highest risk of credential leakage — and these are rejected regardless of what `workDir` is set to.
 
-![图：safePath 双层防线](./images/safepath-defense-04.jpg)
+![Diagram: safePath's two-layer defense](/blog/tool-calling/images/safepath-defense-04.jpg)
 
 
 ---
 
-## 五、路径级锁：比全局锁细一个量级
+## 5. Path-Level Locking: One Order of Magnitude Finer Than a Global Lock
 
-`safePath` 防的是越界，路径级读写锁防的是同一文件上的并发竞争。
+`safePath` guards against escaping the sandbox; path-level read/write locks guard against concurrent contention on the same file.
 
-`internal/tools/path_locker.go` 实现了一套引用计数的路径粒度锁：
+`internal/tools/path_locker.go` implements a reference-counted, path-granularity locking scheme:
 
 ```go
 type pathLock struct {
@@ -235,12 +235,12 @@ func RLockPath(path string) func() {
     l.rw.RLock()
     return func() {
         l.rw.RUnlock()
-        releasePathLock(path, l) // ref--，归零时从 map 删除
+        releasePathLock(path, l) // ref--, removed from the map once it hits zero
     }
 }
 ```
 
-使用侧极其简洁：
+The call site is extremely simple:
 
 ```go
 // read_file.go
@@ -252,74 +252,74 @@ unlock := LockPath(fullPath)
 defer unlock()
 ```
 
-这个设计的关键属性：
+The key properties of this design:
 
-不同路径之间完全无竞争。同时读取 `a.go` 和 `b.go` 的两个 goroutine 拿到的是不同的 `RWMutex`，互不阻塞。只有操作同一路径的并发调用才会发生锁竞争。
+Different paths never contend with each other. Two goroutines reading `a.go` and `b.go` at the same time get distinct `RWMutex` instances and never block one another. Lock contention only arises between concurrent calls operating on the exact same path.
 
-引用计数解决了 map 的无限膨胀问题。没有活跃使用者的路径条目会从 `pathLocks` 中删除，不会因为历史操作路径数量增长而导致内存泄漏。
+Reference counting solves the problem of unbounded map growth. Path entries with no active users are removed from `pathLocks`, so memory doesn't leak as the number of historically touched paths grows.
 
-`getOrCreatePathLock` 和 `releasePathLock` 都用 `pathLocksMu` 互斥保护 map 操作，确保 `ref++` 和 `ref--` 的原子性。
+Both `getOrCreatePathLock` and `releasePathLock` guard map access with `pathLocksMu`, ensuring `ref++` and `ref--` stay atomic.
 
-与全局 `sync.RWMutex` 相比，路径级锁的优势在吞吐量上：LLM 同时调用 `read_file("a.go")` 和 `write_file("b.go")` 时，两个操作可以完全并行。
+Compared to a global `sync.RWMutex`, path-level locking's advantage shows up in throughput: when the LLM concurrently calls `read_file("a.go")` and `write_file("b.go")`, the two operations can run fully in parallel.
 
-![图：路径级锁与全局锁对比](./images/path-locker-comparison-05.jpg)
+![Diagram: path-level locking vs. global locking](/blog/tool-calling/images/path-locker-comparison-05.jpg)
 
 
 
 ---
 
-## 六、edit_file 的四级模糊匹配
+## 6. edit_file's Four-Tier Fuzzy Matching
 
-`edit_file` 是内置工具中设计最复杂的一个，它解决的问题是：LLM 生成的 `source_text` 和文件里的实际内容经常不完全一样。
+`edit_file` is the most intricately designed of the built-in tools, and it exists to solve one problem: the `source_text` an LLM generates often doesn't exactly match what's actually in the file.
 
-四级容错流水线（Four-Level Fallback Pipeline）在 `fuzzyReplace` 函数中展开：
+The four-level fallback pipeline unfolds inside the `fuzzyReplace` function:
 
 ```go
-// L1: 精确匹配
+// L1: exact match
 count := strings.Count(originalContent, sourceText)
 if count == 1 {
     return strings.Replace(originalContent, sourceText, targetText, 1), nil
 }
 if count > 1 {
-    return "", fmt.Errorf("source_text 匹配到了 %d 处，请提供更多的上下文代码以确保唯一性", count)
+    return "", fmt.Errorf("source_text matched %d locations, please provide more surrounding context to ensure uniqueness", count)
 }
 
-// 进入 L2-L4，先做换行符归一化
+// Entering L2-L4, normalize line endings first
 normalizedContent := strings.ReplaceAll(originalContent, "\r\n", "\n")
 normalizedSource := strings.ReplaceAll(sourceText, "\r\n", "\n")
 
-// L2: 换行符归一化匹配
+// L2: line-ending-normalized match
 count = strings.Count(normalizedContent, normalizedSource)
-if count == 1 { /* 替换，按需恢复 \r\n */ }
+if count == 1 { /* replace, restore \r\n if needed */ }
 
-// L3: 整体首尾去空
+// L3: whole-block leading/trailing whitespace trim
 trimmedSource := strings.TrimSpace(normalizedSource)
 if trimmedSource != "" {
     count = strings.Count(normalizedContent, trimmedSource)
-    if count == 1 { /* 替换 */ }
+    if count == 1 { /* replace */ }
 }
 
-// L4: 逐行去缩进滑动窗口匹配
+// L4: line-by-line, indentation-stripped sliding-window match
 return lineByLineReplace(normalizedContent, normalizedSource, normalizedTarget, hasCRLF)
 ```
 
-每一级都有唯一性校验（Uniqueness Guard）：count > 1 时直接返回错误，要求 LLM 提供更多上下文，而不是猜测匹配哪一处。这避免了"错改正确代码"这类沉默的破坏性错误。
+Every level has a uniqueness guard: if `count > 1`, it returns an error immediately, asking the LLM to supply more context rather than guessing which occurrence to match. This avoids the class of silent, destructive bug where correct code gets edited by mistake.
 
-L4 的逐行去缩进是最后的容错防线，专门应对 LLM 对缩进的不稳定输出。它用滑动窗口逐行比较 `strings.TrimSpace` 后的内容，容忍空格和 Tab 的差异。
+L4's line-by-line, indentation-stripped comparison is the last line of defense, purpose-built to handle the LLM's unstable indentation output. It slides a window line by line, comparing content after `strings.TrimSpace`, tolerating differences in spaces and tabs.
 
-换行风格保留是一个细节：L2 及以下的替换在归一化内容（`\n`）上完成，写回前检查原始文件是否含 `\r\n`，如果有就恢复，确保跨平台兼容。
+Preserving the original line-ending style is a subtle but important detail: the replacements at L2 and below operate on normalized content (`\n`), and before writing back, the code checks whether the original file used `\r\n` and restores it if so — ensuring cross-platform compatibility.
 
-这套机制的工程意义在于：LLM 不需要完美地复现代码格式，框架会帮它找到最接近的匹配。同时，唯一性校验确保这种"宽容"不会变成"危险"。
+The engineering significance of this mechanism: the LLM doesn't need to reproduce code formatting perfectly — the framework will find the closest match for it. At the same time, the uniqueness guard ensures that this leniency never turns into a hazard.
 
-![图：edit_file 四级匹配流水线](./images/edit-file-pipeline-06.jpg)
+![Diagram: edit_file's four-tier matching pipeline](/blog/tool-calling/images/edit-file-pipeline-06.jpg)
 
 
 
 ---
 
-## 七、bash 工具的 YOLO 哲学与双重超时
+## 7. The bash Tool's YOLO Philosophy and Dual Timeouts
 
-`bash` 工具与其他文件工具在安全哲学上完全不同。它不做路径沙箱，也不做命令白名单。
+The `bash` tool takes a completely different security philosophy from the other file tools. It applies no path sandboxing and no command allowlist.
 
 ```go
 const bashHardTimeout = 30 * time.Second
@@ -334,61 +334,60 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
     out, err := cmd.CombinedOutput()
 
     if timeoutCtx.Err() == context.DeadlineExceeded {
-        return outputStr + "\n[警告: 命令执行超时(30s)，已被系统强制终止。]", nil
+        return outputStr + "\n[Warning: command execution timed out (30s) and was forcibly terminated.]", nil
     }
     if err != nil {
-        // 注意：返回 (string, nil)，不是 (string, error)
-        return fmt.Sprintf("执行报错: %v\n输出:\n%s", err, outputStr), nil
+        // Note: returns (string, nil), not (string, error)
+        return fmt.Sprintf("Execution error: %v\nOutput:\n%s", err, outputStr), nil
     }
     // ...
 }
 ```
 
-三个设计点：
+Three design points:
 
-`bash -c` 包裹支持完整 Shell 语法——管道、逻辑与、环境变量、重定向，LLM 不需要拆分命令。
+The `bash -c` wrapper supports full shell syntax — pipes, logical AND, environment variables, redirection — so the LLM never needs to split commands apart.
 
-双重超时兜底：引擎层的 `toolTimeout`（默认 60s）和工具内的 `bashHardTimeout`（30s），实际生效的是两者中较短的那个。这是针对 `tail -f`、`top`、Web 服务等阻塞型命令的"安全网"。
+Dual-timeout backstop: the engine layer's `toolTimeout` (default 60s) and the tool's own `bashHardTimeout` (30s) — whichever is shorter actually takes effect. This is the safety net for blocking commands like `tail -f`, `top`, or a running web server.
 
-命令失败时返回 `(string, nil)` 而非 `(string, error)`——这是 YOLO 哲学的实现细节。返回 `nil` 意味着 Registry 会生成 `IsError=false` 的 `ToolResult`，错误内容（包含 exit code 和 stderr）作为普通文本进入上下文，LLM 阅读后自行决策。不做半吊子沙箱：bash 工具本质上提供完整 shell 访问，加 `cd /` 就能逃逸 workDir，做命令白名单只是制造安全假象。如果需要路径安全，用 `read_file` 和 `write_file`。
+When a command fails, the tool returns `(string, nil)` rather than `(string, error)` — this is the implementation detail behind the YOLO philosophy. Returning `nil` means the Registry produces a `ToolResult` with `IsError=false`, and the error content (including exit code and stderr) enters the context as plain text for the LLM to read and act on. There's no half-measure sandboxing here: the bash tool inherently grants full shell access, and a simple `cd /` would escape `workDir` anyway, so a command allowlist would only create a false sense of security. If path-level security is what you need, use `read_file` and `write_file` instead.
 
-![图：bash 工具的双重超时保护](./images/bash-timeout-guard-07.jpg)
+![Diagram: the bash tool's dual-timeout guard](/blog/tool-calling/images/bash-timeout-guard-07.jpg)
 
 
 
 ---
 
-## 八、工具系统的整体鸟瞰
+## 8. A Bird's-Eye View of the Whole Tool System
 
-把上面所有层次拼在一起：
+Putting all the layers above together:
 
 ```
 LLM Provider
-    │ ToolCall[]（含 json.RawMessage Arguments）
+    │ ToolCall[] (Arguments as json.RawMessage)
     ▼
 AgentEngine.executeTools
-    ├── goroutine[0] → toolCtx（独立超时）→ Registry.Execute → BashTool
-    ├── goroutine[1] → toolCtx（独立超时）→ Registry.Execute → ReadFileTool
+    ├── goroutine[0] → toolCtx (independent timeout) → Registry.Execute → BashTool
+    ├── goroutine[1] → toolCtx (independent timeout) → Registry.Execute → ReadFileTool
     │                                             └── safePath → RLockPath → os.Open
-    └── goroutine[2] → toolCtx（独立超时）→ Registry.Execute → EditFileTool
+    └── goroutine[2] → toolCtx (independent timeout) → Registry.Execute → EditFileTool
                                                   └── safePath → LockPath → fuzzyReplace
     ↓ sync.WaitGroup.Wait()
-results[0..n]（预分配，无竞态）
-    │ IsError=true 时原样回传
+results[0..n] (pre-allocated, race-free)
+    │ passed back verbatim when IsError=true
     ▼
-ContextHistory（RoleUser + ToolCallID 关联）
+ContextHistory (RoleUser + ToolCallID correlation)
     │
     ▼
-下一轮 LLM 推理
+Next round of LLM reasoning
 ```
 
-![图：工具调用系统整体架构鸟瞰](./images/toolcalling-overview-08.jpg)
-
+![Diagram: bird's-eye view of the tool calling system architecture](/blog/tool-calling/images/toolcalling-overview-08.jpg)
 
 ---
 
-## 结语
+## Conclusion
 
-harness9 的工具调用系统是框架"简洁但完备"原则的缩影：3 个核心类型、2 个接口、1 个并发执行函数，加上 safePath 和路径级锁构成的安全底座，edit_file 的四级模糊匹配应对 LLM 输出的不确定性。
+harness9's tool calling system is a microcosm of the framework's "simple but complete" principle: 3 core types, 2 interfaces, and 1 concurrent execution function, backed by the security foundation formed by safePath and path-level locking, with edit_file's four-tier fuzzy matching handling the uncertainty of LLM output.
 
-值得思考的问题：当工具数量增长到数十个、LLM 每次可能发出 10 个并发调用时，`maxConcurrentTools` 和 `toolTimeout` 的最优配置是什么？这个问题的答案，很大程度上取决于具体工具的 I/O 特性和模型的调用习惯。
+A question worth pondering: as the number of tools grows into the dozens and an LLM might issue as many as 10 concurrent calls at once, what's the optimal configuration for `maxConcurrentTools` and `toolTimeout`? The answer depends heavily on the I/O characteristics of the specific tools involved and the calling habits of the model in question.

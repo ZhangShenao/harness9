@@ -3,82 +3,82 @@ layout: home
 
 hero:
   name: "harness9"
-  text: "轻量级 Go Agent Harness 框架"
-  tagline: 功能完备、生产可用。极简抽象，代码直白。
+  text: "A lightweight Go Agent Harness framework"
+  tagline: Feature-complete and production-ready, with minimal abstractions and code that stays out of your way.
   image:
     src: ''
     alt: 'harness9 terminal demo'
   actions:
     - theme: brand
-      text: 快速开始 →
+      text: Quick Start →
       link: /docs/quick-start
     - theme: alt
-      text: 查看文档
+      text: Read the Docs
       link: /docs/tui
 
 features:
   - icon: 🎯
-    title: 简洁
-    details: 最小化抽象层，代码直白易读，极少的直接依赖。引入 harness9 不意味着引入一套复杂的概念体系。
+    title: Simple
+    details: Minimal abstraction layers, straightforward and readable code, and very few direct dependencies. Adopting harness9 doesn't mean buying into a complex conceptual system.
   - icon: ✅
-    title: 完备
-    details: 覆盖 Agent 运行所需的全部核心模块——Engine、Provider、Schema、Tools、Env，开箱即用。
+    title: Complete
+    details: Covers every core module an Agent needs to run — Engine, Provider, Schema, Tools, Env — ready to use out of the box.
   - icon: 🚀
-    title: 生产可用
-    details: 错误恢复、上下文管理、超时控制、并发工具执行、Path Traversal 防护，不只是 demo。
+    title: Production-Ready
+    details: Error recovery, context management, timeout control, concurrent tool execution, and Path Traversal protection — not just a demo.
   - icon: 💻
-    title: 全屏 TUI
-    details: 流式输出、Spinner 进度、Token 用量实时展示、Tab 补全。AltScreen 全屏渲染，非 TTY 自动退回 CLI。
+    title: Full-Screen TUI
+    details: Streaming output, spinner progress indicators, real-time token usage display, and Tab completion. Full-screen AltScreen rendering, with automatic fallback to CLI for non-TTY environments.
   - icon: ⚡
-    title: Shell 执行
-    details: 输入框 ! 前缀直接运行 Bash 命令，输出追加到对话流并自动注入 LLM 上下文，无需切换终端。
+    title: Shell Execution
+    details: Prefix the input box with ! to run Bash commands directly. Output is appended to the conversation stream and automatically injected into the LLM context — no need to switch terminals.
   - icon: 🧠
     title: Context Engineering
-    details: LLM 摘要压缩、SQLite 会话持久化、80% 阈值自动触发，长对话不丢语义。
+    details: LLM-based summarization compaction, SQLite session persistence, and automatic triggering at an 80% threshold — long conversations never lose their semantics.
   - icon: 🗃️
     title: Long-Term Memory
-    details: 跨会话长期记忆，SQLite + FTS5 持久化，MEMORY.md 物化视图实时注入，显式工具 / 压缩前提取 / nudge 三路触发，零新增依赖。
+    details: Cross-session Long-Term Memory backed by SQLite + FTS5, with a MEMORY.md materialized view injected in real time. Triggered three ways — explicit tools, pre-compaction extraction, and nudges — with zero new dependencies.
   - icon: 📋
-    title: Planning 模块
-    details: Plan Mode 先规划后执行，TodoStore 状态机校验，工具层权限过滤，自动续跑 + 停滞检测。
+    title: Planning Module
+    details: Plan Mode for plan-then-execute workflows, TodoStore state-machine validation, tool-layer permission filtering, automatic continuation, and stagnation detection.
   - icon: 🔀
-    title: 并发工具执行
-    details: 同 Turn 内多工具并发执行，每工具独立超时控制。执行失败时错误原样回传 LLM，触发自动重试。
+    title: Concurrent Tool Execution
+    details: Multiple tools run concurrently within a single turn, each with independent timeout control. On failure, the error is passed straight back to the LLM to trigger automatic retries.
   - icon: 💡
-    title: 推理内容展示
-    details: Anthropic extended thinking 和 OpenRouter reasoning_content 均路由为 EventThinkingDelta，TUI 流式渲染深灰色思维块。
+    title: Reasoning Display
+    details: Both Anthropic extended thinking and OpenRouter's reasoning_content are routed through EventThinkingDelta, with the TUI streaming them as dark gray thinking blocks.
 ---
 
-## 架构总览
+## Architecture Overview
 
-![harness9 整体架构图](/harness9_architecture.png)
+![harness9 overall architecture diagram](/harness9_architecture.png)
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 安装
+### Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ZhangShenao/harness9/master/scripts/install.sh | bash
 ```
 
-### 配置 API Key
+### Configure API Keys
 
 ```bash
 # OpenAI / OpenRouter
 export OPENAI_API_KEY="sk-..."
 
-# 或 Anthropic
+# or Anthropic
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-### 启动
+### Run
 
 ```bash
 cd /your/project && harness9
 ```
 
-> 在 TTY 环境中自动进入全屏 TUI；管道/CI 环境退回 CLI REPL 模式。
+> Automatically launches the full-screen TUI in a TTY environment; falls back to the CLI REPL mode in pipes/CI environments.
 >
-> 更多配置选项见 [快速启动指南](/docs/quick-start)。
+> For more configuration options, see the [Quick Start Guide](/docs/quick-start).

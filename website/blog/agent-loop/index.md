@@ -1,83 +1,83 @@
 ---
-title: "Agent Loop — 500 行 Go 代码驱动的生产级 ReAct 主循环"
+title: "Agent Loop: A Production-Grade ReAct Loop in 500 Lines of Go"
 date: 2026-05-28
 tags: [harness9, agent, golang, react, concurrency]
-summary: "harness9 的 AgentLoop 用不到 500 行 Go 代码实现了生产可用的 ReAct 主循环：显式 for 循环、goroutine 并发工具执行、三重终止保障、emitter 解耦双模式运行。本文拆解每一个关键的架构决策。"
+summary: "harness9's AgentLoop implements a production-ready ReAct main loop in under 500 lines of Go: an explicit for loop, goroutine-based concurrent tool execution, a triple-layer termination guarantee, and an emitter abstraction that decouples dual run modes. This post breaks down every key architectural decision."
 ---
 
-# Agent Loop — 500 行 Go 代码驱动的生产级 ReAct 主循环
+# Agent Loop: A Production-Grade ReAct Loop in 500 Lines of Go
 
-## 关于 harness9
+## About harness9
 
-harness9 是一款轻量、完备、生产可用的 Go 语言 Agent Harness 框架。
+harness9 is a lightweight, feature-complete, production-ready Agent Harness framework written in Go.
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
-- **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
+- **Website**: [https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **GitHub**: [https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
-⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
+⭐ Stars are the most direct way to support open-source work — issues and PRs are welcome.
 
 ---
 
 ## TL;DR
 
-harness9 的 AgentLoop 核心在 `internal/engine/` 目录下，不到 500 行 Go 代码。它用一个显式 `for` 循环实现标准推理行动循环（ReAct Loop），用 goroutine 并发执行工具，用 `emitter` 抽象解耦阻塞模式和流式模式，用三重条件保障循环终止。没有图引擎，没有第三方 Loop 框架，循环控制权完全在框架手里。
+harness9's AgentLoop lives in the `internal/engine/` directory and comes in at under 500 lines of Go. It implements the standard Reasoning-and-Acting loop (ReAct Loop) with a single explicit `for` loop, executes tools concurrently via goroutines, decouples blocking and streaming modes through an `emitter` abstraction, and guarantees loop termination through three independent conditions. No graph engine, no third-party loop framework — control of the loop stays entirely inside the framework.
 
 ---
 
-## 为什么不是图引擎
+## Why Not a Graph Engine
 
-在动手讲实现之前，先回答一个更基本的问题：为什么 harness9 选择显式循环，而不是更"现代"的图编排？
+Before diving into the implementation, it's worth answering a more fundamental question: why did harness9 choose an explicit loop over the more "modern" graph-orchestration approach?
 
-对比调研的七个框架，选择可以分成三类：
+Looking across the seven frameworks surveyed, the choices fall into three camps:
 
-- **委托型**：OpenCode 和 OpenClaw 把循环控制权交给 Vercel AI SDK 的 `streamText`，通过 `maxSteps` 参数限制轮次。好处是代码少，代价是循环逻辑变成黑盒，无法在每轮之间插入自定义逻辑。
-- **图编排型**：DeepAgents 委托 LangGraph 的 `StateGraph`，通过 `recursion_limit: 9999` 控制深度。图模型带来强大的分支和并发能力，但也引入了图引擎依赖和陡峭的心智模型。
-- **显式循环型**：OpenHarness、HermesAgent、OpenAI Agent SDK 都用显式 `while True` 循环，完整掌握每一次迭代的执行路径。
+- **Delegated**: OpenCode and OpenClaw hand loop control to Vercel AI SDK's `streamText`, bounding turns via a `maxSteps` parameter. This means less code, but the loop logic becomes a black box — there's no way to inject custom logic between turns.
+- **Graph-orchestrated**: DeepAgents delegates to LangGraph's `StateGraph`, controlling depth via `recursion_limit: 9999`. The graph model brings powerful branching and concurrency capabilities, but also pulls in a graph-engine dependency and a steeper mental model.
+- **Explicit loop**: OpenHarness, HermesAgent, and the OpenAI Agent SDK all use an explicit `while True` loop, giving full control over every iteration's execution path.
 
-harness9 选择显式循环，理由非常直接：**Agent Loop 本质上是一个带状态的迭代过程，用循环表达它比用图更自然**。每一轮的逻辑是线性的——调用 LLM、检查终止、执行工具、注入观察结果——这不是一个需要图来建模的问题。引入图引擎只会把 200 行清晰的代码变成另一个需要理解的框架。
+harness9 chose the explicit loop for a straightforward reason: **an Agent Loop is fundamentally a stateful iterative process, and a loop expresses that more naturally than a graph does**. Each round's logic is linear — call the LLM, check for termination, execute tools, inject the observation — this isn't a problem that needs a graph to model. Introducing a graph engine would just turn 200 lines of clear code into yet another framework you have to learn.
 
-Go 的 `for` 循环加上 `goroutine`，已经足够。
+Go's `for` loop plus `goroutine` is already enough.
 
 ---
 
-## ReAct 主循环的结构
+## The Structure of the ReAct Main Loop
 
-![图：ReAct 主循环完整控制流](./images/react-loop-control-flow-01.png)
+![Diagram: full ReAct main loop control flow](/blog/agent-loop/images/react-loop-control-flow-01.png)
 
 
 
-`runLoop` 是 `Run` 和 `RunStream` 共享的主循环内核，位于 `internal/engine/agent_loop.go`。整体结构：
+`runLoop` is the shared loop kernel used by both `Run` and `RunStream`, located in `internal/engine/agent_loop.go`. Its overall structure:
 
 ```go
 func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix string, em emitter) error {
-    // 1. 快照配置（避免与 TUI goroutine 的数据竞争）
+    // 1. Snapshot configuration (avoids data races with the TUI goroutine)
     e.mu.RLock()
     sess, comp, planMode, todoStore := e.session, e.compactor, e.planMode, e.todoStore
     e.mu.RUnlock()
 
     contextHistory, startLen := e.loadHistoryWith(ctx, userPrompt, sess)
-    defer func() { /* 保存 TodoStore */ }()
+    defer func() { /* persist the TodoStore */ }()
 
     turnCount := 0
     for {
         turnCount++
 
-        // 三重终止保障
+        // Triple-layer termination guarantee
         if e.maxTurns > 0 && turnCount > e.maxTurns { return ... }
         select { case <-ctx.Done(): return ...; default: }
 
-        // 压缩 + token 估算 + LLM 调用
+        // Compaction + token estimation + LLM call
         compactedHistory := e.applyCompactionWith(comp, contextHistory)
         responseMsg, usage, err := em.generate(ctx, turnCount, compactedHistory, availableTools)
         contextHistory = append(contextHistory, *responseMsg)
 
-        // 自然终止
+        // Natural termination
         if len(responseMsg.ToolCalls) == 0 { break }
 
-        // 并发工具执行
+        // Concurrent tool execution
         results := e.executeTools(ctx, turnCount, responseMsg.ToolCalls, logPrefix, em)
 
-        // 注入 Observation
+        // Inject observations
         for i, toolCall := range responseMsg.ToolCalls {
             contextHistory = append(contextHistory, schema.Message{
                 Role: schema.RoleUser, Content: results[i].Output, ToolCallID: toolCall.ID,
@@ -90,13 +90,13 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 }
 ```
 
-循环体的结构就是 ReAct 的语义：推理（Think）由 LLM 完成，行动（Act）由工具执行，观察（Observe）通过 Observation 注入上下文，然后进入下一轮推理。
+The structure of the loop body directly mirrors ReAct semantics: reasoning (Think) is done by the LLM, action (Act) is carried out by tools, and observation (Observe) is injected into the context — after which the next round of reasoning begins.
 
 ---
 
-## 上下文初始化：system prompt 不持久化
+## Context Initialization: The System Prompt Is Never Persisted
 
-进入循环之前，`loadHistoryWith` 完成两件事：从 `Session` 恢复历史，注入 system prompt。
+Before entering the loop, `loadHistoryWith` does two things: restores history from the `Session`, and injects the system prompt.
 
 ```go
 func (e *AgentEngine) loadHistoryWith(ctx context.Context, userPrompt string, sess memory.Session) ([]schema.Message, int) {
@@ -105,7 +105,7 @@ func (e *AgentEngine) loadHistoryWith(ctx context.Context, userPrompt string, se
         msgs, _ := sess.GetMessages(ctx, 0)
         history = msgs
     }
-    // system prompt 不持久化到 DB，每次调用时重新注入
+    // System prompt is never persisted to the DB — it's re-injected on every call
     if len(history) == 0 || history[0].Role != schema.RoleSystem {
         history = append([]schema.Message{{Role: schema.RoleSystem, Content: e.buildSystemPrompt()}}, history...)
     }
@@ -115,19 +115,19 @@ func (e *AgentEngine) loadHistoryWith(ctx context.Context, userPrompt string, se
 }
 ```
 
-`startLen` 标记了"本次 Run 新增消息的起始位置"。`saveHistoryWith` 调用时只持久化 `msgs[startLen:]`，system prompt 不写库。这个决策避免了重复持久化 system prompt 的问题——跨会话 system prompt 可能会变（比如工作目录变更、Skills 更新），每次从头重建才能保证正确性。
+`startLen` marks "the position where messages newly added by this Run begin." When `saveHistoryWith` is called, it only persists `msgs[startLen:]` — the system prompt is never written to the database. This decision avoids the problem of repeatedly persisting a stale system prompt: across sessions the system prompt can change (working directory changes, Skills updates, etc.), so rebuilding it from scratch every time is the only way to guarantee correctness.
 
 ---
 
-## 三重终止保障
+## Triple-Layer Termination Guarantee
 
-无限循环是 Agent 系统最常见的故障模式。harness9 用三层机制防止它：
+An infinite loop is one of the most common failure modes in agent systems. harness9 prevents it with three layers of protection:
 
-![图：三重终止保障机制](./images/triple-termination-guard-02.png)
+![Diagram: triple-layer termination guarantee mechanism](/blog/agent-loop/images/triple-termination-guard-02.png)
 
 
 
-**第一层：自然终止。** 模型不再发起工具调用时，任务完成，主动 `break`：
+**Layer 1: Natural termination.** When the model stops issuing tool calls, the task is done, and the loop `break`s on its own:
 
 ```go
 if len(responseMsg.ToolCalls) == 0 {
@@ -135,61 +135,61 @@ if len(responseMsg.ToolCalls) == 0 {
 }
 ```
 
-**第二层：MaxTurns 安全阀。** 默认 50 轮，防止模型陷入工具调用死循环：
+**Layer 2: The MaxTurns safety valve.** Defaults to 50 turns, guarding against the model getting stuck in a tool-calling loop:
 
 ```go
 if e.maxTurns > 0 && turnCount > e.maxTurns {
-    return fmt.Errorf("已达最大 Turn 数 (%d)，循环终止", e.maxTurns)
+    return fmt.Errorf("reached max turn count (%d), loop terminated", e.maxTurns)
 }
 ```
 
-**第三层：Context 取消。** 每轮循环开始时检测外部取消信号，支持超时控制和手动中断：
+**Layer 3: Context cancellation.** Checked at the start of every round, supporting both timeout control and manual interruption:
 
 ```go
 select {
 case <-ctx.Done():
-    return fmt.Errorf("context 已取消: %w", ctx.Err())
+    return fmt.Errorf("context cancelled: %w", ctx.Err())
 default:
 }
 ```
 
-注意检查顺序：Context 取消在 MaxTurns 检查之后。当 `turnCount` 超限时直接返回错误，不再消耗 `ctx.Done()` 的检查开销。这是一个微小但有意识的排列——通常 MaxTurns 触发比外部取消更常见。
+Note the order of the checks: context cancellation is checked *after* the MaxTurns check. When `turnCount` exceeds the limit, the function returns immediately without paying the cost of checking `ctx.Done()`. This is a small but deliberate ordering choice — MaxTurns triggers more often than external cancellation in practice.
 
-测试用例 `TestMaxTurnsLimit` 和 `TestContextCancellation` 直接验证这两种路径：
+The test cases `TestMaxTurnsLimit` and `TestContextCancellation` directly exercise these two paths:
 
 ```go
-// MaxTurns 安全阀：LLM 持续发起工具调用时，达到上限后强制退出
+// MaxTurns safety valve: when the LLM keeps issuing tool calls, force exit once the limit is hit
 eng := NewAgentEngine(p, r, "/test", WithMaxTurns(2))
 err := eng.Run(context.Background(), "loop forever")
-// err 包含 "最大 Turn 数"
+// err contains "max turn count"
 
-// Context 取消：立即 cancel 后调用
+// Context cancellation: cancel immediately before calling
 ctx, cancel := context.WithCancel(context.Background())
 cancel()
 err = eng.Run(ctx, "cancelled task")
-// err 包含 "context 已取消"
+// err contains "context cancelled"
 ```
 
 ---
 
-## 并发工具执行：goroutine + 预分配切片
+## Concurrent Tool Execution: Goroutines + Pre-Allocated Slices
 
-当模型在一轮内发起多个工具调用时，串行执行是一种性能浪费。harness9 用 goroutine 并发执行所有工具。
+When the model issues multiple tool calls in a single round, running them sequentially wastes time. harness9 executes all tools for that round concurrently using goroutines.
 
-![图：并发工具执行架构](./images/concurrent-tool-execution-03.png)
+![Diagram: concurrent tool execution architecture](/blog/agent-loop/images/concurrent-tool-execution-03.png)
 
 
 
-`executeTools` 的实现紧凑且无数据竞争：
+The implementation of `executeTools` is tight and race-free:
 
 ```go
 func (e *AgentEngine) executeTools(ctx context.Context, turn int, toolCalls []schema.ToolCall, logPrefix string, em emitter) []schema.ToolResult {
-    results := make([]schema.ToolResult, len(toolCalls)) // 预分配，按索引写入
+    results := make([]schema.ToolResult, len(toolCalls)) // pre-allocated, written by index
     var wg sync.WaitGroup
 
     var sem chan struct{}
     if e.maxConcurrentTools > 0 {
-        sem = make(chan struct{}, e.maxConcurrentTools) // 信号量限制并发度
+        sem = make(chan struct{}, e.maxConcurrentTools) // semaphore limiting concurrency
     }
 
     for i, toolCall := range toolCalls {
@@ -211,7 +211,7 @@ func (e *AgentEngine) executeTools(ctx context.Context, turn int, toolCalls []sc
 
             em.toolStart(turn, tc)
             start := time.Now()
-            results[idx] = e.registry.Execute(toolCtx, tc) // 写入独立索引位置
+            results[idx] = e.registry.Execute(toolCtx, tc) // write to its own index
             em.toolDone(turn, tc, results[idx], time.Since(start))
         }(i, toolCall)
     }
@@ -221,71 +221,71 @@ func (e *AgentEngine) executeTools(ctx context.Context, turn int, toolCalls []sc
 }
 ```
 
-几个关键设计决策：
+A few key design decisions:
 
-**预分配切片 + 索引写入，而不是 channel 收集。** 结果集大小在循环开始前已知（`len(toolCalls)`），不需要动态扩容。每个 goroutine 写入独立的 `results[idx]`，天然无锁——不同索引之间没有内存共享冲突。这比用 `channel` 收集结果再排序更简单，也避免了排序开销。
+**Pre-allocated slice with index-based writes, instead of collecting results over a channel.** The size of the result set is known before the loop starts (`len(toolCalls)`), so no dynamic growth is needed. Each goroutine writes to its own `results[idx]`, which is inherently lock-free — there's no shared-memory conflict between different indices. This is simpler than collecting results over a `channel` and sorting them afterward, and it avoids the sorting overhead entirely.
 
-**`idx` 和 `tc` 显式传参，不用闭包捕获。** Go 的 range 变量在循环迭代中被复用，如果用闭包直接捕获 `i` 和 `toolCall`，所有 goroutine 可能读到相同的最终值。`go func(idx int, tc schema.ToolCall)` 的传参方式在编译期就确定了每个 goroutine 的独立副本。
+**`idx` and `tc` are passed explicitly, not captured by closure.** Go's range variables are reused across loop iterations; if a closure captured `i` and `toolCall` directly, all goroutines could end up reading the same final value. Passing them as `go func(idx int, tc schema.ToolCall)` arguments guarantees each goroutine gets its own copy at compile time.
 
-**信号量用有缓冲 channel。** `make(chan struct{}, maxConcurrentTools)` 是 Go 中信号量的惯用实现。0 表示不限制并发（`sem` 为 nil），直接跳过 acquire/release 逻辑，没有任何额外开销。
+**The semaphore is a buffered channel.** `make(chan struct{}, maxConcurrentTools)` is Go's idiomatic semaphore implementation. A value of 0 means no limit (`sem` is nil), skipping the acquire/release logic entirely with zero extra overhead.
 
-**每个工具独立 `context.WithTimeout`。** `toolCtx` 从父 `ctx` 派生，单个工具超时不影响同 Turn 内其他工具的执行。超时的工具返回 `IsError: true` 的结果，LLM 收到 Observation 后可以重试。
+**Each tool gets its own `context.WithTimeout`.** `toolCtx` is derived from the parent `ctx`, so a single tool timing out doesn't affect the execution of other tools within the same turn. A timed-out tool returns a result with `IsError: true`, and the LLM can retry once it receives the observation.
 
 ---
 
-## 自愈能力：错误是 Observation，不是异常
+## Self-Healing: Errors Are Observations, Not Exceptions
 
-传统的错误处理哲学是：工具失败 = 中断执行，向上抛错。harness9 采用完全不同的处理方式：**工具执行失败的结果原样回传给 LLM 作为 Observation**。
+The traditional error-handling philosophy is: a tool failure means execution stops and the error propagates upward. harness9 takes a completely different approach: **the result of a failed tool execution is passed back to the LLM as-is, as an observation**.
 
-`ToolResult.IsError` 是这个机制的关键字段：
+`ToolResult.IsError` is the key field in this mechanism:
 
 ```go
 type ToolResult struct {
     ToolCallID string `json:"tool_call_id"`
-    Output     string `json:"output"`   // 失败时是错误信息
-    IsError    bool   `json:"is_error"` // 标记执行失败
+    Output     string `json:"output"`   // the error message, on failure
+    IsError    bool   `json:"is_error"` // marks execution failure
 }
 ```
 
-当 `Registry.Execute` 返回 `IsError: true` 的结果时，`runLoop` 不返回错误，而是把这个结果当作普通 Observation 注入上下文：
+When `Registry.Execute` returns a result with `IsError: true`, `runLoop` doesn't return an error — it injects the result into the context as an ordinary observation:
 
 ```go
 for i, toolCall := range responseMsg.ToolCalls {
     contextHistory = append(contextHistory, schema.Message{
         Role:       schema.RoleUser,
-        Content:    results[i].Output, // "command not found" 或其他错误信息
+        Content:    results[i].Output, // "command not found" or some other error message
         ToolCallID: toolCall.ID,
     })
 }
 ```
 
-LLM 在下一轮收到包含错误信息的上下文，可以诊断原因并修正参数重试。测试 `TestToolErrorResult` 验证了这一链路：
+On the next round, the LLM receives the context containing the error message and can diagnose the cause and retry with corrected arguments. The `TestToolErrorResult` test verifies this chain:
 
 ```go
-// errorRegistry 对任何工具调用都返回 IsError: true 的结果
+// errorRegistry returns a result with IsError: true for any tool call
 r := &errorRegistry{} // output: "command not found", IsError: true
 eng := NewAgentEngine(p, r, "/test")
 err := eng.Run(context.Background(), "test error")
-// 不返回 error，错误作为 Observation 传给下一轮 LLM
+// no error is returned — the error is passed to the next round's LLM as an observation
 
-// 验证：第二轮 LLM 收到的最后一条消息包含错误输出
+// Verification: the last message the second-round LLM receives contains the error output
 lastMsg := p.calls[1].messages[len(p.calls[1].messages)-1]
-// lastMsg.Content 包含 "command not found"
+// lastMsg.Content contains "command not found"
 ```
 
-这个设计的代价是：如果 LLM 不能修复问题，循环会持续直到 MaxTurns 触发。收益是：很多工具调用失败可以自动恢复，不需要人工干预。
+The cost of this design: if the LLM can't fix the problem, the loop keeps going until MaxTurns triggers. The benefit: many tool-call failures can recover automatically, without human intervention.
 
 ---
 
-## emitter 抽象：一个循环，两种输出
+## The emitter Abstraction: One Loop, Two Outputs
 
-harness9 的一个核心设计决策是：**阻塞模式（`Run`）和流式模式（`RunStream`）共享同一个 `runLoop` 实现**。两者的区别完全封装在 `emitter` 结构体中。
+One of harness9's core design decisions is that **blocking mode (`Run`) and streaming mode (`RunStream`) share the exact same `runLoop` implementation**. The difference between them is entirely encapsulated in the `emitter` struct.
 
-![图：emitter 解耦双模式输出架构](./images/emitter-dual-mode-04.png)
+![Diagram: emitter architecture decoupling the dual run modes](/blog/agent-loop/images/emitter-dual-mode-04.png)
 
 
 
-`emitter` 的定义清楚地揭示了两种模式的差异点：
+The definition of `emitter` makes the two modes' differences explicit:
 
 ```go
 type emitter struct {
@@ -294,11 +294,11 @@ type emitter struct {
     toolDone    func(turn int, tc schema.ToolCall, result schema.ToolResult, d time.Duration)
     tokenUpdate func(tokens, window int)
     compaction  func(data CompactionData)
-    approval    hooks.ApprovalFunc // Human-in-the-Loop 审批回调
+    approval    hooks.ApprovalFunc // Human-in-the-Loop approval callback
 }
 ```
 
-`Run` 构造的 `emitter`，`generate` 调用阻塞式 `provider.Generate`，文本打印到 stdout：
+The `emitter` built by `Run` calls the blocking `provider.Generate` in its `generate` field, printing text to stdout:
 
 ```go
 em := emitter{
@@ -316,7 +316,7 @@ em := emitter{
 }
 ```
 
-`RunStream` 构造的 `emitter`，`generate` 调用 `streamGenerate`，将文本增量转发为 `EventActionDelta` 发送到 channel：
+The `emitter` built by `RunStream` calls `streamGenerate` in its `generate` field, forwarding text deltas as `EventActionDelta` events over a channel:
 
 ```go
 em := emitter{
@@ -331,21 +331,21 @@ em := emitter{
 }
 ```
 
-`runLoop` 本身对输出方式一无所知，它只调用 `em.generate`、`em.toolStart`、`em.toolDone`。这是策略模式（Strategy Pattern）的直接应用，但比定义接口更轻量——用函数字段而不是接口，省去了类型断言和方法集的心智负担。
+`runLoop` itself has no idea how output works — it only ever calls `em.generate`, `em.toolStart`, and `em.toolDone`. This is a direct application of the Strategy Pattern, but lighter weight than defining an interface — using function fields instead of an interface eliminates the type-assertion and method-set overhead.
 
 ---
 
-## 流式架构：两层 channel
+## Streaming Architecture: Two Layers of Channels
 
-`RunStream` 的数据流经过两层 channel 转换：
+`RunStream`'s data flow goes through two layers of channel conversion:
 
-![图：两层 channel 流式数据流](./images/stream-two-layer-channel-05.png)
+![Diagram: two-layer channel streaming data flow](/blog/agent-loop/images/stream-two-layer-channel-05.png)
 
 
 
-**第一层**：`provider.GenerateStream` 返回 `<-chan StreamChunk`，这是 Provider 层的增量协议，携带 token 级别的文本增量和工具调用参数增量。
+**Layer one**: `provider.GenerateStream` returns a `<-chan StreamChunk` — the Provider layer's delta protocol, carrying token-level text deltas and tool-call argument deltas.
 
-**第二层**：`streamGenerate` 消费 `StreamChunk` channel，将其转换为面向客户端的语义化 `Event`，发送到 `chan Event`：
+**Layer two**: `streamGenerate` consumes the `StreamChunk` channel and converts it into client-facing semantic `Event`s, sent over a `chan Event`:
 
 ```go
 func (e *AgentEngine) streamGenerate(ctx context.Context, ch chan<- Event, turn int,
@@ -372,7 +372,7 @@ func (e *AgentEngine) streamGenerate(ctx context.Context, ch chan<- Event, turn 
 }
 ```
 
-`sendEvent` 是一个关键的辅助函数，它用 `select` 同时监听 channel 发送和 `ctx.Done()`：
+`sendEvent` is a key helper function that uses `select` to simultaneously watch the channel send and `ctx.Done()`:
 
 ```go
 func sendEvent(ctx context.Context, ch chan<- Event, evt Event) bool {
@@ -385,9 +385,9 @@ func sendEvent(ctx context.Context, ch chan<- Event, evt Event) bool {
 }
 ```
 
-没有这个 `select`，当消费者（TUI）停止读取 channel 时，生产者 goroutine 会永久阻塞，造成 goroutine 泄漏。
+Without this `select`, if the consumer (the TUI) stops reading from the channel, the producer goroutine would block forever, leaking a goroutine.
 
-`RunStream` 本身在一个独立 goroutine 中运行 `runLoop`，channel 在 goroutine 退出时自动关闭：
+`RunStream` itself runs `runLoop` in a dedicated goroutine, and the channel closes automatically when that goroutine exits:
 
 ```go
 func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan Event, error) {
@@ -405,17 +405,17 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 }
 ```
 
-注意终止事件（`EventDone` / `EventError`）使用直接 `ch <-` 而不是 `sendEvent`。这是故意的——终止事件必须到达消费者，不能因为 context 取消而丢失。
+Note that the termination events (`EventDone` / `EventError`) use a direct `ch <-` rather than `sendEvent`. This is intentional — termination events must reach the consumer and must not be dropped due to context cancellation.
 
 ---
 
-## 引擎的状态管理：RWMutex 快照
+## Engine State Management: RWMutex Snapshots
 
-`AgentEngine` 是有状态的——它持有 `Session`、`Compactor`、`PlanMode` 等可在运行时更新的字段。TUI 中用户可以通过 `/new`、`/resume` 命令切换会话，通过 `Shift+Tab` 切换 Plan Mode。
+`AgentEngine` is stateful — it holds fields like `Session`, `Compactor`, and `PlanMode` that can be updated at runtime. In the TUI, users can switch sessions via `/new` and `/resume` commands, and toggle Plan Mode with `Shift+Tab`.
 
-这带来了并发问题：`SetSession` 和 `SetPlanMode` 可能在 `runLoop` 执行过程中被 TUI goroutine 调用。
+This creates a concurrency problem: `SetSession` and `SetPlanMode` may be called by the TUI goroutine while `runLoop` is in the middle of executing.
 
-解决方案是在 `runLoop` 入口做一次**快照**：
+The solution is to take a **snapshot** at the entry point of `runLoop`:
 
 ```go
 e.mu.RLock()
@@ -426,15 +426,15 @@ todoStore := e.todoStore
 e.mu.RUnlock()
 ```
 
-之后整个循环使用局部变量 `sess`、`comp`、`planMode`，不再访问 `e` 的字段。`SetSession` 的修改对当前正在运行的 `runLoop` 无影响，只在下一次调用时生效。
+From that point on, the entire loop uses the local variables `sess`, `comp`, and `planMode`, and never touches `e`'s fields again. Changes made by `SetSession` have no effect on a `runLoop` that's already running — they only take effect on the next call.
 
-这个设计的清晰之处：**锁的持有时间极短**（只有读取字段的几微秒），不会与循环内的 LLM 调用（可能几秒甚至几十秒）产生锁竞争。
+What makes this design clean: **the lock is held for an extremely short time** (just a few microseconds to read the fields), so it never contends with the LLM calls inside the loop, which can take seconds or even tens of seconds.
 
 ---
 
-## Plan Mode：工具层硬约束
+## Plan Mode: A Hard Constraint at the Tool Layer
 
-harness9 的规划模式（Plan Mode）在工具层面实现了只读约束，而不是在 prompt 层面软约束。
+harness9's Plan Mode enforces a read-only constraint at the tool layer, not as a soft constraint at the prompt layer.
 
 ```go
 var planModeWhitelist = map[string]bool{
@@ -455,85 +455,85 @@ func filterReadOnlyTools(tools []schema.ToolDefinition) []schema.ToolDefinition 
 }
 ```
 
-Plan Mode 下，`write_file` 和 `edit_file` 从传给 LLM 的工具列表中被移除。LLM 在任何情况下都无法调用这两个工具——不是因为 prompt 告诉它不要用，而是因为它根本看不到这两个工具的定义。
+In Plan Mode, `write_file` and `edit_file` are removed from the tool list passed to the LLM. The LLM has no way to call either tool under any circumstances — not because the prompt tells it not to, but because it can't even see their definitions.
 
-这个区别很重要。Prompt 层软约束依赖模型遵守指令，在对话轮次增加、上下文复杂时可靠性下降。工具层硬约束是结构性的，与模型行为无关。
+This distinction matters. A soft constraint at the prompt layer relies on the model following instructions, and reliability degrades as the conversation grows longer and the context more complex. A hard constraint at the tool layer is structural and independent of model behavior.
 
-测试 `TestRunLoop_PlanMode_FiltersWriteTools` 验证了这一约束：`write_file` 和 `edit_file` 从 LLM 收到的工具列表中消失，`read_file`、`bash`、`todo_write` 保留。
+The test `TestRunLoop_PlanMode_FiltersWriteTools` verifies this constraint: `write_file` and `edit_file` disappear from the tool list the LLM receives, while `read_file`, `bash`, and `todo_write` remain.
 
 ---
 
 
-## 数据模型：延迟解析的 `RawMessage`
+## Data Model: Lazily Parsed `RawMessage`
 
-`schema` 包定义了 harness9 的消息契约。其中一个值得关注的设计：`ToolCall.Arguments` 使用 `json.RawMessage`：
+The `schema` package defines harness9's message contract. One design worth calling out: `ToolCall.Arguments` uses `json.RawMessage`:
 
 ```go
 type ToolCall struct {
     ID        string          `json:"id"`
     Name      string          `json:"name"`
-    Arguments json.RawMessage `json:"arguments"` // 延迟反序列化
+    Arguments json.RawMessage `json:"arguments"` // deferred deserialization
 }
 ```
 
-LLM 返回的工具调用参数是 JSON，但每个工具的参数结构不同。用 `json.RawMessage` 延迟反序列化，引擎层不需要知道每个工具的参数结构——这是具体工具实现的责任。引擎只负责传递，工具自己解析。
+The tool-call arguments returned by the LLM are JSON, but each tool has its own argument structure. Using `json.RawMessage` for deferred deserialization means the engine layer never needs to know any tool's argument structure — that's the responsibility of the specific tool implementation. The engine only passes the data along; the tool parses it itself.
 
-`ToolDefinition.InputSchema` 同样使用 `any` 类型：
+`ToolDefinition.InputSchema` similarly uses the `any` type:
 
 ```go
 type ToolDefinition struct {
     Name        string `json:"name"`
     Description string `json:"description"`
-    InputSchema any    `json:"input_schema"` // 兼容不同 SDK 的参数格式
+    InputSchema any    `json:"input_schema"` // compatible with different SDKs' parameter formats
 }
 ```
 
-OpenAI SDK 需要 `shared.FunctionParameters`，Anthropic SDK 需要 `map[string]any`。用 `any` 让 Provider 在自己的适配层做类型转换，引擎层对此无感知。
+The OpenAI SDK needs `shared.FunctionParameters`, while the Anthropic SDK needs `map[string]any`. Using `any` lets each Provider handle its own type conversion in its adapter layer, with the engine layer none the wiser.
 
-这两个设计的共同原则：**把解析责任推到最靠近使用者的层次**。
+The shared principle behind both designs: **push parsing responsibility to the layer closest to the consumer**.
 
 ---
 
-## 可观测性：结构化日志与 token 感知
+## Observability: Structured Logging and Token Awareness
 
-每轮循环执行前，引擎估算当前上下文的 token 用量，在 LLM 调用后用实际值更新：
+Before each round of the loop executes, the engine estimates the token usage of the current context, then updates it with the actual value after the LLM call:
 
 ```go
-// 估算值（调用前）
+// Estimated value (before the call)
 msgTokensAfter := memory.EstimateTokens(compactedHistory)
 toolTokens := memory.EstimateToolTokens(availableTools)
 em.tokenUpdate(msgTokensAfter + toolTokens, e.contextWindow)
 
-// 实际值（调用后，从 API response usage 字段提取）
+// Actual value (after the call, extracted from the API response's usage field)
 if usage != nil && usage.InputTokens > 0 {
     em.tokenUpdate(usage.InputTokens, e.contextWindow)
 }
 ```
 
-TUI 状态栏根据 `contextWindow` 计算使用率，在接近限制时变色告警。这个双步更新（先估算、后修正）保证了 TUI 在 LLM 调用期间就能显示进度，而不是等调用完成后才更新。
+The TUI status bar computes utilization from `contextWindow` and changes color as a warning when approaching the limit. This two-step update (estimate first, then correct) ensures the TUI can show progress while the LLM call is still in flight, rather than waiting for the call to finish before updating.
 
-阻塞模式和流式模式使用不同的日志前缀 `[engine]` 和 `[engine-stream]`，便于在混合使用时区分日志来源。
-
----
-
-## 设计取舍总结
-
-harness9 的 Agent Loop 设计明确放弃了几件事：
-
-**放弃图编排，保留清晰性。** LangGraph 提供了强大的图编排能力，但 Agent 的单线程推理路径用 `for` 循环表达更直观。图模型的优势在多 Agent 编排，单 Agent 场景里它带来的是复杂度而非能力。
-
-**放弃外部 Loop 框架，保留控制权。** 把 `maxSteps` 传给 Vercel AI SDK 可以少写几十行代码，但失去了在每轮之间插入自定义逻辑（压缩检查、Plan Mode 过滤、token 统计）的能力。
-
-**放弃路径冲突检测，选择无条件并发。** HermesAgent 在工具并发执行前做路径冲突检测（同一文件的读写不能并行）。harness9 不做这个检测，所有工具无条件并发。原因是 harness9 在 `tools/path_locker.go` 中实现了路径级读写锁，并发冲突在执行层面解决，而不是在调度层面提前检测。
-
-这些取舍背后的共同逻辑是：**用更少的代码，在正确的层次解决问题**。
+Blocking mode and streaming mode use different log prefixes, `[engine]` and `[engine-stream]`, making it easy to tell log sources apart when both are used together.
 
 ---
 
-## 结语
+## Summary of Design Trade-offs
 
-harness9 的 Agent Loop 没有技巧，只有清晰的职责划分：`emitter` 封装输出差异，`executeTools` 封装并发执行，`loadHistoryWith` 封装上下文恢复，`runLoop` 只做调度。
+harness9's Agent Loop design deliberately gives up a few things:
 
-一个思考留给读者：当 LLM 在一轮内同时调用 `write_file` 写入文件 A 和 `read_file` 读取同一文件 A 时，并发执行是否可能产生竞态？harness9 的 `path_locker.go` 是怎么处理这个问题的？
+**Giving up graph orchestration in favor of clarity.** LangGraph offers powerful graph-orchestration capabilities, but an agent's single-threaded reasoning path is expressed more intuitively with a `for` loop. The graph model's strength is in multi-agent orchestration; in a single-agent scenario, it brings complexity rather than capability.
 
-答案在 `internal/tools/path_locker.go`。
+**Giving up an external loop framework in favor of retaining control.** Passing `maxSteps` to the Vercel AI SDK saves a few dozen lines of code, but loses the ability to inject custom logic between rounds (compaction checks, Plan Mode filtering, token accounting).
+
+**Giving up path-conflict detection in favor of unconditional concurrency.** HermesAgent performs path-conflict detection before executing tools concurrently (reads and writes to the same file can't run in parallel). harness9 doesn't do this check — all tools run concurrently, unconditionally. The reason is that harness9 implements a per-path read-write lock in `tools/path_locker.go`, resolving concurrency conflicts at the execution layer instead of detecting them ahead of time at the scheduling layer.
+
+The common logic behind these trade-offs is: **solve the problem with less code, at the right layer**.
+
+---
+
+## Closing Thoughts
+
+harness9's Agent Loop has no tricks — just a clear separation of responsibilities: `emitter` encapsulates output differences, `executeTools` encapsulates concurrent execution, `loadHistoryWith` encapsulates context restoration, and `runLoop` does nothing but scheduling.
+
+One question to leave you with: when an LLM calls `write_file` to write to file A and `read_file` to read that same file A within a single round, could concurrent execution produce a race condition? How does harness9's `path_locker.go` handle this?
+
+The answer is in `internal/tools/path_locker.go`.

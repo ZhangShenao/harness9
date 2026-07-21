@@ -1,137 +1,137 @@
 ---
-title: "Context Engineering — 一个 Agent 如何在有限的 Token 窗口里保持清醒"
+title: "Context Engineering: How an Agent Stays Sane Within a Limited Token Window"
 date: 2026-06-22
 tags: [harness9, agent, golang, context-engineering, memory, compaction]
-summary: "harness9 的上下文工程：DefaultPromptBuilder 多段组装、双重压缩策略、OffloadHook 大输出外置、Long-Term Memory 有界注入——每一层都在回答同一个问题：如何让 Agent 在 token 窗口的约束下持续有效地工作。"
+summary: "harness9's Context Engineering: multi-section assembly in DefaultPromptBuilder, a dual compaction strategy, OffloadHook for offloading large outputs, and bounded injection of Long-Term Memory — every layer answers the same question: how does an Agent keep working effectively under the constraint of a limited token window?"
 ---
 
-# Context Engineering — 一个 Agent 如何在有限的 Token 窗口里保持清醒
+# Context Engineering: How an Agent Stays Sane Within a Limited Token Window
 
-## 关于 harness9
+## About harness9
 
-harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
+harness9 is a Local-First, lightweight, feature-complete, production-ready general-purpose Go Agent framework.
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
-- **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
+- **Website**: [https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **GitHub**: [https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
-⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
+Starring the repo is the most direct way to support this open-source work — issues and PRs are very welcome.
 
 ---
 
 
 ## TL;DR
 
-- **Context Engineering = 四层管道**：System Prompt 组装 → 上下文压缩 → 大输出外置 → 长期记忆有界注入，每层独立可拆卸
-- **DefaultPromptBuilder** 每次 `Build()` 重新调用 `time.Now()` 注入当前日期，防止 `web_search` 生成陈旧查询词；System Prompt 不持久化到 SQLite，prompt 版本可自由演进
-- **双重压缩**：SummarizationCompactor（默认，LLM 摘要 + 增量合并）在 80% 阈值触发；TokenBudgetCompactor（兜底，字符截断）在 LLM 不可用时接管；两者都调用 `repairOrphanedToolPairs` 修复 Anthropic API 的孤立工具对
-- **OffloadHook** 拦截超过 10000 字符的工具输出，写入 `.harness9/tool_results/`，context 保留分页引用；fail-open，写入失败不中断 agent loop
-- **MEMORY.md 物化视图**：top-30 条目 + 5KB 硬上限 + UTF-8 rune 边界截断，三重防御 token bomb；ltmReader 闭包保证"写入即下一轮可见"
-- **`contextHistory`（完整，持久化）vs `compactedHistory`（临时，LLM 视图）分离**：压缩对持久化层无损，每轮都从完整历史派生压缩视图，不叠加信息损失
+- **Context Engineering = a four-layer pipeline**: System Prompt assembly → context compaction → large-output offloading → bounded Long-Term Memory injection, with each layer independently removable
+- **DefaultPromptBuilder** calls `time.Now()` again on every `Build()` to inject the current date, preventing `web_search` from generating stale queries; the System Prompt is never persisted to SQLite, so the prompt version can evolve freely
+- **Dual compaction**: SummarizationCompactor (default, LLM summary + incremental merge) triggers at the 80% threshold; TokenBudgetCompactor (fallback, character truncation) takes over when the LLM is unavailable; both call `repairOrphanedToolPairs` to fix orphaned tool pairs required by the Anthropic API
+- **OffloadHook** intercepts tool outputs longer than 10,000 characters, writes them to `.harness9/tool_results/`, and keeps only a paginated reference in context; it is fail-open, so a write failure never interrupts the agent loop
+- **MEMORY.md materialized view**: top-30 entries + a 5KB hard cap + UTF-8 rune-boundary truncation — a triple defense against token bombs; the `ltmReader` closure guarantees that "what's written is visible next turn"
+- **Separation of `contextHistory` (complete, persisted) from `compactedHistory` (temporary, LLM-facing view)**: compaction is lossless to the persisted layer — every turn derives its compacted view from the complete history, so information loss never stacks up
 
 ---
 
-## 本文你将学到
+## What you'll learn from this post
 
-- 你将看清 DefaultPromptBuilder 如何把六段异构信息组装成一个结构化 System Prompt，以及为什么每次 Build() 都重新调用 `time.Now()`
-- 你将理解 SummarizationCompactor 的增量更新机制——为什么它不是每次全量重摘，而是把上次摘要传给 LLM 做合并
-- 你将看到 TokenBudgetCompactor 的 `repairOrphanedToolPairs` 双向修复如何避免 Anthropic API 的 400 错误
-- 你将弄清 OffloadHook 的 fail-open 设计哲学：文件写入失败不中断 agent loop
-- 你将理解 MEMORY.md 物化视图的有界注入——top-30 条目、5KB 硬上限、UTF-8 rune 边界截断，三重防御 token bomb
-
----
-
-## Token 窗口是 Agent 的工作记忆
-
-一个 Agent 在长任务中面临的核心矛盾：LLM 靠完整的对话历史做推理，但 token 窗口是有限的。历史越长，推理越准确；历史越长，越快触顶。
-
-这不是单纯的工程问题，而是信息论层面的约束。token 窗口里放什么、怎么放、放多少，决定了 Agent 在第 50 轮时还能不能记得第 3 轮写了哪个文件。
-
-harness9 把这个问题拆成四层来解决：
-
-1. **System Prompt 组装**：每轮开始前，把最重要的结构化信息放在窗口最前面
-2. **上下文压缩**：历史消息超出预算时，用 LLM 摘要替代原始对话
-3. **大输出外置**：单次工具输出超过阈值，写到文件系统，context 里只保留引用，让 Agent 自主决策何时 reload 回 context
-4. **长期记忆注入**：跨会话的持久知识，有界注入进当前窗口
-
-每一层都是独立的，可以单独关掉，也可以叠加。
-
-![Context Engineering 四层架构](./images/context-engineering-overview-01.png)
-
+- How DefaultPromptBuilder assembles six heterogeneous pieces of information into a structured System Prompt, and why every `Build()` call re-invokes `time.Now()`
+- How SummarizationCompactor's incremental update mechanism works — why it doesn't re-summarize from scratch every time, but instead feeds the previous summary back to the LLM for merging
+- How TokenBudgetCompactor's `repairOrphanedToolPairs` bidirectional repair avoids 400 errors from the Anthropic API
+- The fail-open design philosophy behind OffloadHook: a file-write failure must never interrupt the agent loop
+- The bounded injection behind the MEMORY.md materialized view — top-30 entries, a 5KB hard cap, and UTF-8 rune-boundary truncation as a triple defense against token bombs
 
 ---
 
-## DefaultPromptBuilder：六段拼装的 System Prompt
+## The token window is the Agent's working memory
 
-多数框架的 System Prompt 是一段硬编码字符串，改动一个字要重新部署。harness9 的 `DefaultPromptBuilder` 把它设计成动态组装——六个独立段落，每次 `Build()` 时按需拼接。
+An Agent running a long task faces a core tension: the LLM reasons over the full conversation history, but the token window is finite. The longer the history, the more accurate the reasoning — and the longer the history, the sooner it hits the ceiling.
+
+This isn't merely an engineering problem; it's a constraint at the level of information theory. What goes into the token window, how it's arranged, and how much of it there is determines whether the Agent can still remember, at turn 50, which file it wrote at turn 3.
+
+harness9 splits this problem into four layers:
+
+1. **System Prompt assembly**: before each turn begins, put the most important structured information at the front of the window
+2. **Context compaction**: when history exceeds budget, replace raw conversation with an LLM-generated summary
+3. **Large-output offloading**: when a single tool output exceeds a threshold, write it to the file system and keep only a reference in context, letting the Agent decide for itself when to reload it
+4. **Long-term memory injection**: persistent knowledge that spans sessions, injected into the current window within bounds
+
+Each layer is independent — it can be turned off on its own, or stacked with the others.
+
+![Context Engineering four-layer architecture](/blog/context-engineering/images/context-engineering-overview-01.png)
+
+
+---
+
+## DefaultPromptBuilder: a System Prompt assembled from six sections
+
+In most frameworks the System Prompt is a single hardcoded string — change one word and you need to redeploy. harness9's `DefaultPromptBuilder` instead treats it as a dynamic assembly: six independent sections, concatenated on demand every time `Build()` runs.
 
 ```go
 func (b *DefaultPromptBuilder) Build() string {
     var parts []string
 
-    // 1. 基础 prompt：角色定义 + 工作目录 + 当前日期 + 工作准则
-    parts = append(parts, fmt.Sprintf("...\n工作目录：%s\n当前日期：%s\n...",
+    // 1. Base prompt: role definition + working directory + current date + working principles
+    parts = append(parts, fmt.Sprintf("...\nWorking directory: %s\nCurrent date: %s\n...",
         b.workDir, time.Now().Format("2006-01-02")))
 
-    // 2. AGENTS.md：用户项目规范，不存在时静默跳过
+    // 2. AGENTS.md: the user's project conventions; silently skipped if absent
     if data, err := os.ReadFile(agentsPath); err == nil && len(data) > 0 {
-        parts = append(parts, "## 项目规范（AGENTS.md）\n\n"+string(data))
+        parts = append(parts, "## Project Conventions (AGENTS.md)\n\n"+string(data))
     }
 
-    // 3. Skills 索引：LLM 按需 use_skill 加载全文
+    // 3. Skills index: the LLM loads full content on demand via use_skill
     if b.skillsIndex != nil && !b.skillsIndex.IsEmpty() {
-        parts = append(parts, "## 可用 Skills\n\n"+b.skillsIndex.Summary())
+        parts = append(parts, "## Available Skills\n\n"+b.skillsIndex.Summary())
     }
 
-    // 4-6. todo 指引 / offload 检索 / 长期记忆（按配置注入）
+    // 4-6. todo guidance / offload retrieval / long-term memory (injected per configuration)
     // ...
     return strings.Join(parts, "\n\n")
 }
 ```
 
-几个值得注意的设计决策：
+A few design decisions worth calling out:
 
-**`time.Now()` 在每次 `Build()` 时调用**，而不是在构造函数里缓存。原因是 `runLoop` 每轮循环都会重新构建 System Prompt，如果 Agent 跑了两个小时，第 200 轮的 System Prompt 里应该是当前日期，而不是启动时的日期。这直接影响 `web_search` 工具的查询质量——LLM 用错误的日期生成搜索词，结果会是陈旧的。
+**`time.Now()` is called on every `Build()`**, not cached in the constructor. The reason is that `runLoop` rebuilds the System Prompt on every turn — if the Agent has been running for two hours, the System Prompt at turn 200 should carry the current date, not the date it started. This directly affects the query quality of the `web_search` tool: if the LLM generates search terms using a stale date, the results will be stale too.
 
-**AGENTS.md 不存在时静默跳过**。这是 fail-open 哲学的体现：工具运行在用户任意目录，不能假设 AGENTS.md 一定存在。
+**AGENTS.md is silently skipped when absent.** This reflects the fail-open philosophy: the tool runs in an arbitrary user directory, so it can't assume AGENTS.md necessarily exists.
 
-**System Prompt 不持久化到 SQLite**。`loadHistoryWith` 在加载历史时重新注入 system 消息，`saveHistoryWith` 保存的是 `msgs[startLen:]`，system 消息被跳过。这样 prompt 可以随配置更新而变化，历史数据不会锁定 prompt 版本。
+**The System Prompt is never persisted to SQLite.** `loadHistoryWith` re-injects the system message every time history is loaded, and `saveHistoryWith` only saves `msgs[startLen:]`, skipping the system message. This lets the prompt evolve with configuration changes without locking historical data to a particular prompt version.
 
-![DefaultPromptBuilder 六段组装流程](./images/prompt-builder-assembly-02.png)
+![DefaultPromptBuilder's six-section assembly flow](/blog/context-engineering/images/prompt-builder-assembly-02.png)
 
 
 ---
 
-## 双重压缩策略：摘要为主，截断兜底
+## Dual compaction strategy: summarization first, truncation as fallback
 
-harness9 的压缩层有两个实现，对应两种不同的工程取舍。
+harness9's compaction layer has two implementations, reflecting two different engineering trade-offs.
 
-### SummarizationCompactor：LLM 摘要，保留语义
+### SummarizationCompactor: LLM summarization that preserves semantics
 
-`SummarizationCompactor` 是默认策略。当 token 估算值超过 contextWindow × 80% 时触发，把旧消息送给 LLM 压缩成结构化摘要：
+`SummarizationCompactor` is the default strategy. When the estimated token count exceeds 80% of the context window, it sends old messages to the LLM to be compressed into a structured summary:
 
 ```go
 func (c *SummarizationCompactor) Compact(msgs []schema.Message) []schema.Message {
     if EstimateTokens(msgs) <= c.maxTokens() {
-        return msgs  // 未超阈值，直接返回
+        return msgs  // below threshold, return as-is
     }
-    // 分割：head（旧消息）| tail（最近 6 条，强制保留）
+    // Split: head (old messages) | tail (most recent 6 messages, always kept)
     headEnd := len(rest) - minTail
     head, tail := rest[:headEnd], rest[headEnd:]
 
-    // 压缩前先提取长期记忆（fail-open，失败不影响压缩）
+    // Extract long-term memory before compacting (fail-open, failure doesn't block compaction)
     if c.extractor != nil {
         c.extractor.Extract(head)
     }
 
     summary, err := c.summarize(head)
     if err != nil {
-        return c.fallback().Compact(msgs)  // LLM 失败，回退截断
+        return c.fallback().Compact(msgs)  // LLM failed, fall back to truncation
     }
     return c.buildCompactedResult(msgs[0], summary, tail)
 }
 ```
 
-**增量更新机制**是这里最有价值的设计。如果 head 里已经有上次的摘要消息（以 `[Conversation Summary]` 开头），`summarize` 不会全量重摘，而是把旧摘要和新对话一起传给 LLM，请求合并更新：
+The **incremental update mechanism** is the most valuable part of this design. If `head` already contains a summary message from a previous round (starting with `[Conversation Summary]`), `summarize` doesn't re-summarize everything from scratch — instead it feeds the old summary and the new conversation to the LLM together, asking it to merge and update:
 
 ```go
 if prevSummary != "" {
@@ -141,25 +141,25 @@ if prevSummary != "" {
 }
 ```
 
-`incrementalTemplate` 的结构是：
+The structure of `incrementalTemplate` is:
 
 ```
 Update the existing summary by merging in new conversation content.
 <previous-summary>
-{上次摘要}
+{previous summary}
 </previous-summary>
 
 New conversation to merge:
-{新对话文本}
+{new conversation text}
 ```
 
-为什么不每次全量重摘？因为全量重摘在多次压缩后会产生信息叠加丢失——第二次摘要是对第一次摘要的摘要，关键细节在每一层都在衰减。增量合并让 LLM 在有完整上次摘要的前提下做更新，信息损失更小。
+Why not re-summarize from scratch each time? Because doing so, across multiple rounds of compaction, produces compounding information loss — the second summary becomes a summary of the first summary, and key details decay at every layer. Incremental merging lets the LLM update against a complete previous summary, so less information is lost.
 
-摘要的输出格式固定为五个维度：Goal、Progress、Key Decisions、Next Steps、Critical Context。这不是随意的——Critical Context 段专门保存文件路径、变量名、约束条件这些 LLM 在后续轮次里需要精确引用的信息。
+The summary's output format is fixed to five dimensions: Goal, Progress, Key Decisions, Next Steps, Critical Context. This isn't arbitrary — the Critical Context section is specifically for preserving file paths, variable names, and constraints that the LLM will need to reference precisely in later turns.
 
-### TokenBudgetCompactor：字符截断，永远可用
+### TokenBudgetCompactor: character truncation, always available
 
-`TokenBudgetCompactor` 是回退策略。它不调用 LLM，纯粹靠字符计数做截断。好处是不依赖 Provider 可用性，坏处是旧消息直接丢弃，没有语义保留。
+`TokenBudgetCompactor` is the fallback strategy. It never calls the LLM — it truncates purely based on character counts. The upside is that it doesn't depend on Provider availability; the downside is that old messages are simply discarded, with no semantic preservation.
 
 ```go
 func NewTokenBudgetCompactor(contextWindow int) *TokenBudgetCompactor {
@@ -170,37 +170,37 @@ func NewTokenBudgetCompactor(contextWindow int) *TokenBudgetCompactor {
 }
 ```
 
-80% 阈值不是拍脑袋的数字。剩余 20% 要给工具定义（bash/read_file 等工具的 JSON Schema 描述可以消耗 10-30K tokens），以及 char÷4 估算本身的误差缓冲，以及 LLM 生成输出的空间。
+The 80% threshold isn't an arbitrary guess. The remaining 20% needs to cover tool definitions (the JSON Schema descriptions for tools like bash/read_file alone can consume 10-30K tokens), a buffer for the inherent error in the char÷4 estimate, and room for the LLM's generated output.
 
-### 孤立工具对修复：Anthropic API 的硬性要求
+### Repairing orphaned tool pairs: a hard requirement of the Anthropic API
 
-截断之后有一个必须处理的问题：Anthropic Messages API 要求 `tool_call` 和 `tool_result` 必须成对出现。截断可能产生两类孤立消息：
+After truncation there's one issue that must be handled: the Anthropic Messages API requires that every `tool_call` be paired with its `tool_result`. Truncation can produce two kinds of orphaned messages:
 
-- **类型 A**：有 `tool_result` 但对应的 `tool_call` 被截掉了
-- **类型 B**：有 `tool_call` 但对应的 `tool_result` 被截掉了
+- **Type A**: a `tool_result` whose corresponding `tool_call` was truncated away
+- **Type B**: a `tool_call` whose corresponding `tool_result` was truncated away
 
-`repairOrphanedToolPairs` 用两次扫描解决这个问题：
+`repairOrphanedToolPairs` resolves this with two passes:
 
 ```go
 func repairOrphanedToolPairs(msgs []schema.Message) []schema.Message {
-    // Pass 1：收集所有 assistant 发出的 tool_call ID
+    // Pass 1: collect all tool_call IDs issued by the assistant
     calledIDs := make(map[string]bool)
     resultIDs := make(map[string]bool)
     // ...
 
     for _, m := range msgs {
-        // 删除孤立的 tool_result
+        // Drop orphaned tool_results
         if m.ToolCallID != "" && !calledIDs[m.ToolCallID] {
             continue
         }
         result = append(result, m)
-        // 为孤立的 tool_call 插入占位 tool_result
+        // Insert a placeholder tool_result for orphaned tool_calls
         if m.Role == schema.RoleAssistant && len(m.ToolCalls) > 0 {
             for _, tc := range m.ToolCalls {
                 if !resultIDs[tc.ID] {
                     result = append(result, schema.Message{
                         Role:       schema.RoleUser,
-                        Content:    "[工具结果不可用：上下文已被压缩]",
+                        Content:    "[Tool result unavailable: context was compacted]",
                         ToolCallID: tc.ID,
                     })
                 }
@@ -211,24 +211,22 @@ func repairOrphanedToolPairs(msgs []schema.Message) []schema.Message {
 }
 ```
 
-`SummarizationCompactor`、`TokenBudgetCompactor`、`SlidingWindowCompactor` 三者都在压缩后调用这个修复函数。占位消息的内容是 `[工具结果不可用：上下文已被压缩]`，LLM 看到这条信息会知道历史被压缩过，而不是工具执行失败。
+All three of `SummarizationCompactor`, `TokenBudgetCompactor`, and `SlidingWindowCompactor` call this repair function after compacting. The placeholder message content is `[Tool result unavailable: context was compacted]`, so the LLM understands that history was compacted rather than assuming the tool execution failed.
 
-![双重压缩策略决策树](./images/compaction-decision-tree-03.png)
+![Dual compaction strategy decision tree](/blog/context-engineering/images/compaction-decision-tree-03.png)
 
 
 ---
 
-## OffloadHook：防止 Context 被单次输出撑爆
+## OffloadHook: preventing a single output from blowing up the context
 
-仅有 Context Compation 机制，还无法保证绝对安全。试想下面的场景：
-一个 `bash("cat large_file.log")` 可以输出几十万字节。如果这个输出直接进 contextHistory，不仅吃掉大量 token 预算，还会立即触发压缩，把有价值的历史对话挤掉。
+Context compaction alone doesn't guarantee safety. Consider this scenario: a single `bash("cat large_file.log")` call can produce hundreds of thousands of bytes of output. If that output goes straight into `contextHistory`, it not only eats a large chunk of the token budget, it also immediately triggers compaction — squeezing out valuable historical conversation.
 
-为了解决这个问题，我们引入了 Hook 机制：
-`OffloadHook` 在工具执行完成后拦截输出，超过 10000 字符时写入文件系统，把 context 里的内容替换为引用：
+To solve this, we introduced a hook mechanism: `OffloadHook` intercepts tool output after execution and, once it exceeds 10,000 characters, writes it to the file system and replaces the content in context with a reference:
 
 ```go
 func (h *OffloadHook) AfterExecute(_ context.Context, tc schema.ToolCall, result schema.ToolResult) schema.ToolResult {
-    if offloadExcluded[tc.Name] {  // read_file/write_file/edit_file 不触发 offload
+    if offloadExcluded[tc.Name] {  // read_file/write_file/edit_file never trigger offload
         return result
     }
     if len(result.Output) <= h.threshold {
@@ -237,41 +235,41 @@ func (h *OffloadHook) AfterExecute(_ context.Context, tc schema.ToolCall, result
 
     absPath := filepath.Join(h.workDir, ".harness9", "tool_results", h.sessionID, tc.ID+".txt")
     if err := os.WriteFile(absPath, []byte(originalOutput), 0600); err != nil {
-        return result  // fail-open：写入失败，原样返回
+        return result  // fail-open: write failed, return output as-is
     }
 
     result.Output = fmt.Sprintf(
-        "[输出已保存至 %s，共 %d 行 / %d 字节。\n"+
-        "可通过 read_file 工具配合 offset/limit 参数分页读取。\n\n"+
-        "预览（前 %d 行）：\n%s\n...（已截断）]",
+        "[Output saved to %s, %d lines / %d bytes total.\n"+
+        "Use the read_file tool with offset/limit parameters to page through it.\n\n"+
+        "Preview (first %d lines):\n%s\n...(truncated)]",
         relPath, totalLines, len(originalOutput), previewEnd, preview,
     )
     return result
 }
 ```
 
-三个细节值得关注：
+Three details worth noting:
 
-**排除列表**：`read_file`、`write_file`、`edit_file` 不触发 offload。如果 `read_file` 的输出被 offload，LLM 会用 `read_file` 去读那个 offload 文件，然后那个 `read_file` 的输出又被 offload，形成无限循环。
+**The exclusion list**: `read_file`, `write_file`, and `edit_file` never trigger offload. If a `read_file` output were itself offloaded, the LLM would call `read_file` to read that offloaded file, whose output would then get offloaded again — an infinite loop.
 
-**文件命名用 `tc.ID`**：工具调用 ID 是 LLM 生成的唯一标识符，同一个 session 内不重复。这样同一 session 内的多次大输出各自独立存储，互不覆盖。
+**Files are named using `tc.ID`**: the tool call ID is a unique identifier generated by the LLM, and it never repeats within a session. This means multiple large outputs within the same session are stored independently, without overwriting each other.
 
-**fail-open**：`os.WriteFile` 失败时直接 `return result`，原始输出原样返回。OffloadHook 的失败不会让 agent loop 停止，顶多是这次大输出进了 context，下一轮压缩时会处理掉。
+**Fail-open**: when `os.WriteFile` fails, it simply `return result`s with the original output intact. A failure in OffloadHook never stops the agent loop — at worst, that particular large output ends up in context, and the next compaction pass will deal with it.
 
-DefaultPromptBuilder 里有专门的 offload 检索指引段落，告诉 LLM 如何用 `read_file` 配合 `offset`/`limit` 分页读取 offload 的文件。这是 LLM 和文件系统之间的协议层——LLM 知道大输出在哪里，知道怎么按需取回。
+DefaultPromptBuilder includes a dedicated offload-retrieval guidance section that tells the LLM how to use `read_file` with `offset`/`limit` to page through offloaded files. This is the protocol layer between the LLM and the file system — the LLM knows where large outputs live and how to retrieve them on demand.
 
-![OffloadHook 数据流](./images/offload-hook-dataflow-04.png)
+![OffloadHook data flow](/blog/context-engineering/images/offload-hook-dataflow-04.png)
 
 
 ---
 
-## LTM 与 Context 的接缝：MEMORY.md 物化视图
+## Where LTM meets Context: the MEMORY.md materialized view
 
-Long-Term Memory（长期记忆，LTM）存储在 SQLite 的 `long_term_memories` 表里，跨会话持久化。问题是：怎么把这些记忆注入当前 context 而不产生 token bomb？
+Long-Term Memory (LTM) is stored in SQLite's `long_term_memories` table, persisted across sessions. The question is: how do you inject these memories into the current context without creating a token bomb?
 
-直接把所有记忆条目塞进 System Prompt 是错误的——记忆越积越多，最终会把 token 窗口的相当大一部分占满。
+Dumping every memory entry straight into the System Prompt would be wrong — memories accumulate over time, and eventually they'd consume a substantial share of the token window.
 
-harness9 的方案是 MEMORY.md 物化视图。`Precis` 从 Store 拉取 top-30 高价值条目（按 importance 排序），渲染成有界 Markdown 文件：
+harness9's answer is the MEMORY.md materialized view. `Precis` pulls the top-30 highest-value entries from the Store (ranked by importance) and renders them into a bounded Markdown file:
 
 ```go
 const precisMaxEntries = 30
@@ -279,7 +277,7 @@ const precisMaxEntries = 30
 func (p *Precis) Regenerate(ctx context.Context) error {
     entries, err := p.store.List(ctx, precisMaxEntries)  // top-30
     // ...
-    content := renderPrecis(entries, p.maxBytes)          // maxBytes 默认 5120
+    content := renderPrecis(entries, p.maxBytes)          // maxBytes defaults to 5120
     return os.WriteFile(p.path, []byte(content), 0600)
 }
 
@@ -287,15 +285,15 @@ func truncateUTF8(s string, maxBytes int) string {
     if len(s) <= maxBytes {
         return s
     }
-    const marker = "\n…（已截断）"
-    // 在 rune 边界截断，不切断多字节字符
+    const marker = "\n…(truncated)"
+    // Truncate at a rune boundary, never splitting a multi-byte character
     // ...
 }
 ```
 
-5KB 的上限是经过计算的：`5120 / 4 ≈ 1280 tokens`，占 128K 窗口的 1%，占 200K 窗口不到 0.7%。注入的代价可以接受，但能覆盖 30 条结构化记忆。
+The 5KB cap is a calculated choice: `5120 / 4 ≈ 1280 tokens`, which is about 1% of a 128K window and under 0.7% of a 200K window. The cost of injection is acceptable, while still covering 30 structured memory entries.
 
-`DefaultPromptBuilder.Build()` 里的 LTM 注入方式是传入一个 `reader` 闭包，每次 Build 时实时调用：
+The way `DefaultPromptBuilder.Build()` injects LTM is by accepting a `reader` closure, invoked fresh on every Build call:
 
 ```go
 func (b *DefaultPromptBuilder) WithLongTermMemory(reader func() string) *DefaultPromptBuilder {
@@ -303,27 +301,27 @@ func (b *DefaultPromptBuilder) WithLongTermMemory(reader func() string) *Default
     return b
 }
 
-// Build() 内部：
+// Inside Build():
 if b.ltmReader != nil {
     if content := b.ltmReader(); content != "" {
-        parts = append(parts, "## 长期记忆\n\n"+content)
+        parts = append(parts, "## Long-Term Memory\n\n"+content)
     }
 }
 ```
 
-为什么是闭包而不是在构造时读取一次？因为 `memory_write` 工具在 agent 运行过程中会写入新记忆、重建 MEMORY.md，下一轮循环的 Build() 需要读到最新版本。闭包让"写入即下一轮可见"成为自然结果，不需要额外的通知机制。
+Why a closure instead of reading once at construction time? Because the `memory_write` tool writes new memories and rebuilds MEMORY.md while the agent is running, and the next loop iteration's `Build()` needs to read the latest version. The closure makes "what's written is visible next turn" a natural consequence, with no extra notification mechanism required.
 
-![LTM 与 Context 接缝：MEMORY.md 物化视图生命周期](./images/ltm-context-integration-05.png)
+![Where LTM meets Context: the MEMORY.md materialized view lifecycle](/blog/context-engineering/images/ltm-context-integration-05.png)
 
 
 ---
 
-## WithMemoryNudge：防御性注入，不持久化
+## WithMemoryNudge: defensive injection, never persisted
 
-在长任务中，LLM 有时会在连续几十轮工具调用后"忘记"去使用 `memory_write` 记录重要信息。`WithMemoryNudge` 是一种定期提醒机制：
+During long tasks, the LLM sometimes "forgets" to use `memory_write` to record important information after dozens of consecutive tool calls. `WithMemoryNudge` is a periodic reminder mechanism:
 
 ```go
-// 每隔 nudgeInterval 轮，向临时副本追加一行提示
+// Every nudgeInterval turns, append a reminder line to the temporary copy
 if e.nudgeInterval > 0 && e.nudgeText != "" && turnCount%e.nudgeInterval == 0 {
     compactedHistory = appendUserNudge(compactedHistory, e.nudgeText)
 }
@@ -335,97 +333,95 @@ func appendUserNudge(history []schema.Message, text string) []schema.Message {
 }
 ```
 
-`appendUserNudge` 的实现体现了一个关键约束：它操作的是 `compactedHistory`（传给 LLM 的临时视图），而不是 `contextHistory`（完整历史）。nudge 消息不会被 `saveHistoryWith` 持久化，不会在下一轮 `loadHistoryWith` 时出现，不会累积。
+The implementation of `appendUserNudge` embodies a key constraint: it operates on `compactedHistory` (the temporary view passed to the LLM), not on `contextHistory` (the complete history). The nudge message is never persisted by `saveHistoryWith`, never reappears when `loadHistoryWith` runs on the next turn, and never accumulates.
 
-如果 nudge 消息进了持久化历史，几十轮之后 context 里会出现几十条内容相同的提醒，既浪费 token 又干扰 LLM 推理。"防御性副本，不持久化"是这里的工程约束，不是实现细节。
+If the nudge message made it into persisted history, after dozens of turns the context would contain dozens of identical reminders — wasting tokens and confusing the LLM's reasoning. "Defensive copy, never persisted" is an engineering constraint here, not an implementation detail.
 
-同样的模式也用在 `WithStallNudge`——停滞检测：连续多轮没有调用 `write_file`/`edit_file`（进展工具）时，注入一次提示打断空转，然后重置计数。
+The same pattern is used for `WithStallNudge` — stagnation detection: when several consecutive turns pass without a call to `write_file`/`edit_file` (progress-making tools), it injects a single prompt to break the idle loop, then resets the counter.
 
-![WithMemoryNudge 防御性注入机制](./images/memory-nudge-mechanism-06.png)
+![WithMemoryNudge defensive injection mechanism](/blog/context-engineering/images/memory-nudge-mechanism-06.png)
 
 
 ---
 
-## 非破坏性压缩：两个历史，两种用途
+## Non-destructive compaction: two histories, two purposes
 
-harness9 的压缩层有一个容易忽视的设计：`contextHistory` 和 `compactedHistory` 是两个独立的变量，对应不同的生命周期和用途。
+There's an easily overlooked design in harness9's compaction layer: `contextHistory` and `compactedHistory` are two separate variables, with different lifecycles and purposes.
 
 ```go
-// runLoop 内部：
+// Inside runLoop:
 contextHistory, startLen := e.loadHistoryWith(ctx, userPrompt, sess)
 
 for {
-    // compactedHistory：每轮派生的压缩视图，只传给 LLM
+    // compactedHistory: the compacted view derived each turn, sent only to the LLM
     compactedHistory := e.applyCompactionWith(comp, contextHistory)
 
-    // LLM 看到的是 compactedHistory
+    // The LLM only ever sees compactedHistory
     responseMsg, usage, err := e.generateWithRetry(ctx, em, turn, compactedHistory, availableTools)
 
-    // contextHistory 持续累积完整历史（包括压缩前的所有消息）
+    // contextHistory keeps accumulating the complete history (including everything pre-compaction)
     contextHistory = append(contextHistory, *responseMsg)
-    // ...工具执行结果追加到 contextHistory...
+    // ...tool execution results appended to contextHistory...
 }
 
-// 保存完整历史，不是压缩视图
+// Persist the complete history, not the compacted view
 e.saveHistoryWith(ctx, sess, contextHistory, startLen)
 ```
 
-`contextHistory` 是完整的对话记录，包含所有原始消息，最终持久化到 SQLite。`compactedHistory` 是每轮临时生成的、传给 LLM 的裁剪版本。
+`contextHistory` is the complete conversation record, containing every original message, and it's what ultimately gets persisted to SQLite. `compactedHistory` is a temporary, trimmed version regenerated each turn and handed to the LLM.
 
-这个分离保证了一件事：压缩是无损的。下一轮压缩时，`applyCompactionWith` 拿到的是完整历史，可以重新决定保留哪些消息、摘要哪些消息，而不是对已经压缩过的结果再次压缩（那样会叠加信息损失）。代价是内存里始终持有完整历史，但对于绝大多数 Agent 任务来说，这个代价是可以接受的。
+This separation guarantees one thing: compaction is lossless. On the next round of compaction, `applyCompactionWith` operates on the complete history, so it can freely re-decide which messages to keep and which to summarize — rather than compacting an already-compacted result again (which would stack information loss). The trade-off is that the complete history is always held in memory, but for the vast majority of Agent tasks this cost is acceptable.
 
-![非破坏性压缩：contextHistory 与 compactedHistory 分离](./images/nondestructive-compaction-07.png)
+![Non-destructive compaction: separating contextHistory from compactedHistory](/blog/context-engineering/images/nondestructive-compaction-07.png)
 
 
 ---
 
-## Token 估算的两阶段更新
+## Two-phase token estimation updates
 
-harness9 在每轮 LLM 调用前后各发一次 token 用量通知：
+harness9 fires a token-usage notification both before and after each LLM call:
 
 ```go
-// LLM 调用前：char÷4 估算值，用于压缩决策和初始显示
+// Before the LLM call: char÷4 estimate, used for compaction decisions and initial display
 em.tokenUpdate(totalTokens, e.contextWindow)
 
-// LLM 调用
+// LLM call
 responseMsg, usage, err := e.generateWithRetry(...)
 
-// LLM 调用后：API 响应里的实际用量，覆盖估算值
+// After the LLM call: the actual usage from the API response, overwriting the estimate
 if usage != nil && usage.InputTokens > 0 {
     em.tokenUpdate(usage.InputTokens, e.contextWindow)
 }
 ```
 
-`char÷4` 是业界通用的近似估算，误差通常在 ±10% 以内，不需要引入 tiktoken 等依赖。这个估算用于触发压缩决策——决策已经预留了 20% 缓冲，±10% 的误差在容忍范围内。
+`char÷4` is a widely used approximation in the industry, typically accurate within ±10%, and avoids pulling in a dependency like tiktoken. This estimate is used to trigger compaction decisions — since the decision threshold already reserves a 20% buffer, a ±10% estimation error stays well within tolerance.
 
-API 响应里的实际 InputTokens 精确得多，用于更新 TUI 状态栏的显示值。用户在 TUI 里看到的是：调用前出现估算值，调用完成后刷新为精确值。
+The actual `InputTokens` in the API response is far more precise, and is used to refresh the value shown in the TUI status bar. What the user sees in the TUI is: an estimate appears before the call, then refreshes to the precise value once the call completes.
 
-TUI 状态栏颜色编码：`contextTokens / contextWindow` < 50% 绿色，50-80% 黄色，≥ 80% 红色。红色区域意味着下一轮很可能触发压缩。
-
----
-
-## 与其他框架的对比
-
-harness9 的 Context Engineering 和 LangChain/LangGraph 的对比有几个有意思的差异：
-
-**无向量数据库**。LangChain 的 Memory 模块通常依赖向量嵌入做语义检索（FAISS、Chroma、Pinecone）。harness9 的 LTM 用的是 SQLite FTS5 全文检索，不需要嵌入模型，不需要额外的向量数据库进程。代价是检索质量是词法匹配而非语义匹配，但对于 Agent 的记忆检索来说，大多数查询是精确的关键词（文件路径、函数名、项目名），词法匹配已经够用。
-
-**压缩层与存储层分离**。LangChain 的 `ConversationSummaryMemory` 把摘要和存储耦合在一起，摘要失败就意味着存储失败。harness9 的 `SummarizationCompactor` 是独立的压缩策略，存储层（SQLiteSession）始终持有完整历史，压缩只发生在"传给 LLM 的视图"层面。
-
-**fail-open 哲学**。OffloadHook 写入失败不中断 agent loop，`saveHistoryWith` 失败只打 warning 不终止，LTM Extractor 失败也是 fail-open。harness9 的设计原则是：Context Engineering 是增强功能，不是核心依赖。LLM 的推理能力是核心，记忆和压缩是让它工作得更好的工具。
-
-这个哲学的代价是：有时候 Agent 会因为 OffloadHook 写入失败而消耗更多 token，或者因为 LTM 写入失败而丢失记忆。但 Agent loop 不会崩溃，任务还是会继续推进。
+TUI status bar color coding: `contextTokens / contextWindow` below 50% is green, 50-80% is yellow, 80% or above is red. Entering the red zone means the next turn is likely to trigger compaction.
 
 ---
 
-## 结语
+## Comparison with other frameworks
 
-harness9 的 Context Engineering 本质上是在回答一个问题：如何让一个有限的 token 窗口承载尽可能多的有效信息？
+There are several interesting differences between harness9's Context Engineering and that of LangChain/LangGraph:
 
-六段 System Prompt 组装、双重压缩策略、OffloadHook 外置、MEMORY.md 有界注入、nudge 防御性注入——每一层都是这个问题的一个局部答案，组合起来形成一个完整的信息密度管理体系。
+**No vector database.** LangChain's Memory module typically relies on vector embeddings for semantic retrieval (FAISS, Chroma, Pinecone). harness9's LTM uses SQLite FTS5 full-text search instead — no embedding model, no separate vector database process required. The trade-off is that retrieval quality is lexical rather than semantic, but for an Agent's memory retrieval most queries are exact keywords anyway (file paths, function names, project names), so lexical matching is generally sufficient.
 
-值得思考的问题是：随着 LLM context window 越来越大（Gemini 已经到了 1M tokens），这些精心设计的压缩策略是否最终会变得不必要？还是说 Agent 的任务复杂度会跟着扩展，信息密度的问题永远不会消失？
+**Compaction is decoupled from storage.** LangChain's `ConversationSummaryMemory` couples summarization and storage together, so a summarization failure means a storage failure. harness9's `SummarizationCompactor` is an independent compaction strategy — the storage layer (SQLiteSession) always holds the complete history, and compaction only ever happens at the level of "the view handed to the LLM."
+
+**A fail-open philosophy.** OffloadHook write failures never interrupt the agent loop; `saveHistoryWith` failures only log a warning without terminating; LTM Extractor failures are also fail-open. harness9's design principle is: Context Engineering is an enhancement, not a core dependency. The LLM's reasoning ability is the core; memory and compaction are tools that help it work better.
+
+The cost of this philosophy is that sometimes the Agent burns more tokens because an OffloadHook write failed, or loses a memory because an LTM write failed. But the agent loop never crashes — the task keeps moving forward.
 
 ---
 
+## Conclusion
 
+At its core, harness9's Context Engineering is answering one question: how do you make a finite token window carry as much useful information as possible?
+
+Six-section System Prompt assembly, dual compaction strategies, OffloadHook offloading, bounded MEMORY.md injection, defensive nudge injection — each layer is a partial answer to this question, and together they form a complete system for managing information density.
+
+A question worth pondering: as LLM context windows keep growing (Gemini is already at 1M tokens), will these carefully engineered compaction strategies eventually become unnecessary? Or will Agent task complexity keep scaling right alongside them, meaning the information-density problem never truly goes away?
+
+---

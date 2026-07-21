@@ -334,27 +334,39 @@ harness9/
 │   └── architecture-overview/
 │       └── SKILL.md                 # harness9 架构总览
 ├── docs/
-│   └── 核心功能/
-│       ├── autodev.md               # AutoDev 自举开发技术方案
-│       ├── tui.md                   # TUI 交互界面实现原理
-│       ├── cli.md                   # CLI 使用指南
-│       ├── agent-skills.md          # Agent Skills 设计原理
-│       ├── agent-loop.md            # Agent Loop 核心实现原理
-│       ├── tool-calling.md          # Tool Calling 工具调用系统详解
-│       ├── context-engineering.md   # Context Engineering 技术方案（含 Short-Term Memory）
-│       ├── planning.md              # Planning 模块：Plan Mode、TodoStore、执行自动化
-│       ├── sub-agent.md             # Sub-Agent 系统：general-purpose、task 工具、前台/后台、@agent、TaskTracker
-│       ├── file-system.md           # 文件系统能力：OffloadHook、FilePlanWriter、分页读取、GC
-│       ├── shell-execution.md       # Shell 执行功能：! 前缀、异步机制、LLM 上下文注入、截断策略
-│       ├── long-term-memory.md      # Long-Term Memory：跨会话记忆、存储 schema、MEMORY.md、三路触发、冲突/强化机制
-│       ├── eval.md                  # 测试·评估·可观测体系：Test/Eval/Observability 完整体系、ScriptedProvider、黄金数据集、OTEL 链路追踪、Langfuse 接入
-│       └── web_search.md            # 网页搜索与抓取：web_search/web_fetch 工具、SSRF 防护、HTML→Markdown 管线、DuckDuckGo 后端、当前日期注入
+│   ├── 核心功能/
+│   │   ├── autodev.md               # AutoDev 自举开发技术方案
+│   │   ├── tui.md                   # TUI 交互界面实现原理
+│   │   ├── cli.md                   # CLI 使用指南
+│   │   ├── agent-skills.md          # Agent Skills 设计原理
+│   │   ├── agent-loop.md            # Agent Loop 核心实现原理
+│   │   ├── tool-calling.md          # Tool Calling 工具调用系统详解
+│   │   ├── context-engineering.md   # Context Engineering 技术方案（含 Short-Term Memory）
+│   │   ├── planning.md              # Planning 模块：Plan Mode、TodoStore、执行自动化
+│   │   ├── sub-agent.md             # Sub-Agent 系统：general-purpose、task 工具、前台/后台、@agent、TaskTracker
+│   │   ├── file-system.md           # 文件系统能力：OffloadHook、FilePlanWriter、分页读取、GC
+│   │   ├── shell-execution.md       # Shell 执行功能：! 前缀、异步机制、LLM 上下文注入、截断策略
+│   │   ├── long-term-memory.md      # Long-Term Memory：跨会话记忆、存储 schema、MEMORY.md、三路触发、冲突/强化机制
+│   │   ├── eval.md                  # 测试·评估·可观测体系：Test/Eval/Observability 完整体系、ScriptedProvider、黄金数据集、OTEL 链路追踪、Langfuse 接入
+│   │   └── web_search.md            # 网页搜索与抓取：web_search/web_fetch 工具、SSRF 防护、HTML→Markdown 管线、DuckDuckGo 后端、当前日期注入
+│   └── core-features-en/            # docs/核心功能/ 的英文镜像，文件名一一对应，官网英文 locale 唯一信息源
+├── website/                          # 官网（VitePress，中英双语）
+│   ├── index.md                     # 英文首页（默认 locale，根路径）
+│   ├── blog/                        # 英文技术博客（根路径）
+│   ├── zh/
+│   │   ├── index.md                 # 中文首页（/zh/ locale）
+│   │   └── blog/                    # 中文技术博客（/zh/ locale）
+│   ├── public/blog/<slug>/images/    # 博客图片（中英文两个 locale 共用，仅一份，避免体积翻倍）
+│   ├── scripts/sync-docs.mjs        # 把 docs/核心功能/ 与 docs/core-features-en/ 分别同步为 website/zh/docs/ 与 website/docs/
+│   └── .vitepress/config.ts         # VitePress locales 配置（root = 英文，zh = 中文）
 ├── .env.example                     # 环境变量配置模板
 ├── go.mod                           # Go 模块定义
 ├── go.sum                           # 依赖锁定
 ├── AGENTS.md                        # 本文件 — 项目开发规范与上下文
 ├── CLAUDE.md -> AGENTS.md           # 符号链接，保持同步
-└── README.md                        # 项目介绍与快速开始
+├── LICENSE                          # MIT 许可证
+├── README.md                        # 项目介绍与快速开始（英文，默认展示）
+└── README.zh-CN.md                  # 项目介绍与快速开始（中文）
 ```
 
 ### 架构分层

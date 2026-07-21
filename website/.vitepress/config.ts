@@ -1,51 +1,129 @@
 import { defineConfig } from 'vitepress'
-import { docsSidebar } from './sidebar.generated.js'
+import { docsSidebarEn, docsSidebarZh } from './sidebar.generated.js'
 
 export default defineConfig({
   title: 'harness9',
-  description: '轻量级、功能完备、生产可用的 Go Agent Harness 框架',
+  description: 'A lightweight, complete, production-ready Go Agent Harness framework',
   base: '/harness9/',
   appearance: 'dark',
   themeConfig: {
-    nav: [
-      { text: '首页', link: '/' },
-      { text: '文档', link: '/docs/quick-start' },
-      { text: '博客', link: '/blog/' },
-      {
-        text: 'GitHub',
-        link: 'https://github.com/ZhangShenao/harness9',
-        target: '_blank',
-      },
-    ],
-    sidebar: {
-      '/docs/': docsSidebar,
-      '/blog/': [
-        {
-          text: '技术博客',
-          items: [
-            { text: '所有文章', link: '/blog/' },
-            { text: 'Agent Loop — 500 行 Go 代码驱动的生产级 ReAct 主循环', link: '/blog/agent-loop/' },
-            { text: '工具调用系统 — 从接口契约到并发沙箱的工程实践', link: '/blog/tool-calling/' },
-            { text: 'Planning 模块：Plan Mode、TodoStore 与执行自动化', link: '/blog/planning-module/' },
-            { text: 'Agent Skill 系统 — Progressive Disclosure 思想下的 LLM 能力扩展协议', link: '/blog/agent-skills/' },
-            { text: 'Context Engineering — 一个 Agent 如何在有限的 Token 窗口里保持清醒', link: '/blog/context-engineering/' },
-            { text: 'Hooks 与 Human-in-the-Loop：harness9 的工具权限拦截体系', link: '/blog/hooks-human-in-the-loop/' },
-            { text: 'Sub-Agent：harness9 如何让主代理把任务外包出去', link: '/blog/sub-agent/' },
-            { text: 'Sandbox：把 Agent 的手脚关进一座悬浮孤岛', link: '/blog/sandbox/' },
-            { text: 'Observability：给 Agent 装一台看清内部运转的望远镜', link: '/blog/observability/' },
-          ],
-        },
-      ],
-    },
     socialLinks: [
       { icon: 'github', link: 'https://github.com/ZhangShenao/harness9' },
     ],
     search: {
       provider: 'local',
+      options: {
+        locales: {
+          zh: {
+            translations: {
+              button: {
+                buttonText: '搜索',
+                buttonAriaLabel: '搜索',
+              },
+              modal: {
+                displayDetails: '显示详细列表',
+                resetButtonTitle: '重置搜索',
+                backButtonTitle: '关闭搜索',
+                noResultsText: '没有结果',
+                footer: {
+                  selectText: '选择',
+                  selectKeyAriaLabel: '输入',
+                  navigateText: '导航',
+                  navigateUpKeyAriaLabel: '上箭头',
+                  navigateDownKeyAriaLabel: '下箭头',
+                  closeText: '关闭',
+                  closeKeyAriaLabel: 'esc',
+                },
+              },
+            },
+          },
+        },
+      },
     },
-    footer: {
-      message: 'Released under the MIT License.',
-      copyright: 'Copyright © 2025-present ZhangShenao',
+  },
+  locales: {
+    root: {
+      label: 'English',
+      lang: 'en',
+      themeConfig: {
+        nav: [
+          { text: 'Home', link: '/' },
+          { text: 'Docs', link: '/docs/quick-start' },
+          { text: 'Blog', link: '/blog/' },
+          {
+            text: 'GitHub',
+            link: 'https://github.com/ZhangShenao/harness9',
+            target: '_blank',
+          },
+        ],
+        sidebar: {
+          '/docs/': docsSidebarEn,
+          '/blog/': [
+            {
+              text: 'Technical Blog',
+              items: [
+                { text: 'All Posts', link: '/blog/' },
+                { text: 'Agent Loop: A Production-Grade ReAct Loop in 500 Lines of Go', link: '/blog/agent-loop/' },
+                { text: "harness9's Tool Calling System: From Interface Contracts to Concurrent Sandboxing", link: '/blog/tool-calling/' },
+                { text: 'The Planning Module: Plan Mode, TodoStore, and Execution Automation', link: '/blog/planning-module/' },
+                { text: 'The Agent Skills System: Extending LLM Capabilities via Progressive Disclosure', link: '/blog/agent-skills/' },
+                { text: 'Context Engineering: How an Agent Stays Sane Within a Limited Token Window', link: '/blog/context-engineering/' },
+                { text: "Hooks and Human-in-the-Loop: harness9's Tool Permission Interception System", link: '/blog/hooks-human-in-the-loop/' },
+                { text: 'Sub-Agent: How harness9 Lets the Main Agent Delegate Work', link: '/blog/sub-agent/' },
+                { text: "Sandbox: Locking the Agent's Hands and Feet on a Floating Island", link: '/blog/sandbox/' },
+                { text: 'Observability: Giving the Agent a Telescope Into Its Own Machinery', link: '/blog/observability/' },
+              ],
+            },
+          ],
+        },
+        footer: {
+          message: 'Released under the MIT License.',
+          copyright: 'Copyright © 2025-present ZhangShenao',
+        },
+      },
+    },
+    zh: {
+      label: '简体中文',
+      lang: 'zh-CN',
+      link: '/zh/',
+      title: 'harness9',
+      description: '轻量级、功能完备、生产可用的 Go Agent Harness 框架',
+      themeConfig: {
+        nav: [
+          { text: '首页', link: '/zh/' },
+          { text: '文档', link: '/zh/docs/quick-start' },
+          { text: '博客', link: '/zh/blog/' },
+          {
+            text: 'GitHub',
+            link: 'https://github.com/ZhangShenao/harness9',
+            target: '_blank',
+          },
+        ],
+        sidebar: {
+          '/zh/docs/': docsSidebarZh,
+          '/zh/blog/': [
+            {
+              text: '技术博客',
+              items: [
+                { text: '所有文章', link: '/zh/blog/' },
+                { text: 'Agent Loop — 500 行 Go 代码驱动的生产级 ReAct 主循环', link: '/zh/blog/agent-loop/' },
+                { text: '工具调用系统 — 从接口契约到并发沙箱的工程实践', link: '/zh/blog/tool-calling/' },
+                { text: 'Planning 模块：Plan Mode、TodoStore 与执行自动化', link: '/zh/blog/planning-module/' },
+                { text: 'Agent Skill 系统 — Progressive Disclosure 思想下的 LLM 能力扩展协议', link: '/zh/blog/agent-skills/' },
+                { text: 'Context Engineering — 一个 Agent 如何在有限的 Token 窗口里保持清醒', link: '/zh/blog/context-engineering/' },
+                { text: 'Hooks 与 Human-in-the-Loop：harness9 的工具权限拦截体系', link: '/zh/blog/hooks-human-in-the-loop/' },
+                { text: 'Sub-Agent：harness9 如何让主代理把任务外包出去', link: '/zh/blog/sub-agent/' },
+                { text: 'Sandbox：把 Agent 的手脚关进一座悬浮孤岛', link: '/zh/blog/sandbox/' },
+                { text: 'Observability：给 Agent 装一台看清内部运转的望远镜', link: '/zh/blog/observability/' },
+              ],
+            },
+          ],
+        },
+        footer: {
+          message: '基于 MIT 协议发布。',
+          copyright: 'Copyright © 2025-present ZhangShenao',
+        },
+      },
     },
   },
 })

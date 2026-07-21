@@ -1,123 +1,123 @@
 ---
-title: "SubAgent：harness9 如何让主代理把任务外包出去"
+title: "Sub-Agent: How harness9 Lets the Main Agent Delegate Work"
 date: 2026-07-06
 tags: [harness9, agent, golang, SubAgent, task-delegation]
-summary: "harness9 的 SubAgent 系统把每一次委派都还原成一个隔离 Session 上的普通 AgentEngine 实例，委派入口本身则是一个和 bash、read_file 完全同构的普通 tool。本文先给出「创建」与「委派」两条主线的整体心智模型，再依次拆解 task 工具设计、ResolveTools 权限收紧、上下文隔离、Runner 双 Context 与 TaskTracker 的无 channel 并发模型。"
+summary: "harness9's Sub-Agent system reduces every delegation to an ordinary AgentEngine instance running on an isolated Session, and the delegation entry point itself is an ordinary tool, isomorphic to bash or read_file. This post first lays out the overall mental model along the two main threads of 'creation' and 'delegation', then works through the task tool design, ResolveTools permission narrowing, context isolation, the Runner's dual Context derivation, and TaskTracker's channel-free concurrency model."
 ---
 
-# SubAgent：harness9 如何让主代理把任务外包出去
+# Sub-Agent: How harness9 Lets the Main Agent Delegate Work
 
-## 关于 harness9
+## About harness9
 
-harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
+harness9 is a Local-First, lightweight, feature-complete, production-ready general-purpose Go Agent framework.
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
-- **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
+- **Website**: [https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **GitHub**: [https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
-⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
+⭐ Stars are the most direct way to support this open-source project. Issues and PRs are welcome.
 
 ---
 
 ## TL;DR
 
-- SubAgent 不是新组件，而是运行在隔离 Session 上的普通 `engine.AgentEngine` 实例，复用 `RunStream` 流水线，不改 `runLoop` 一行代码
-- 创建 SubAgent 只有两条路：内置编程式注册（`general-purpose`）和 `.harness9/agents/*.md` 文件式定义，二者统一进 `Registry`
-- 委派 SubAgent 也只有两条路：主 LLM 通过 `task` 工具基于语义自主决策，或用户用 `@agent` 直接绕开 LLM 前台直跑
-- 委派入口 `task` 就是个普通 `tools.BaseTool`，对 Engine 完全透明，和 bash、read_file 走同一条调度路径，没有专属的"委派协议"
-- `ResolveTools` 用"白名单∩全集 - 黑名单 - task"三步收紧权限，`task` 工具被硬编码永久移除，从根上禁止递归委派，即 SubAgent 无法再创建      SubAgent
-- SubAgent 看不到 MainAgent 的对话历史和 System Prompt，`prompt` 参数是唯一信息通道，独立 `MemorySession` 保证上下文零泄漏
-- 前台执行复用父调用方 ctx 的审批通道，后台执行审批一律 fail-closed 拒绝，两条路径共享同一个 `Runner.Run` 实现
-- `TaskTracker` 用 `sync.Mutex` 替代 channel 管后台任务状态，从根上规避 send-on-closed-channel 风险
+- A Sub-Agent is not a new component — it's an ordinary `engine.AgentEngine` instance running on an isolated Session, reusing the same `RunStream` pipeline, without changing a single line of `runLoop`
+- There are only two ways to create a Sub-Agent: built-in programmatic registration (`general-purpose`) and file-based definitions under `.harness9/agents/*.md`; both converge into the same `Registry`
+- There are only two ways to delegate to a Sub-Agent: the main LLM decides semantically via the `task` tool, or the user bypasses the LLM entirely and runs it directly in the foreground with `@agent`
+- The delegation entry point `task` is just an ordinary `tools.BaseTool`, completely transparent to the Engine, dispatched through the same path as bash or read_file — there is no dedicated "delegation protocol"
+- `ResolveTools` narrows permissions in three steps — "allowlist ∩ full set − denylist − task" — with the `task` tool hard-coded to be permanently removed, banning recursive delegation at the root, i.e. a Sub-Agent can never spawn another Sub-Agent
+- A Sub-Agent cannot see the main agent's conversation history or system prompt; the `prompt` parameter is the sole information channel, and an independent `MemorySession` guarantees zero context leakage
+- Foreground execution reuses the parent caller's ctx approval channel; background execution always fails closed on approval requests; both paths share the same `Runner.Run` implementation
+- `TaskTracker` replaces channels with `sync.Mutex` to manage background task state, eliminating send-on-closed-channel risk at the root
 
-## 本文你将学到
+## What You'll Learn
 
-- 读完开篇就能建立起"如何创建SubAgent"和"如何委派SubAgent"的完整心智模型，不用读到文末才拼出全貌
-- 看清 `task` 工具的参数 schema 怎么设计、`Execute` 怎么在前台阻塞与后台立即返回之间切换，以及为什么委派被做成一个普通 tool 而非新协议
-- 看清 `ResolveTools` 如何保证委派链上权限只能收紧、不能扩张
-- 掌握 Runner 中前台/后台两种 execCtx 派生策略，以及为什么要绕开父工具的 60s 超时
-- 理解 TaskTracker 为什么放弃 channel 转而用锁保护的内存缓冲
+- By the end of the opening section, you'll have a complete mental model of "how a Sub-Agent is created" and "how a Sub-Agent is delegated to" — no need to read to the end to piece it together
+- How the `task` tool's parameter schema is designed, how `Execute` switches between blocking in the foreground and returning immediately in the background, and why delegation is built as an ordinary tool rather than a new protocol
+- How `ResolveTools` guarantees that permissions can only narrow, never expand, along the delegation chain
+- The Runner's two `execCtx` derivation strategies for foreground/background, and why it bypasses the parent tool's 60-second timeout
+- Why `TaskTracker` abandons channels in favor of a mutex-protected in-memory buffer
 
 ---
 
-## 为什么要有 SubAgent？
+## Why Have a Sub-Agent at All?
 
-Agent 的上下文窗口是极度稀缺的资源。一次多步骤探索——读十个文件、跑五次 bash、反复试错——中间过程全塞进主对话历史，既污染后续推理质量，也吃掉 token 预算。
+An agent's context window is an extremely scarce resource. A single multi-step exploration — reading ten files, running five bash commands, trial and error along the way — if all of that intermediate process gets stuffed into the main conversation history, it both pollutes the quality of subsequent reasoning and eats up the token budget.
 
-主流的 Harness 框架都给出同一个解决方案：把边界清晰的子任务整体外包出去，只拿回一份简洁结论。harness9 完整继承了这个内核，但工程上做了个关键决定——**SubAgent 不是新造的执行器，它就是与主 Agent 复用的同一套 `engine.AgentEngine`**。
+Mainstream harness frameworks all converge on the same solution: outsource a well-bounded subtask wholesale, and only bring back a concise conclusion. harness9 fully inherits this core idea, but makes one key engineering decision — **a Sub-Agent is not a newly built executor; it is the very same `engine.AgentEngine` reused from the main agent**.
 
 ```go
 sub := engine.NewAgentEngine(p, childReg, r.workDir, opts...)
 stream, err := sub.RunStream(execCtx, prompt)
 ```
 
-`Runner.Run` 里这两行就是 SubAgent 的全部执行内核。没有单独的 SubAgent Loop，没有专门调度器。SubAgent 和 MainAgent 所执行的的是同一个标准 ReAct 循环，区别只在工具集更窄、Session 更干净、Context 派生方式不同。
+These two lines in `Runner.Run` are the entire execution kernel of a Sub-Agent. There is no separate Sub-Agent loop, no dedicated scheduler. The Sub-Agent and the main agent run the exact same standard ReAct loop; the only differences are a narrower tool set, a cleaner Session, and a different Context derivation strategy.
 
-![主代理与SubAgent共用同一套 AgentEngine 执行内核](./images/shared-engine-kernel-01.png)
+![Main agent and Sub-Agent share the same AgentEngine execution kernel](/blog/sub-agent/images/shared-engine-kernel-01.png)
 
 
 ---
 
-## 创建与委派：两个心智模型
+## Creation and Delegation: Two Mental Models
 
-先把两件容易混的事分清楚：**创建一个 SubAgent **和**委派一次任务**是两条独立路径，一个发生在启动阶段，一个发生在运行时。
+First, let's separate two things that are easy to conflate: **creating a Sub-Agent** and **delegating a task** are two independent paths — one happens at startup, the other at runtime.
 
-### 创建：SubAgent 从哪里来
+### Creation: Where Does a Sub-Agent Come From
 
-harness9 只认两种"出身"，最终都汇入同一个 `Registry`：
+harness9 recognizes only two "origins", both of which ultimately flow into the same `Registry`:
 
-| 创建方式 | 载体 | 何时注册 | 适用场景 |
+| Creation method | Vehicle | When registered | Use case |
 |---------|------|---------|---------|
-| 编程式内置 | `main.go` 里的 `SubAgentDefinition{}` 字面量 | 启动阶段 `subAgentReg.Register(...)` | 内置 `general-purpose`，通用任务子代理 |
-| 文件式定义 | `.harness9/agents/*.md`（YAML frontmatter + 正文） | 启动阶段 `Registry.LoadFromDir` 扫描加载 | 项目侧自定义专门角色（安全审计、文档撰写等） |
+| Programmatic built-in | A `SubAgentDefinition{}` literal in `main.go` | At startup, via `subAgentReg.Register(...)` | Built-in `general-purpose`, a general-purpose task Sub-Agent |
+| File-based definition | `.harness9/agents/*.md` (YAML frontmatter + body) | At startup, scanned and loaded by `Registry.LoadFromDir` | Project-side custom specialized roles (security auditing, documentation writing, etc.) |
 
-两种方式殊途同归，都是构造一个 `SubAgentDefinition` 塞进 `Registry.defs` 这张 map。`Registry` 本身很简单：
+Both methods lead to the same place: constructing a `SubAgentDefinition` and dropping it into the `Registry.defs` map. The `Registry` itself is simple:
 
 ```go
 type Registry struct {
     defs map[string]SubAgentDefinition
 }
 
-func (r *Registry) Register(def SubAgentDefinition) error { /* Validate + 去重 */ }
+func (r *Registry) Register(def SubAgentDefinition) error { /* Validate + dedup */ }
 func (r *Registry) Get(name string) (SubAgentDefinition, bool)
 func (r *Registry) List() []SubAgentDefinition
 ```
 
-约定是启动阶段一次性注册、运行期只读，跟 `tools.Registry` 的惯例一致——不加锁，因为运行时没有并发写入。文件式定义还有个覆盖规则：同名文件定义会覆盖编程式定义（记日志，不报错），所以想改内置行为，写个 `.harness9/agents/general-purpose.md` 就行，不用碰 Go 代码。
+The convention is: register once at startup, read-only at runtime — consistent with the convention for `tools.Registry` — no locking is needed because there's no concurrent writing at runtime. File-based definitions also have an override rule: a file definition with the same name overrides the programmatic definition (logged, not an error), so to change built-in behavior you just write a `.harness9/agents/general-purpose.md` — no need to touch Go code.
 
-创建阶段只回答一个问题：整个系统内部有哪些 SubAgent 类型，各自的权限边界和角色设定是什么。不涉及具体任务执行。
+The creation stage answers exactly one question: what Sub-Agent types exist in the system, and what are their permission boundaries and role definitions. It has nothing to do with executing a specific task.
 
-### 委派：一次任务如何被派发出去
+### Delegation: How a Task Gets Dispatched
 
-创建完成后，运行时唯一要回答的是：这次任务该不该外包，外包给谁，用什么方式。harness9 给了两条路：
+Once creation is done, the only question left at runtime is: should this task be outsourced, to whom, and how. harness9 offers two paths:
 
-| 委派方式 | 触发方 | 是否经过主 LLM 决策 | 执行模式 |
+| Delegation method | Triggered by | Goes through main LLM decision? | Execution mode |
 |---------|--------|---------------------|---------|
-| `task` 工具 | 主 LLM 的 ToolCall | 是——LLM 自主选择 `subagent_type` 与 `prompt` | 前台阻塞（默认）或后台异步（`background=true`） |
-| `@agent` 直跑 | 用户输入框 `@agent-name 任务描述` | 否——完全绕开 LLM 工具决策 | 仅前台阻塞 |
+| `task` tool | The main LLM's ToolCall | Yes — the LLM autonomously chooses `subagent_type` and `prompt` | Foreground blocking (default) or background async (`background=true`) |
+| `@agent` direct run | User input `@agent-name task description` | No — completely bypasses the LLM's tool decision | Foreground blocking only |
 
-`task` 工具是委派系统对主 LLM 暴露的唯一接口，既是发起委派的入口，也是选前台还是后台的开关。`@agent` 是给人类留的旁路，用于"我现在就要看到这个SubAgent 实时输出"的场景，代价是只支持前台。
+The `task` tool is the sole interface the delegation system exposes to the main LLM — it is both the entry point for initiating delegation and the switch between foreground and background. `@agent` is a bypass left for humans, used for "I want to see this Sub-Agent's output live right now" scenarios, at the cost of only supporting foreground execution.
 
-两条路最终都会走到同一个 `Runner.Run`——委派的"决策"可以有两种发起方式，但"执行"只有一套实现。
+Both paths ultimately lead to the same `Runner.Run` — delegation's "decision" can be initiated in two ways, but its "execution" has only one implementation.
 
-![创建与委派：两条独立路径汇入同一个 Runner](./images/creation-vs-delegation-02.png)
+![Creation and delegation: two independent paths converge into one Runner](/blog/sub-agent/images/creation-vs-delegation-02.png)
 
 
 ---
 
-## task 工具：委派入口本身的设计
+## The task Tool: Designing the Delegation Entry Point Itself
 
-委派路径里主 LLM 唯一能碰到的接口只有一个——`task` 工具。`TaskTool` 定义在 `internal/subagent/task_tool.go`，是整个 SubAgent Delegation 对外暴露的全部能力，值得在深入 Runner 内部机制之前先讲清楚。
+The only interface the main LLM ever touches along the delegation path is the `task` tool. `TaskTool` is defined in `internal/subagent/task_tool.go`, and represents the entire capability the Sub-Agent delegation system exposes externally — worth understanding clearly before diving into the Runner's internal mechanics.
 
-### 参数 schema：四个字段划清委派的边界
+### Parameter Schema: Four Fields Draw the Boundaries of Delegation
 
-`Definition()` 每次调用都**动态生成**，把当前注册表里所有 SubAgent 的 `Name` 塞进 `subagent_type` 的枚举值：
+`Definition()` is **dynamically generated** on every call, folding the `Name` of every currently registered Sub-Agent into the enum values of `subagent_type`:
 
 ```go
 func (t *TaskTool) Definition() schema.ToolDefinition {
     defs := t.reg.List()
     names := make([]string, 0, len(defs))
     var sb strings.Builder
-    sb.WriteString("把一个边界清晰的任务委派给专门的SubAgent执行。SubAgent拥有独立上下文与受限工具集。\n可用SubAgent：\n")
+    sb.WriteString("Delegate a well-bounded task to a specialized Sub-Agent. The Sub-Agent has its own independent context and a restricted tool set.\nAvailable Sub-Agents:\n")
     for _, d := range defs {
         names = append(names, d.Name)
         fmt.Fprintf(&sb, "- %s: %s\n", d.Name, d.Description)
@@ -130,18 +130,18 @@ func (t *TaskTool) Definition() schema.ToolDefinition {
             "properties": map[string]any{
                 "subagent_type": map[string]any{
                     "type": "string", "enum": names,
-                    "description": "要调用的SubAgent类型名称",
+                    "description": "The Sub-Agent type name to invoke",
                 },
                 "description": map[string]any{
-                    "type": "string", "description": "任务的简短标题（3-5 词，用于 UI 展示）",
+                    "type": "string", "description": "A short title for the task (3-5 words, for UI display)",
                 },
                 "prompt": map[string]any{
                     "type":        "string",
-                    "description": "传给SubAgent的完整任务描述。SubAgent看不到主对话历史，所有必要信息（文件路径、背景、要求）都要写在这里。",
+                    "description": "The full task description passed to the Sub-Agent. The Sub-Agent cannot see the main conversation history, so all necessary information (file paths, background, requirements) must be written here.",
                 },
                 "background": map[string]any{
                     "type":        "boolean",
-                    "description": "是否后台异步运行。true 时立即返回，结果稍后注入；false（默认）阻塞直到完成。",
+                    "description": "Whether to run asynchronously in the background. true returns immediately, with the result injected later; false (default) blocks until completion.",
                 },
             },
             "required": []string{"subagent_type", "prompt"},
@@ -150,34 +150,34 @@ func (t *TaskTool) Definition() schema.ToolDefinition {
 }
 ```
 
-四个参数各司其职，没一个多余：
+Each of the four parameters has its own distinct job, and none is redundant:
 
-- `subagent_type` 是唯一必填枚举，`enum` 数组直接从 `Registry.List()` 现算，所以永远和实际注册的SubAgent保持同步——新增一个 `.harness9/agents/*.md` 文件不用改任何 schema 代码。这也是"创建"和"委派"两个阶段的直接接口：`Registry` 里有什么，`task` 就能委派给什么。
-- `prompt` 是唯一必填的自由文本参数，是父子之间的唯一信息通道，description 里直接写明"SubAgent 看不到主对话历史"——把架构约束翻译成 LLM 能懂的提示词。
-- `description` 只是 UI 装饰字段，展示用，不参与执行逻辑，跟机制字段分得很干净。
-- `background` 默认 `false`（阻塞），用于控制 SubAgent 的执行模式（前台/后台）
+- `subagent_type` is the only required enum, and its `enum` array is computed live from `Registry.List()`, so it always stays in sync with what's actually registered — adding a new `.harness9/agents/*.md` file requires no schema code changes at all. This is also the direct interface between the "creation" and "delegation" stages: whatever's in the `Registry`, `task` can delegate to.
+- `prompt` is the only required free-text parameter, the sole information channel between parent and child; its description explicitly states "the Sub-Agent cannot see the main conversation history" — translating an architectural constraint into a prompt the LLM can understand.
+- `description` is purely a UI decoration field, display-only, not involved in execution logic — cleanly separated from the mechanism fields.
+- `background` defaults to `false` (blocking), controlling the Sub-Agent's execution mode (foreground/background).
 
-`Description` 本身也有讲究：不是静态字符串，而是把所有已注册 SubAgent 的 `Name` 和 `Description` 拼进工具描述。LLM 决定"该不该委派、委派给谁"全靠这段动态拼接的文本，没有额外的检索或推荐机制。
+The `Description` itself is also carefully designed: it's not a static string, but concatenates the `Name` and `Description` of every registered Sub-Agent into the tool description. Whether the LLM decides "should I delegate, and to whom" relies entirely on this dynamically-assembled text — there's no additional retrieval or recommendation mechanism.
 
-### Execute：一个函数里装下两种执行语义
+### Execute: Two Execution Semantics in One Function
 
-`Execute` 骨架很短，但一个分支决定了两种完全不同的执行路径：
+The `Execute` skeleton is short, but one branch determines two completely different execution paths:
 
 ```go
 func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
     var a taskArgs
     if err := json.Unmarshal(args, &a); err != nil {
-        return "", fmt.Errorf("参数解析失败: %w", err)
+        return "", fmt.Errorf("failed to parse arguments: %w", err)
     }
     if a.SubAgentType == "" {
-        return "", fmt.Errorf("subagent_type 不能为空")
+        return "", fmt.Errorf("subagent_type must not be empty")
     }
     if a.Prompt == "" {
-        return "", fmt.Errorf("prompt 不能为空")
+        return "", fmt.Errorf("prompt must not be empty")
     }
     def, ok := t.reg.Get(a.SubAgentType)
     if !ok {
-        return "", fmt.Errorf("未知SubAgent类型 %q，可用: %s", a.SubAgentType, t.agentNames())
+        return "", fmt.Errorf("unknown Sub-Agent type %q, available: %s", a.SubAgentType, t.agentNames())
     }
 
     if a.Background {
@@ -185,7 +185,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
         go func() {
             defer func() {
                 if rec := recover(); rec != nil {
-                    t.tracker.Finish(taskID, fmt.Sprintf("SubAgent后台执行 panic: %v", rec), true)
+                    t.tracker.Finish(taskID, fmt.Sprintf("Sub-Agent background execution panicked: %v", rec), true)
                 }
             }()
             sink := func(u schema.SubAgentUpdate) { t.tracker.AppendLog(taskID, u) }
@@ -208,71 +208,71 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 }
 ```
 
-前半段是常规参数校验和查表。比较重要的是分支 `if a.Background`：
+The first half is standard argument validation and lookup. The important part is the `if a.Background` branch:
 
-- **前台执行**：直接调用 `t.runner.Run(ctx, def, a.Prompt, false)`，同步等结果，把 `FinalText` 包进 XML 风格字符串直接返回。`Execute` 是 Engine 同步调用的普通函数，走这条分支意味着当前 Turn 会一直卡在这，直到 SubAgent 跑完。
-- **后台执行**：先 `t.tracker.Start` 拿个 `taskID`，开一个 goroutine 异步跑，`Execute` 自己**立即返回**一个 `state="running"` 的占位结果。SubAgent 真实执行完全脱离了这次调用的生命周期。
+- **Foreground execution**: directly calls `t.runner.Run(ctx, def, a.Prompt, false)`, synchronously waits for the result, and wraps `FinalText` into an XML-style string that's returned right away. `Execute` is an ordinary function invoked synchronously by the Engine, so taking this branch means the current Turn is blocked here until the Sub-Agent finishes running.
+- **Background execution**: first calls `t.tracker.Start` to get a `taskID`, spawns a goroutine to run asynchronously, and `Execute` itself **returns immediately** with a placeholder result of `state="running"`. The Sub-Agent's actual execution is completely decoupled from this call's lifecycle.
 
-后台分支里还有个防御：`recover()` 兜住 goroutine 内的 panic，转成 `Finish(taskID, ..., true)` 写回 tracker，而不是让它直接崩掉进程——这是一个脱离主调用栈独立运行的 goroutine，外层没人等着捕获它的 panic。
+The background branch also has a safeguard: `recover()` catches panics inside the goroutine and converts them into `Finish(taskID, ..., true)` written back to the tracker, rather than letting them crash the process directly — this is a goroutine running independently, detached from the main call stack, with nobody waiting to catch its panic.
 
-### 为什么是一个普通 tool，而不是新协议
+### Why an Ordinary Tool, Not a New Protocol
 
-`TaskTool` 唯一的特殊之处，是它实现了 `tools.BaseTool` 接口——`Name()` / `Definition()` / `Execute()`，跟 `bash`、`read_file`、`write_file` 长得一模一样。这个决定看着朴素，其实是整个委派系统能零侵入接入 Engine 的关键：
+The only special thing about `TaskTool` is that it implements the `tools.BaseTool` interface — `Name()` / `Definition()` / `Execute()` — which looks exactly like `bash`, `read_file`, or `write_file`. This seemingly plain decision is actually the key to letting the entire delegation system integrate with the Engine with zero intrusion:
 
-- Engine 的主循环、Hook 链、超时控制、并发调度、审批弹窗、TUI 渲染，全都是围绕"工具调用"这一个抽象写的。委派要复用这套基建，最省事的办法就是让它长得像一次工具调用。
-- `HookRegistry` 不用为 `task` 写任何特殊分支。`danger_hook`、`offload_hook` 该怎么包 `bash` 就怎么包 `task`——`task` 唯一被特殊对待的地方在SubAgent内部（`denyTaskHook` 拒绝再调用它），对父代理这层它就是个普通工具。
-- LLM 侧也不用学新协议。模型早就会发 ToolCall，把委派做成工具调用就不用额外的 prompt 工程去教它一种新交互模式——调用 `task` 和调用 `bash` 走的是同一个认知路径。
+- The Engine's main loop, hook chain, timeout control, concurrent scheduling, approval dialogs, and TUI rendering are all built around a single abstraction: "tool call". The cheapest way to reuse this infrastructure for delegation is to make delegation look like a tool call.
+- `HookRegistry` doesn't need any special branch for `task`. However `danger_hook` and `offload_hook` wrap `bash`, they wrap `task` the same way — the only place `task` is treated specially is inside the Sub-Agent (the `denyTaskHook` refuses to let it be called again); from the parent agent's perspective, it's just an ordinary tool.
+- The LLM side doesn't need to learn a new protocol either. The model already knows how to emit ToolCalls, so making delegation a tool call avoids extra prompt engineering to teach it a new interaction mode — calling `task` and calling `bash` follow the exact same cognitive path.
 
-一句话：**把委派做成 tool，是用一个已经验证过的抽象（工具调用）去承载新能力（SubAgent 委派），而不是另起炉灶发明新抽象**。这跟 harness9"最小化抽象层"的理念完全一致。
+In short: **making delegation a tool means using an already-proven abstraction (tool calling) to carry a new capability (Sub-Agent delegation), rather than inventing a new abstraction from scratch**. This is entirely consistent with harness9's philosophy of "minimizing the abstraction layer".
 
-### 返回值设计：两种终态，一种协议
+### Return Value Design: Two Terminal States, One Protocol
 
-`task` 工具的返回值走一套轻量 XML 风格标记，三种终态：
+The `task` tool's return value uses a lightweight XML-style markup, with three terminal states:
 
 ```
-<task state="completed"><task_result>...</task_result></task>   // 前台成功
-<task state="error">...</task_result></task>                     // 前台失败
-<task id="task-general-purpose-1" state="running"/>               // 后台立即返回
+<task state="completed"><task_result>...</task_result></task>   // foreground success
+<task state="error">...</task_result></task>                     // foreground failure
+<task id="task-general-purpose-1" state="running"/>               // background, returns immediately
 ```
 
-前台两种终态都**同步**塞进这次工具调用的 Output，父代理下一轮立即能读到；后台的 `running` 只是个句柄，真正的结果不走这次 `Execute` 返回，得等 `TaskTracker.Finish` 之后，在下一次 `dispatch()` 前通过 `DrainCompleted()` 排空、拼进 LLM 的 prompt 前缀（并发细节见后面 TaskTracker 一节）。
+Both foreground terminal states are **synchronously** stuffed into this tool call's output, readable by the parent agent immediately on the next turn; the background `running` state is just a handle — the actual result doesn't come back through this `Execute` call, but rather after `TaskTracker.Finish`, gets drained via `DrainCompleted()` before the next `dispatch()` call and prepended to the LLM's prompt (concurrency details covered later in the TaskTracker section).
 
-这个设计把"工具调用必须同步返回字符串"这个硬约束，和"后台任务本质异步"这个语义需求解耦开了——`task` 永远同步返回，但返回内容要么是最终结果，要么是指向未来结果的指针（`taskID`），指针怎么兑现全交给 `TaskTracker` 处理。这也是为什么 `TaskTool` 要同时持有 `Registry`、`Runner`、`TaskTracker` 三个协作者——`Execute` 本身只是一次编排，不持有状态。
+This design decouples the hard constraint "a tool call must synchronously return a string" from the semantic requirement "a background task is inherently asynchronous" — `task` always returns synchronously, but the returned content is either the final result or a pointer to a future result (`taskID`); how that pointer gets redeemed is entirely handled by `TaskTracker`. This is also why `TaskTool` holds three collaborators simultaneously — `Registry`, `Runner`, and `TaskTracker` — `Execute` itself is purely orchestration, holding no state of its own.
 
-![task 工具作为委派入口：参数 schema 与两种返回协议](./images/task-tool-entrypoint-03.png)
+![The task tool as delegation entry point: parameter schema and two return protocols](/blog/sub-agent/images/task-tool-entrypoint-03.png)
 
 
 ---
 
-## general-purpose：内置的通用 SubAgent
+## general-purpose: The Built-in General Sub-Agent
 
-讲完委派入口，回头看创建阶段的第一种方式——编程式内置。harness9 内置一个 `general-purpose` 通用 SubAgent，对标 Claude Code 和 DeepAgents 的同名能力——没有更专门的 SubAgent 时，它是默认委派目标。
+Having covered the delegation entry point, let's return to the first creation method — programmatic built-in registration. harness9 ships a built-in `general-purpose` Sub-Agent, on par with the equivalent capability in Claude Code and DeepAgents — when there's no more specialized Sub-Agent available, it's the default delegation target.
 
-它的定义几乎全是空值：
+Its definition is almost entirely empty values:
 
 ```go
 subAgentReg.Register(subagent.SubAgentDefinition{
     Name:         "general-purpose",
-    Description:  "通用SubAgent，处理需要兼顾探索与修改、复杂推理或多步依赖的任务...",
+    Description:  "A general-purpose Sub-Agent for tasks that require balancing exploration and modification, complex reasoning, or multi-step dependencies...",
     SystemPrompt: generalPurposeSystemPrompt,
-    Source:       "builtin", // Tools/Model/MaxTurns 均留空
+    Source:       "builtin", // Tools/Model/MaxTurns are all left empty
 })
 ```
 
-`Tools` 留空 = 继承父代理**全部**可用工具；`Model` 留空 = 继承父代理模型；`MaxTurns` 留空 = 继承引擎默认轮数。它不缩小能力边界，只缩小**上下文范围**——委派给它的价值不在限制它能做什么，而在把冗长中间过程隔离在子会话里，只回传一份结论。
+Leaving `Tools` empty means inheriting **all** of the parent agent's available tools; leaving `Model` empty means inheriting the parent agent's model; leaving `MaxTurns` empty means inheriting the engine's default turn count. It doesn't shrink the boundary of what it can do — it only shrinks the **scope of context**. The value of delegating to it isn't about restricting what it can do, but about isolating the lengthy intermediate process inside a sub-session and returning only a single conclusion.
 
-当需要特定领域的 SubAgent （安全审计、文档撰写）时，harness9 的建议是走文件式定义，别往内核里堆更多编程式内置——保持核心精简，专门化交给项目侧。
+When a domain-specific Sub-Agent is needed (security auditing, documentation writing), harness9's recommendation is to go with a file-based definition rather than piling more programmatic built-ins into the kernel — keep the core lean, and leave specialization to the project side.
 
 ---
 
-## 文件式定义：一个 Markdown 文件就是一个新代理
+## File-Based Definitions: One Markdown File Is One New Agent
 
-创建阶段的第二种方式。在工作目录建个 `.harness9/agents/security-auditor.md`，harness9 启动时自动扫描加载：
+The second creation method. Create a `.harness9/agents/security-auditor.md` in the working directory, and harness9 automatically scans and loads it at startup:
 
 ```markdown
 ---
 name: security-auditor
-description: 安全审计专家。对涉及认证、鉴权、输入校验的代码变更后使用。
+description: Security auditing expert. Use after code changes involving authentication, authorization, or input validation.
 tools: read_file, bash
 disallowed_tools: write_file, edit_file
 model: openai/gpt-4o
@@ -280,20 +280,20 @@ max_turns: 30
 skills: security-review
 ---
 
-你是一名应用安全工程师，专注于识别代码中的安全漏洞。
-审查时按优先级输出：严重 > 高危 > 中危 > 低危，每条附上 CWE 编号与修复建议。
-不要修改文件，只输出审查报告。
+You are an application security engineer focused on identifying security vulnerabilities in code.
+When reviewing, output findings by priority: Critical > High > Medium > Low, each with a CWE number and remediation advice.
+Do not modify files — only produce the audit report.
 ```
 
-解析逻辑在 `parseAgentFile` 里，是个刻意做得很朴素的手写解析器——按 `---\n` 定界符切出 frontmatter，逐行按 `:` 切分 key/value，列表字段按逗号拆分：
+The parsing logic lives in `parseAgentFile`, a deliberately plain hand-written parser — it cuts out the frontmatter using `---\n` delimiters, splits each line on `:` into key/value pairs, and splits list fields on commas:
 
 ```go
 func parseAgentFile(content string) (SubAgentDefinition, error) {
     const delim = "---\n"
     if !strings.HasPrefix(content, delim) {
-        return SubAgentDefinition{}, fmt.Errorf("缺少 frontmatter 起始分隔符")
+        return SubAgentDefinition{}, fmt.Errorf("missing frontmatter opening delimiter")
     }
-    // ... 定位闭合分隔符，body 作为 SystemPrompt
+    // ... locate the closing delimiter, the body becomes SystemPrompt
     for _, line := range strings.Split(fm, "\n") {
         k, v, ok := strings.Cut(line, ":")
         // ...
@@ -301,16 +301,16 @@ func parseAgentFile(content string) (SubAgentDefinition, error) {
 }
 ```
 
-没引入 YAML 库，因为 frontmatter 字段集合固定又扁平，手写解析比引入 `gopkg.in/yaml.v3` 更符合"最小化抽象层"的原则。`LoadFromDir` 扫描时，目录不存在就静默返回 nil——零配置也能跑；单文件解析失败只记 warning 不中断；文件定义覆盖同名编程式定义（记日志），所以项目可以直接用文件定义盖掉内置的 `general-purpose`。
+No YAML library was introduced, because the frontmatter field set is fixed and flat — a hand-written parser is more in line with the "minimize the abstraction layer" principle than pulling in `gopkg.in/yaml.v3`. When `LoadFromDir` scans, a missing directory silently returns nil — it works with zero configuration; a single file failing to parse only logs a warning without aborting; a file definition overrides a programmatic definition of the same name (logged), so a project can directly override the built-in `general-purpose` with a file definition.
 
-![文件式SubAgent定义从 Markdown 到注册表的加载路径](./images/file-based-agent-loading-04.png)
+![The loading path for file-based Sub-Agent definitions, from Markdown to the registry](/blog/sub-agent/images/file-based-agent-loading-04.png)
 
 
 ---
 
-## ResolveTools：权限只能收紧，不能扩张
+## ResolveTools: Permissions Can Only Narrow, Never Expand
 
-接下来进深入实现——委派发生之后，Runner 具体做了什么。先看权限计算，这是整个系统里最关键的一段代码。SubAgent 的工具集不是随便声明的，是个确定性的三步收窄算法：
+Now let's move into the deeper implementation — what the Runner actually does once delegation happens. First, permission computation, which is the single most critical piece of code in the whole system. A Sub-Agent's tool set isn't declared arbitrarily; it's a deterministic three-step narrowing algorithm:
 
 ```go
 func (d SubAgentDefinition) ResolveTools(all []string) []string {
@@ -345,72 +345,72 @@ func (d SubAgentDefinition) ResolveTools(all []string) []string {
 }
 ```
 
-三步走：`Tools` 白名单与父全集取交集（留空则取全集）；减去 `DisallowedTools` 黑名单；`task` 永远被强制塞进 `denied` map，不管定义文件里写没写。
+Three steps: intersect the `Tools` allowlist with the parent's full set (or take the full set if left empty); subtract the `DisallowedTools` denylist; and `task` is always forcibly stuffed into the `denied` map, regardless of whether the definition file mentions it.
 
-这个函数的输入是 `all []string`——父代理的可用工具集，所以 **SubAgent 的权限永远不会越过 MainAgent，并且 SubAgent 不允许再递归委派。**，没有任何方式能让 SubAgent 拿到父代理都没有的工具。交集运算天然不会扩大集合，这就是"委派链单向收紧"的数学基础。
+This function's input is `all []string` — the parent agent's set of available tools — so **a Sub-Agent's permissions can never exceed those of the main agent, and a Sub-Agent is not allowed to recursively delegate again**. There's no way for a Sub-Agent to obtain a tool the parent agent doesn't have. Intersection is inherently non-expanding, and that's the mathematical foundation of "the delegation chain only narrows in one direction".
 
-`task` 的处理是双重防御。`ResolveTools` 硬编码移除是第一层；`Runner.buildChildRegistry` 又额外包了个 `denyTaskHook`：
+The handling of `task` is a double defense. Hard-coded removal in `ResolveTools` is the first layer; `Runner.buildChildRegistry` additionally wraps a `denyTaskHook`:
 
 ```go
 type denyTaskHook struct{}
 
 func (denyTaskHook) BeforeExecute(ctx context.Context, tc schema.ToolCall) (context.Context, hooks.HookDecision, error) {
     if tc.Name == "task" {
-        return ctx, hooks.Deny("SubAgent不允许再派生SubAgent"), nil
+        return ctx, hooks.Deny("Sub-Agents are not allowed to spawn further Sub-Agents"), nil
     }
     return ctx, hooks.Allow(), nil
 }
 ```
 
-这里有个思路值得记：就算未来某次重构不小心让 `task` 混进了 SubAgent 的工具注册表，这个 Hook 还能在执行前拦下来。禁止递归不靠一处检查兜底，靠两处独立机制叠加。
+Here's an idea worth remembering: even if some future refactor accidentally lets `task` slip into a Sub-Agent's tool registry, this hook can still intercept it before execution. Banning recursion doesn't rely on a single checkpoint as a backstop — it relies on two independent mechanisms stacked on top of each other.
 
-![ResolveTools 三步收紧算法](./images/resolve-tools-narrowing-05.png)
+![The three-step ResolveTools narrowing algorithm](/blog/sub-agent/images/resolve-tools-narrowing-05.png)
 
 
 ---
 
-## 上下文完全隔离：prompt 是唯一的信息通道
+## Complete Context Isolation: prompt Is the Only Information Channel
 
-SubAgent 不是主对话的延伸分支，是全新的会话：
+A Sub-Agent is not a branch extension of the main conversation — it's an entirely new session:
 
 ```go
 childID := fmt.Sprintf("subagent-%s", def.Name)
 childSession := memory.NewMemorySession(childID)
 ```
 
-`NewMemorySession` 是纯内存 Session，不带父代理的对话历史，也不含父代理的 system prompt。SubAgent 的 system prompt 由 `promptBuilder` 单独组装：
+`NewMemorySession` is a pure in-memory Session, carrying none of the parent agent's conversation history and none of the parent agent's system prompt. The Sub-Agent's system prompt is assembled separately by `promptBuilder`:
 
 ```go
 func (b *promptBuilder) Build() string {
     var sb strings.Builder
     sb.WriteString(b.systemPrompt)
-    fmt.Fprintf(&sb, "\n\n工作目录：%s", b.workDir)
+    fmt.Fprintf(&sb, "\n\nWorking directory: %s", b.workDir)
     if b.loader != nil {
         for _, name := range b.skills {
             body, err := b.loader(name)
             if err != nil || strings.TrimSpace(body) == "" {
                 continue
             }
-            fmt.Fprintf(&sb, "\n\n## 预加载技能：%s\n\n%s", name, body)
+            fmt.Fprintf(&sb, "\n\n## Preloaded skill: %s\n\n%s", name, body)
         }
     }
-    // ... Sandbox 环境说明（可选）
+    // ... Sandbox environment description (optional)
     return sb.String()
 }
 ```
 
-`promptBuilder` 通过结构类型隐式满足 `engine.PromptBuilder` 接口，不用 `import engine`——这是 harness9 一贯避免循环依赖的手法（subagent 依赖 engine，engine 不反向依赖 subagent）。
+`promptBuilder` implicitly satisfies the `engine.PromptBuilder` interface via structural typing, without `import engine` — this is a technique harness9 uses consistently to avoid circular dependencies (subagent depends on engine, engine never depends back on subagent).
 
-说白了，**SubAgent 启动时对父对话一无所知。`task` 工具的 `prompt` 参数是父子之间唯一的信息通道**——文件路径、背景信息、任务要求，全得靠 LLM 显式写进 prompt 字符串。这不是遗漏，是刻意的约束：**上下文隔离的价值就在于强制主 LLM 把任务描述清楚，而不是指望"SubAgent反正能看到全部历史**。
+Put plainly, **a Sub-Agent knows nothing about the parent conversation when it starts. The `prompt` parameter of the `task` tool is the sole information channel between parent and child** — file paths, background information, task requirements, all of it has to be explicitly written into the prompt string by the LLM. This isn't an oversight — it's a deliberate constraint: **the value of context isolation lies precisely in forcing the main LLM to describe the task clearly, rather than counting on "the Sub-Agent can see the whole history anyway"**.
 
 ---
 
 
-## 前台执行 vs 后台执行
+## Foreground Execution vs Background Execution
 
-`task` 工具支持 `background` 参数，前台阻塞、后台异步，但两条路径底层跑的是同一个 `Runner.Run(ctx, def, prompt, background)`——`background` 只是个开关，决定审批策略和结果交付方式，不是两套独立实现。
+The `task` tool supports a `background` parameter — foreground blocking or background async — but both paths run through the exact same `Runner.Run(ctx, def, prompt, background)` underneath. `background` is merely a switch that determines the approval strategy and result delivery method, not two separate implementations.
 
-前台执行时，审批请求透传父代理的审批通道：
+During foreground execution, approval requests pass through directly to the parent agent's approval channel:
 
 ```go
 case engine.EventApprovalRequired:
@@ -420,71 +420,71 @@ case engine.EventApprovalRequired:
     }
     if background || parentApproval == nil {
         req.ResponseCh <- hooks.ApprovalResponse{Approved: false,
-            Feedback: "SubAgent无可用审批通道，已自动拒绝"}
+            Feedback: "Sub-Agent has no available approval channel, automatically denied"}
     } else {
         req.ResponseCh <- parentApproval(execCtx, req.ToolCall, req.Reason, req.RiskLevel)
     }
 ```
 
-后台执行没有 TUI 通道可弹审批对话框，harness9 的策略是 **fail-closed**——一律自动拒绝，不自动放行。这是个明确的安全取舍：**宁可后台任务因权限不足失败，也不允许无人监督地放行高危操作**。
+Background execution has no TUI channel to pop an approval dialog through, and harness9's strategy is **fail-closed** — always automatically deny, never auto-approve. This is a deliberate security trade-off: **it's better to have a background task fail due to insufficient permission than to allow a high-risk operation to proceed unsupervised**.
 
-结果交付方式也不同。前台时 `FinalText` 直接同步作为 tool result 返回，父代理立即可读：
+The result delivery method also differs. In the foreground, `FinalText` is directly returned synchronously as the tool result, immediately readable by the parent agent:
 
 ```go
 return fmt.Sprintf(`<task state="completed"><task_result>%s</task_result></task>`, res.FinalText), nil
 ```
 
-后台时立即返回一个 `running` 状态标记，真正的结果走 `TaskTracker`：
+In the background, a `running` status marker is returned immediately, and the actual result travels through `TaskTracker`:
 
 ```go
 return fmt.Sprintf(`<task id=%q state="running"/>`, taskID), nil
 ```
 
-![前台阻塞与后台异步的两条委派路径](./images/foreground-background-paths-06.png)
+![The two delegation paths: foreground blocking and background async](/blog/sub-agent/images/foreground-background-paths-06.png)
 
 
 ---
 
 
-## @agent：绕开 LLM 决策的直跑通道
+## @agent: A Direct-Run Channel That Bypasses LLM Decision-Making
 
-回到开篇提到的第二条委派路径。除了让主 Agent 通过 `task` 工具决策，harness9 还留了条人类直接指挥的路径：在输入框输入 `@general-purpose 调查 xxx 的实现`，直接前台调用指定 SubAgent，完全绕开主 LLM 的工具选择推理。
+Back to the second delegation path mentioned in the opening. Besides letting the main agent decide via the `task` tool, harness9 also leaves a path for direct human command: typing `@general-purpose investigate the implementation of xxx` in the input box directly invokes the specified Sub-Agent in the foreground, completely bypassing the main LLM's tool-selection reasoning.
 
-这条路径复用了跟 `task` 工具前台执行完全相同的渲染逻辑（`subAgentLines`），区别只在触发方——一个是 LLM 自主决策，一个是用户显式指定。`@` 语法只支持前台，要后台执行还得回到自然语言让主 LLM 调 `task(background=true)`。这个限制的考虑是：后台任务的价值在于"我不想等，交给系统去跑"，`@` 直跑的价值在于"我现在就要看到这个 SubAgent 的实时输出"，两者是不同的使用场景
+This path reuses exactly the same rendering logic (`subAgentLines`) as the `task` tool's foreground execution; the only difference is who triggers it — one is the LLM deciding autonomously, the other is the user specifying explicitly. The `@` syntax only supports the foreground; to run in the background you still have to fall back to natural language and let the main LLM call `task(background=true)`. The reasoning behind this limitation: the value of a background task is "I don't want to wait, let the system handle it in the background", while the value of an `@` direct run is "I want to see this Sub-Agent's live output right now" — these are two different use cases.
 
 ---
 
-## 数据流全景
+## The Full Data Flow
 
-把上面几段串起来看一次完整的委派链路：
+Let's trace through the complete delegation chain by putting all the pieces above together:
 
 ```
-主代理 LLM 决定调用 task
+Main agent LLM decides to call task
     ↓
-TaskTool.Execute 解析 subagent_type / prompt / background
+TaskTool.Execute parses subagent_type / prompt / background
     ↓
 Runner.Run
-    ├─ buildChildRegistry: ResolveTools(白名单∩全集-黑名单-task) → 权限 Hook 链
-    ├─ providerFor(def.Model): 模型覆盖或继承父模型
-    ├─ newPromptBuilder: system prompt + workDir + skills 正文
-    ├─ memory.NewMemorySession: 全新纯内存 Session
+    ├─ buildChildRegistry: ResolveTools(allowlist ∩ full set − denylist − task) → permission hook chain
+    ├─ providerFor(def.Model): model override or inherit parent model
+    ├─ newPromptBuilder: system prompt + workDir + skills body
+    ├─ memory.NewMemorySession: brand-new pure in-memory Session
     └─ engine.NewAgentEngine → sub.RunStream(execCtx, prompt)
-            ↓ 事件流消费
-        EventActionDelta/ToolStart/ToolResult → emit(SubAgentUpdate) → TUI 进度行
-        EventApprovalRequired → 前台透传 / 后台自动拒绝
-        EventDone → channel 关闭，循环结束
+            ↓ event stream consumption
+        EventActionDelta/ToolStart/ToolResult → emit(SubAgentUpdate) → TUI progress line
+        EventApprovalRequired → passed through in foreground / auto-denied in background
+        EventDone → channel closes, loop ends
             ↓
-    前台: FinalText → tool result → 父代理上下文（立即可读）
-    后台: TaskTracker.Finish → 下次 dispatch 前 DrainCompleted → 注入主 LLM prompt
+    Foreground: FinalText → tool result → parent agent context (immediately readable)
+    Background: TaskTracker.Finish → DrainCompleted before the next dispatch → injected into the main LLM prompt
 ```
 
-![SubAgent 完整委派数据流](./images/subagent-full-dataflow-07.png)
+![The complete Sub-Agent delegation data flow](/blog/sub-agent/images/subagent-full-dataflow-07.png)
 
 
 ---
 
-## 结语
+## Closing Thoughts
 
-**SubAgent 不是什么魔法，它最核心的价值就是一个词————隔离**：创建阶段用 `Registry` 划定"存在哪些 SubAgent "的边界，委派阶段用一个普通 `task` 工具划定"如何发起委派"。`ResolveTools` 用于隔离权限，`MemorySession` 用于隔离上下文。
+**A Sub-Agent isn't magic — its core value can be summed up in a single word: isolation**. At the creation stage, the `Registry` defines the boundary of "what Sub-Agents exist"; at the delegation stage, an ordinary `task` tool defines the boundary of "how delegation is initiated". `ResolveTools` isolates permissions, and `MemorySession` isolates context.
 
 ---

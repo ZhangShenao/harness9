@@ -1,69 +1,70 @@
 ---
-title: "Sandbox：把 Agent 的手脚关进一座悬浮孤岛"
+title: "Sandbox: Locking the Agent's Hands and Feet on a Floating Island"
 date: 2026-07-13
 tags: [harness9, agent, golang, sandbox, docker, isolation]
-summary: "harness9 的 Sandbox 模块用一个 Environment 接口把 LocalEnvironment 和 DockerEnvironment 统一成同一套抽象，工具层完全无感知路由。本文拆解为什么选 Docker 而非 gVisor/Firecracker、Container 五状态机怎么设计、Manager 如何并发安全地管理容器生命周期、bash 与文件工具如何分别走 docker exec 和 bind mount 两条路由，以及 --cap-drop all 之后为什么又要加回三个能力。"
+summary: "harness9's Sandbox module unifies LocalEnvironment and DockerEnvironment behind a single Environment interface, making the routing completely transparent to the tool layer. This post breaks down why Docker was chosen over gVisor/Firecracker, how the five-state Container state machine is designed, how the Manager manages container lifecycles concurrency-safely, how bash and file tools route through docker exec and bind mounts respectively, and why three capabilities had to be added back after --cap-drop all."
 ---
 
-# Sandbox：把 Agent 的手脚关进一座悬浮孤岛
+# Sandbox: Locking the Agent's Hands and Feet on a Floating Island
 
-## 关于 harness9
+## About harness9
 
-harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
+harness9 is a Local-First, lightweight, feature-complete, production-ready general-purpose Go Agent framework.
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
-- **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
+- **Website**: [https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **GitHub**: [https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
-⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
+⭐ A star is the most direct way to support this open-source project. Issues and PRs are welcome.
 
 ---
 
 ## TL;DR
 
-- 抽象 `Environment` 接口：`LocalEnvironment`（在本机进程里跑）和 `DockerEnvironment`（在容器里跑）实现同一套方法，工具代码完全不知道、也不需要知道自己在跟谁打交道
-- 之所以选 Docker 而不是 gVisor、Firecracker 这些更"硬核"的方案，是因为 harness9 要防的问题用 namespace + capability 裁剪就够了，而且大部分人电脑上本来就装着 Docker，不用再折腾一套新环境
-- `bash` 命令走 `docker exec` 真正进入容器里执行，而 `read_file`/`write_file`/`edit_file` 这几个文件工具则走 bind mount（把宿主机的目录挂载到容器中，两边共享同一份文件）——方式不同，但 Agent 看到的 workDir 是同一个
-- `Container` 的生命周期是个五状态的流程：创建中 → 运行中 → 停止中 → 已终止/失败。启动的时候不是问一次"好了没"就完事，而是反复轮询确认容器真的跑起来了；停止的时候不管 `docker stop` 成不成功，都会接着执行 `docker rm` 把容器删掉
-- 容器权限先用 `--cap-drop all` 全部收走，再手动加回来 `DAC_OVERRIDE`/`SETUID`/`SETGID` 这三个——这是让 `apt`、`pip` 这类装软件包的工具还能正常干活所必需的最小权限，不是图省事随手放开
-- 用 `label=harness9=1` 打标签 + 启动时跑一遍 `ReapOrphans` 扫描，专门用来收拾那种进程被强制杀掉（`kill -9`）之后忘了清理的容器；整套机制默认打开（`SANDBOX_ENABLED` 不设为 false 就是开着的），关掉之后行为和引入 Sandbox 之前一模一样
+- Abstract an `Environment` interface: `LocalEnvironment` (runs in the local process) and `DockerEnvironment` (runs in a container) implement the same set of methods, so tool code has no idea — and doesn't need to know — who it's actually talking to
+- Docker was chosen over "harder-core" options like gVisor or Firecracker because the risks harness9 needs to guard against are adequately covered by namespaces plus capability trimming, and most people already have Docker installed on their machines anyway, so there's no need to set up yet another environment
+- The `bash` command routes through `docker exec` to genuinely execute inside the container, while the file tools (`read_file`/`write_file`/`edit_file`) route through a bind mount (mounting the host directory into the container so both sides share the same files) — different mechanisms, but the Agent sees the same workDir either way
+- A `Container`'s lifecycle is a five-state flow: creating → running → stopping → terminated/failed. Startup doesn't just ask "ready yet?" once and call it done — it polls repeatedly to confirm the container is genuinely up and running; on stop, regardless of whether `docker stop` succeeds, it always follows through with `docker rm` to remove the container
+- Container permissions start by stripping everything with `--cap-drop all`, then manually adding back `DAC_OVERRIDE`/`SETUID`/`SETGID` — this is the minimal permission set required for package managers like `apt` and `pip` to keep working, not something left open out of convenience
+- Tag containers with `label=harness9=1` and run a `ReapOrphans` sweep on startup specifically to clean up containers left behind when a process was force-killed (`kill -9`); the whole mechanism is on by default (it's enabled unless `SANDBOX_ENABLED` is explicitly set to false), and turning it off restores the exact behavior from before Sandbox was introduced
 
-## 本文你将学到
+## What You'll Learn
 
-- 为什么"给 Agent 一个能跑任意命令的 bash 工具"这件事，天生就需要一层容器兜底
-- `Environment` 接口是怎么让"本地跑"和"容器里跑"这两种方式在工具层无缝切换的
-- Container 状态机具体怎么转换，Manager 又是怎么用锁保证并发操作不会误杀正在运行的容器
-- bash 工具和文件工具为什么走两条完全不同的路，却依然能让 Agent 看到一致的文件系统
-- `--cap-drop all` 之后加回来的三个权限分别解决什么问题，`pids-limit`、`no-new-privileges`、tmpfs 挂载策略又各自防住了什么攻击手法
+- Why giving an Agent a bash tool that can run arbitrary commands inherently demands a container safety net
+- How the `Environment` interface lets "running locally" and "running in a container" switch seamlessly at the tool layer
+- Exactly how the Container state machine transitions, and how the Manager uses locking to guarantee concurrent operations never accidentally kill a running container
+- Why the bash tool and file tools take two completely different routes yet still present the Agent with a consistent filesystem
+- What problems the three capabilities added back after `--cap-drop all` each solve, and what attacks `pids-limit`, `no-new-privileges`, and the tmpfs mount policy each defend against
 
 ---
 
-## YOLO 是把双刃剑
+## YOLO Is a Double-Edged Sword
 
-harness9 的 `bash` 工具走的是"YOLO 哲学"：不限制能执行什么命令，判断权全部交给 LLM。工具定义里的注释写得很直接：
+harness9's `bash` tool follows a "YOLO philosophy": it doesn't restrict what commands can be run, leaving that judgment entirely to the LLM. The comment in the tool definition puts it bluntly:
 
 ```go
-// 让 Agent 具备完整的命令行操作能力，是 harness9 "YOLO 哲学"（Trust-the-LLM）的核心：
-// 不限制可执行命令的种类，把所有判断与决策权完全交给大模型。
+// Giving the Agent full command-line capability is the core of harness9's
+// "YOLO philosophy" (Trust-the-LLM): no restriction on which commands can be
+// executed, all judgment and decision-making handed entirely to the model.
 ```
 
-这么做带来的好处很明显：Agent 能装依赖、跑测试、改配置、清理进程，基本什么都能干。但代价也很突出——LLM 会犯错、会理解错任务范围，还可能被恶意提示词（prompt injection）诱导去执行破坏性命令。`rm -rf`、`curl | bash`、往 `~/.ssh/authorized_keys` 里写东西，这些操作要是发生在 `LocalEnvironment` 下，跟你自己在终端里手滑敲错命令没什么两样。
+The upside of this is obvious: the Agent can install dependencies, run tests, edit configs, clean up processes — pretty much anything. But the cost is just as obvious — the LLM can make mistakes, misunderstand the scope of a task, or even be lured by prompt injection into executing destructive commands. `rm -rf`, `curl | bash`, writing something into `~/.ssh/authorized_keys` — if any of these happen inside a `LocalEnvironment`, it's no different from you accidentally fat-fingering a command in your own terminal.
 
-虽然项目里已经有 `hooks.DangerHook` 拦截 19 条已知的高危命令模式，还有 `PermissionHook` 做白名单审批，但这两个说到底都是"提前识别出已知的坏东西再拦下来"。真正拦不住的是**那些没见过的、拐弯抹角组合出来的、绕开关键词匹配的破坏路径**——想彻底兜底，靠的不是列举更多危险命令，而是从根本上现在高危操作的影响范围。这正是容器隔离要干的事：不管 LLM 到底生成了什么命令，它的执行结果都被框在一个独立的空间里，宿主机的其他部分碰都碰不到。
+The project already has `hooks.DangerHook` intercepting 19 known high-risk command patterns, plus `PermissionHook` doing allowlist-based approval, but at the end of the day both of these are about "recognizing known bad things ahead of time and blocking them." What they can never fully catch is **destructive paths that are novel, obliquely combined, or crafted specifically to dodge keyword matching** — real coverage doesn't come from enumerating more dangerous commands, it comes from fundamentally shrinking the blast radius of high-risk operations. That's exactly what container isolation is for: no matter what command the LLM actually generates, the effects of executing it are boxed into an isolated space that the rest of the host machine can't even touch.
 
-![图：LocalEnvironment 与 Sandbox 隔离的风险对比](./images/local-vs-sandbox-risk-01.png)
+![Figure: Risk comparison between LocalEnvironment and Sandbox isolation](/blog/sandbox/images/local-vs-sandbox-risk-01.png)
 
 
 ---
 
-## 为什么选择 Docker？
+## Why Choose Docker?
 
-Sandbox 这个赛道上选择挺多的：gVisor 在用户态拦截系统调用，Firecracker 用 microVM 做硬件级隔离，chroot 只是把文件系统的根目录换了个地方。harness9 最后选的是看起来最传统的 Docker，但这不是图省事或者技术保守，而是权衡了三个很实际的问题：
+There's no shortage of options in the sandboxing space: gVisor intercepts syscalls in userspace, Firecracker uses microVMs for hardware-level isolation, chroot simply relocates the filesystem root. What harness9 ultimately picked is the seemingly most traditional option — Docker — but that's not about taking the easy way out or being technically conservative. It comes down to weighing three very practical concerns:
 
-**要防范的风险没那么复杂，用不着上重方案。** Agent 工具调用真正要防的，无非是"误删了文件"、"装了乱七八糟的依赖污染系统"、"脚本失控疯狂 fork 进程"这几类，这些用 namespace（给进程一个独立视角）+ cgroup（限制资源用量）+ capability 裁剪（砍掉不必要的系统权限）就足够罩住了。gVisor 拦截系统调用、Firecracker 上硬件虚拟化，这些是为了应对更极端的场景，比如云厂商要在同一台物理机上给互不信任的多个租户跑代码——对本地跑一个 Agent 会话来说，这属于杀鸡用牛刀。
+**The risks that need guarding against just aren't that complicated, so there's no need to reach for heavy machinery.** What Agent tool calls really need to be protected against boils down to a handful of categories — "accidentally deleted files," "installed a mess of dependencies that polluted the system," "a runaway script forking processes out of control." Namespaces (giving a process its own isolated view), cgroups (capping resource usage), and capability trimming (stripping unnecessary system privileges) are more than enough to cover these. gVisor intercepting syscalls and Firecracker's hardware virtualization exist to handle far more extreme scenarios — like a cloud provider running code from mutually untrusted tenants on the same physical machine. For running a single local Agent session, that's using a sledgehammer to crack a nut.
 
-**装起来麻不麻烦，直接决定这功能有没有人真的会用。** gVisor 得单独装一个 `runsc` 运行时，Firecracker 需要 KVM 支持，还得自己折腾 rootfs 和内核镜像。而 Docker 基本是开发机的标配，只要本地跑着 Docker daemon，`SandboxConfig.Enabled` 一开就能用。harness9 的定位是 Local-First 的轻量框架，不能让"开一个安全特性"变成"先给我装一整套新的虚拟化环境"。
+**How painful the setup is directly determines whether anyone will actually use the feature.** gVisor requires installing a separate `runsc` runtime, Firecracker needs KVM support plus wrangling your own rootfs and kernel image. Docker, on the other hand, is basically standard equipment on any dev machine — as long as the Docker daemon is running locally, flipping on `SandboxConfig.Enabled` is all it takes. harness9 positions itself as a Local-First, lightweight framework, and it can't let "turning on a security feature" turn into "first go install an entire new virtualization stack."
 
-**只用命令行调用，不额外引入 SDK 依赖。** 翻开 `container.go` 就能看到，harness9 没有引入 Docker 官方的 Go SDK，而是直接用 `exec.Command("docker", args...)` 调命令行：
+**Only shell out to the CLI, no extra SDK dependency.** Open up `container.go` and you'll see that harness9 doesn't pull in Docker's official Go SDK at all — it directly shells out with `exec.Command("docker", args...)`:
 
 ```go
 func realCmdRunner(ctx context.Context, args ...string) (string, error) {
@@ -72,14 +73,14 @@ func realCmdRunner(ctx context.Context, args ...string) (string, error) {
 }
 ```
 
-这个选择跟项目一贯"尽量少引入直接依赖"的做法是一致的——调命令行换来的好处是：编译期不用多依赖任何库，行为跟你自己手敲 `docker run` 完全一样，出问题的时候把参数复制到终端就能复现。`cmdRunner` 被定义成一个函数类型，可以在测试时换成假的实现，不用真的拉起 Docker 环境就能验证状态机转换对不对。
+This choice is consistent with the project's overall stance of "keep direct dependencies to a minimum" — the payoff of shelling out to the CLI is that there's no extra library to depend on at compile time, the behavior is identical to typing `docker run` yourself, and when something goes wrong you can just copy the arguments straight into a terminal to reproduce it. `cmdRunner` is defined as a function type, so it can be swapped for a fake implementation during tests, letting you verify state-machine transitions without ever having to spin up a real Docker environment.
 
-![图：三种隔离技术的粒度与部署成本对比](./images/isolation-tech-comparison-02.png)
+![Figure: Granularity and deployment cost comparison across three isolation technologies](/blog/sandbox/images/isolation-tech-comparison-02.png)
 
 
-### Environment 接口封装不同环境
+### The Environment Interface Wraps Different Environments
 
-Agent Engine 这一层应该完全不用关心工具到底是在本机进程里跑，还是在容器里跑，之所以能实现这样的解耦，靠的就是 `Environment` 这个接口：
+The Agent Engine layer should be completely oblivious to whether a tool is running in the local process or inside a container, and that decoupling is made possible entirely by the `Environment` interface:
 
 ```go
 type Environment interface {
@@ -91,7 +92,7 @@ type Environment interface {
 }
 ```
 
-`LocalEnvironment` 用 `exec.Command("bash", "-c", cmd)` 来实现 `RunBash`，`DockerEnvironment` 则用 `docker exec` 实现同样的方法签名。工具层拿到手的只是这个接口类型，`BashTool.env` 字段是 `nil` 就走本地那条路，不是 `nil` 就转去容器里跑——这也是整个 Sandbox 模块里最关键的一个设计决定：**加了 Sandbox 之后，工具对外表现出来的行为一点没变，变的只是背后谁在真正执行**。
+`LocalEnvironment` implements `RunBash` with `exec.Command("bash", "-c", cmd)`, while `DockerEnvironment` implements the exact same method signature using `docker exec`. The tool layer only ever holds a reference to this interface type — when the `BashTool.env` field is `nil`, it takes the local path; when it's non-nil, it routes into the container instead. This is the single most important design decision in the whole Sandbox module: **once Sandbox is added, the behavior the tool exposes externally doesn't change at all — only who's actually doing the execution underneath changes**.
 
 ```go
 if t.env != nil {
@@ -100,28 +101,28 @@ if t.env != nil {
 return t.runLocal(timeoutCtx, input.Command, timeout)
 ```
 
-也就是说，`SANDBOX_ENABLED=false` 的时候，代码走的分支跟没有 Sandbox 之前几乎一样，只多了一次判断，没别的差异。这种向后兼容不是靠外面裹一层开关判断实现的，而是接口本身"给个空值就退回原来的行为"这个语义天然就成立。
+In other words, when `SANDBOX_ENABLED=false`, the code path taken is almost identical to how things worked before Sandbox existed — just one extra check, nothing else different. This backward compatibility isn't achieved by wrapping an extra switch statement around everything; it falls naturally out of the interface's own semantics — "pass in a nil value and you get the old behavior back."
 
-![图：Environment 接口统一 Local 与 Docker 两种实现](./images/environment-interface-03.png)
+![Figure: The Environment interface unifying the Local and Docker implementations](/blog/sandbox/images/environment-interface-03.png)
 
 
 ---
 
-## Container 状态机
+## The Container State Machine
 
-**Sandbox 的生命周期是一个状态机：一个容器从被创建出来到最后销毁，会经过五个状态**，`ContainerState` 这个枚举定义很清晰：
+**A Sandbox's lifecycle is a state machine: a container passes through five states from creation to eventual destruction**, and the `ContainerState` enum spells this out clearly:
 
 ```go
 const (
-	StatePending    ContainerState = iota // 容器创建中，等待就绪
-	StateRunning                          // 容器正常运行，接受工具调用
-	StateStopping                         // 容器停止中（docker stop 已发出）
-	StateTerminated                       // 容器已停止并移除
-	StateFailed                           // 发生不可恢复错误
+	StatePending    ContainerState = iota // Container is being created, waiting to become ready
+	StateRunning                          // Container is running normally, accepting tool calls
+	StateStopping                         // Container is stopping (docker stop has been issued)
+	StateTerminated                       // Container has stopped and been removed
+	StateFailed                           // An unrecoverable error occurred
 )
 ```
 
-`Start` 方法有个关键设计：**反复问几次"好了没"，而不是问一次就当真**。`docker run -d` 拿到容器 ID 并不代表容器已经真正准备好干活了，尤其是要拉取新镜像或者启动比较重的场景时更明显。所以 `Start` 拿到 dockerID 之后，会进入一个每 200 毫秒问一次的轮询循环，反复执行 <code v-pre>docker inspect --format={{.State.Running}}</code>，直到看到返回 `true`，或者等到 `StartTimeout`（默认 30 秒）到点还没成功，就转成 `StateFailed`：
+The `Start` method has a key design choice: **ask "ready yet?" repeatedly instead of trusting the answer the first time.** Getting a container ID back from `docker run -d` doesn't mean the container is actually ready to do work yet, especially when pulling a new image or spinning up something heavier. So after `Start` obtains the dockerID, it enters a polling loop that checks every 200 milliseconds, repeatedly running <code v-pre>docker inspect --format={{.State.Running}}</code> until it sees `true` come back, or until `StartTimeout` (30 seconds by default) elapses without success, at which point it transitions to `StateFailed`:
 
 ```go
 for {
@@ -131,14 +132,14 @@ for {
 	}
 	select {
 	case <-startCtx.Done():
-		c.setState(StateFailed, fmt.Errorf("等待容器就绪超时（%v）", c.cfg.StartTimeout))
+		c.setState(StateFailed, fmt.Errorf("timed out waiting for container to become ready (%v)", c.cfg.StartTimeout))
 		return c.err
 	case <-time.After(200 * time.Millisecond):
 	}
 }
 ```
 
-`Stop` 方法则体现了另一种取舍：**`docker stop` 成不成功都不重要，反正接下来都要跑一次 `docker rm`**。
+The `Stop` method embodies a different trade-off: **it doesn't matter whether `docker stop` succeeds or not, because a `docker rm` is going to run next regardless.**
 
 ```go
 _, _ = c.run(stopCtx, "stop", "-t", "5", dockerID)
@@ -146,32 +147,34 @@ _, _ = c.run(stopCtx, "rm", dockerID)
 c.setState(StateTerminated, nil)
 ```
 
-如果容器因为某些原因已经卡死了，`docker stop` 有可能失败或者超时，但资源该回收还是得回收——所以这两条命令的返回值都被直接丢掉了（`_, _ =`），因为不管前面成不成功，最终都会走到 `StateTerminated` 这个状态。这是一种"先把资源收拾干净，不追求每一步都精确"的做法：宁可默默吞掉一次 stop 失败，也不能让容器一直占着资源不放。`Stop` 开头还有个小小的保险：已经是 `Terminated` 或 `Failed` 状态的容器，直接返回 `nil`，避免并发调用时重复清理。
+If a container has gotten stuck for some reason, `docker stop` might fail or time out, but the resources still need to be reclaimed — so both commands' return values are simply discarded (`_, _ =`), because regardless of whether the earlier step succeeded, execution ends up at `StateTerminated` either way. This is a "clean up the resources first, don't sweat getting every single step exactly right" approach: it's better to silently swallow one failed stop than to leave a container hogging resources indefinitely. There's also a small safeguard at the top of `Stop`: a container already in `Terminated` or `Failed` state returns `nil` immediately, avoiding redundant cleanup under concurrent calls.
 
-![图：Container 五状态转换图](./images/container-state-machine-04.png)
+![Figure: Container five-state transition diagram](/blog/sandbox/images/container-state-machine-04.png)
 
 
 ---
 
-## Manager —— 集中管理 Sandbox
+## Manager — Centrally Managing Sandboxes
 
-`Manager` 是整个 Sandbox 系统的管理器，手里握着一个 `map[string]*Container`，它对外提供的所有方法都得保证并发安全——因为主 Agent 和每一个 Sub-Agent 都有可能同时在创建、销毁各自的容器。
+The `Manager` is the manager for the entire Sandbox system, holding a `map[string]*Container`. Every method it exposes must be concurrency-safe, because the main agent and every Sub-Agent may all be simultaneously creating and destroying their own containers.
 
-`Create` 的主干很直接：生成一个 UUID，构造出 `Container`，调用 `Start` 启动，启动成功后跑一次可选的 bootstrap 命令，最后才把容器记进 `containers` 这张 map 里：
+The core flow of `Create` is straightforward: generate a UUID, construct a `Container`, call `Start` to launch it, run an optional bootstrap command once startup succeeds, and only then record the container into the `containers` map:
 
 ```go
 func (m *Manager) Create(ctx context.Context, workDir string) (Environment, error) {
 	id := generateID()
 	run := cmdRunner(realCmdRunner)
-	// ...（测试注入用的 runnerFactory 分支略）
+	// ...(the test-injection runnerFactory branch is omitted)
 	c := newContainer(id, workDir, m.cfg, run)
 	if err := c.Start(ctx); err != nil {
-		return nil, fmt.Errorf("sandbox: 启动容器失败: %w", err)
+		return nil, fmt.Errorf("sandbox: failed to start container: %w", err)
 	}
 	env := newDockerEnvironment(c.DockerID(), id, workDir, run)
 
-	// 依赖 bootstrap：容器就绪后、Agent 开始前执行一次初始化命令，
-	// 独立的较长超时预算，fail-open（失败只告警，不阻断创建）
+	// Dependency bootstrap: after the container is ready but before the Agent
+	// starts, run a one-time initialization command. It gets its own longer
+	// timeout budget, and is fail-open (a failure only logs a warning, it
+	// doesn't block creation).
 	if cmd := strings.TrimSpace(m.cfg.BootstrapCmd); cmd != "" {
 		m.runBootstrap(env, cmd, workDir)
 	}
@@ -184,9 +187,9 @@ func (m *Manager) Create(ctx context.Context, workDir string) (Environment, erro
 }
 ```
 
-这里真正值得多看一眼的是 `BootstrapCmd`：容器起来之后、Agent 真正开始干活之前，可以让它先跑一条初始化命令（比如 `pip install -e . -q` 装好项目依赖），跑在一个独立的、比单条 bash 命令超时长得多的时间预算里（默认 10 分钟，`SANDBOX_BOOTSTRAP_CMD` / `SANDBOX_BOOTSTRAP_TIMEOUT_SECS` 两个环境变量控制）。这一步是 fail-open 的：装依赖失败不会让 `Create` 报错退出，顶多是 Agent 接下来干活时环境没装全——不阻断，只降级。留这个接缝，是为了以后接官方预装好依赖的镜像（比如 SWE-bench 每个实例自带的仓库镜像）时，配一个镜像加一条命令就能用，不用再让 Sandbox 自己去猜要装什么。
+What's worth a closer look here is `BootstrapCmd`: after the container comes up but before the Agent actually starts working, it can run an initialization command first (say, `pip install -e . -q` to install project dependencies), given its own dedicated time budget that's far longer than a single bash command's timeout (10 minutes by default, controlled via the `SANDBOX_BOOTSTRAP_CMD` / `SANDBOX_BOOTSTRAP_TIMEOUT_SECS` environment variables). This step is fail-open: a dependency installation failure won't cause `Create` to error out — at worst, the Agent's environment just isn't fully set up when it starts working — it degrades gracefully instead of blocking. This seam is left in place for the future, so that when hooking up official images pre-loaded with dependencies (like the per-instance repo images in SWE-bench), all it takes is pairing an image with a command, without Sandbox having to guess what needs installing on its own.
 
-`DestroyAll` 的写法值得多看一眼：它没有直接遍历 map、一个一个同步调用 `Stop`，而是先在加锁的区间里把所有容器都取出来、把 map 清空，锁一放开，再用 `sync.WaitGroup` 并发地去停止它们：
+`DestroyAll`'s implementation is worth a closer look too: instead of directly iterating the map and synchronously calling `Stop` one by one, it first pulls all the containers out and clears the map while holding the lock, releases the lock, and only then uses a `sync.WaitGroup` to stop them concurrently:
 
 ```go
 m.mu.Lock()
@@ -209,19 +212,21 @@ for _, c := range cs {
 wg.Wait()
 ```
 
-这么写能避开两个坑：一是不会因为 `docker stop`/`docker rm` 这种慢操作而让锁一直被占着；二是主 Agent 的容器和多个 Sub-Agent 的容器可以同时并发销毁，不用排队一个个来——程序退出时 `defer sandboxMgr.DestroyAll(ctx)` 能跑多快，直接就看这一段。
+Writing it this way sidesteps two pitfalls: first, the lock never stays held through slow operations like `docker stop`/`docker rm`; second, the main agent's container and multiple Sub-Agents' containers can all be destroyed concurrently instead of queuing up one at a time — how fast `defer sandboxMgr.DestroyAll(ctx)` can run on process exit comes down entirely to this piece of code.
 
-### 孤儿容器清理机制
+### Orphan Container Reaping
 
-正常退出的话，`defer sandboxMgr.DestroyAll(ctx)` 会把所有容器清理干净。但如果进程被 `SIGKILL` 强行杀掉（比如用户手动 `kill -9`，或者系统内存不够被 OOM killer 干掉），`defer` 根本来不及执行，容器就会以 `Running` 状态留在系统里，成了没人管的孤儿。`manager.go` 里专门有一段注释说明这个坑：
+Under normal exit, `defer sandboxMgr.DestroyAll(ctx)` cleans up every container. But if the process gets forcibly killed by `SIGKILL` (say, a user manually running `kill -9`, or the OOM killer taking it out because the system ran out of memory), the `defer` never gets a chance to run, and the container is left behind in the `Running` state, becoming an unmanaged orphan. There's a comment in `manager.go` specifically calling out this pitfall:
 
 ```go
-// 原实现只清理 status=exited 的容器；进程被 SIGKILL 强杀时 defer 不运行，
-// 容器会以 Running 状态残留——持有已删除 tmpDir 的 bind mount，
-// 在 macOS Docker Desktop 上会导致 VirtioFS 慢，使后续容器启动超时。
+// The original implementation only cleaned up containers with status=exited;
+// when the process is force-killed with SIGKILL, the defer never runs, and
+// the container is left behind in the Running state — holding a bind mount
+// to a tmpDir that's already been deleted, which causes VirtioFS to slow down
+// on macOS Docker Desktop, making subsequent container startups time out.
 ```
 
-这是个真实踩过的坑：残留下来的容器挂载着一个早就已经不存在的临时目录（bind mount 指向的路径没了），但 Docker Desktop 底层维护这个失效挂载的 VirtioFS 层还在那儿空转，把整个虚拟机的文件系统性能拖慢，连带着下一次启动新容器也变得很慢，甚至直接超时。修复办法是每次进程启动的时候先跑一遍 `ReapOrphans`，靠 `label=harness9=1` 这个标签把所有历史遗留的容器筛出来（不管它是什么状态），一律用 `docker rm -f` 强制删掉：
+This is a real pitfall that was actually hit in practice: a leftover container has a bind mount pointing at a temp directory that no longer exists (the path the bind mount targets is gone), but the VirtioFS layer underneath Docker Desktop that's still tracking that stale mount keeps spinning uselessly, dragging down the whole VM's filesystem performance, and dragging down the next container's startup along with it — sometimes to the point of timing out outright. The fix is to run `ReapOrphans` once every time the process starts, using the `label=harness9=1` tag to filter out every historically leftover container (regardless of its current state), and force-remove all of them with `docker rm -f`:
 
 ```go
 out, err := realCmdRunner(ctx,
@@ -231,7 +236,7 @@ out, err := realCmdRunner(ctx,
 )
 ```
 
-但这里有个真正需要小心的地方：**万一同时开着好几个 harness9 进程实例，`ReapOrphans` 绝对不能把别的进程正在用的活跃容器也误杀了**。所以 `ReapOrphans` 会先看看自己这个 `Manager` 手里正管着哪些容器（取 dockerID 的前 12 位短哈希来对比），把这些"自己人"排除掉，只清理真正没人认领的孤儿：
+But there's a genuinely delicate point here: **if multiple harness9 process instances happen to be running at the same time, `ReapOrphans` absolutely must not accidentally kill an active container that some other process is currently using.** So `ReapOrphans` first checks which containers this particular `Manager` instance is currently managing (comparing the first 12 characters of the dockerID as a short hash), excludes those "friendlies," and only cleans up the genuinely unclaimed orphans:
 
 ```go
 m.mu.RLock()
@@ -246,18 +251,18 @@ for _, c := range m.containers {
 m.mu.RUnlock()
 ```
 
-`ListAll` 里还留了一句很明确的提醒：拿锁的顺序必须是先 `Manager.mu`（读锁）、再 `Container.mu`（读锁），绝对不能反过来，不然可能会死锁。这种"锁的顺序说明"在并发代码里花不了几个字，但关键时刻真的能救命。
+`ListAll` also leaves a very explicit reminder: locks must always be acquired in the order `Manager.mu` (read lock) first, then `Container.mu` (read lock) — never the other way around, or it could deadlock. This kind of "lock ordering" note costs almost nothing to write in concurrent code, but it can genuinely be a lifesaver at the critical moment.
 
-![图：孤儿容器回收流程](./images/orphan-reaping-flow-05.png)
+![Figure: Orphan container reaping flow](/blog/sandbox/images/orphan-reaping-flow-05.png)
 
 
 ---
 
-## Sandbox 接入 Tool-Calling
+## Wiring Sandbox into Tool-Calling
 
-Sandbox 接入工具层的方式，并不是简单粗暴地"把所有文件操作也一股脑塞进容器里执行"，而是按操作类型分成了两条完全不同的路。
+Sandbox isn't wired into the tool layer by crudely stuffing every single file operation into the container as well — instead, it splits into two completely different routes based on operation type.
 
-**bash 命令走 `docker exec`。** 这是唯一真正需要在容器内部跑一个进程的场景：
+**bash commands route through `docker exec`.** This is the one genuine case that requires running a process inside the container:
 
 ```go
 func (e *DockerEnvironment) RunBash(ctx context.Context, cmd, workDir string) (string, error) {
@@ -266,13 +271,13 @@ func (e *DockerEnvironment) RunBash(ctx context.Context, cmd, workDir string) (s
 		"bash", "-c", cmd,
 	)
 	if err != nil {
-		return fmt.Sprintf("执行报错: %v\n输出:\n%s", err, out), nil
+		return fmt.Sprintf("execution error: %v\noutput:\n%s", err, out), nil
 	}
 	return out, nil
 }
 ```
 
-**文件读写走的是宿主机这边的 bind mount。** `DockerEnvironment` 的 `ReadFile`/`WriteFile` 压根没调用任何 docker 命令，直接就是普通的 `os.ReadFile`/`os.WriteFile`：
+**File reads and writes go through a bind mount on the host side.** `DockerEnvironment`'s `ReadFile`/`WriteFile` don't invoke any docker command at all — they're just plain `os.ReadFile`/`os.WriteFile`:
 
 ```go
 func (e *DockerEnvironment) ReadFile(_ context.Context, path string) ([]byte, error) {
@@ -280,24 +285,25 @@ func (e *DockerEnvironment) ReadFile(_ context.Context, path string) ([]byte, er
 }
 ```
 
-这个设计乍一看有点反常识——都叫 Sandbox 了，文件操作为啥不走容器？答案就藏在创建容器时的挂载参数里：
+At first glance this design feels counterintuitive — it's called Sandbox, so why don't file operations go through the container? The answer is hiding in the mount argument used at container creation time:
 
 ```go
 "-v", fmt.Sprintf("%s:%s", c.workDir, c.workDir),
 ```
 
-简单说，bind mount 就是把宿主机上的 `workDir` 这个文件夹，原样"挂"到容器里同样的路径下——容器里看到的 `/path/to/project` 和宿主机上的 `/path/to/project`，其实是同一份文件，底层存储都是一个东西。既然文件系统本来就是共享的，那直接在宿主机这边读写就能拿到跟容器内部完全一样的结果，没必要再多绕一道，比如用 `docker exec cat` 或者 `docker cp` 去容器里搬。这是个很实在的取舍：`docker exec` 本身要新建一个进程，是有开销的，而文件操作走本地系统调用明显更快；至于两边看到的东西一不一致，靠 bind mount 这层机制就自然保证了，不需要应用层自己再做同步。
+Put simply, a bind mount takes the `workDir` folder on the host and "mounts" it as-is into the container at that exact same path — the `/path/to/project` the container sees and the `/path/to/project` on the host are literally the same files, backed by identical underlying storage. Since the filesystem is already shared, reading and writing directly on the host side gets exactly the same result as going through the container, so there's no need to take a detour through, say, `docker exec cat` or `docker cp` to reach into the container. This is a very grounded trade-off: `docker exec` itself has to spin up a new process, which has real overhead, whereas file operations through local syscalls are noticeably faster; and as for whether both sides stay consistent, the bind mount mechanism guarantees that naturally, with no need for the application layer to sync anything itself.
 
-`newDockerEnvironment` 的注释把这个设计动机说得很清楚：
+The comment on `newDockerEnvironment` spells out this design rationale clearly:
 
 ```go
 func newDockerEnvironment(containerID, id, _ string, run cmdRunner) *DockerEnvironment {
-	// workDir 参数不存储：文件读写通过 bind mount 在宿主机侧执行，无需 DockerEnvironment 持有路径。
+	// The workDir parameter is not stored: file reads/writes execute on the
+	// host side via the bind mount, so DockerEnvironment has no need to hold onto the path.
 	return &DockerEnvironment{...}
 }
 ```
 
-三个文件工具（`read_file`/`write_file`/`edit_file`）在 `main.go` 里都是通过各自对应的 `ReadFileWithEnvironment`/`WriteFileWithEnvironment`/`EditFileWithEnvironment` 这几个配置项，统一注入同一个 `sandboxEnv`：
+The three file tools (`read_file`/`write_file`/`edit_file`) are all wired up in `main.go` with the exact same `sandboxEnv` injected uniformly, via their respective `ReadFileWithEnvironment`/`WriteFileWithEnvironment`/`EditFileWithEnvironment` options:
 
 ```go
 tools.NewReadFileTool(workDir, tools.ReadFileWithEnvironment(sandboxEnv)),
@@ -306,33 +312,33 @@ tools.NewBashTool(workDir, tools.WithEnvironment(sandboxEnv)),
 tools.NewEditFileTool(workDir, tools.EditFileWithEnvironment(sandboxEnv)),
 ```
 
-这四个工具共用同一套沙箱边界校验（`safePath()`），Sandbox 只是替换了它们各自背后真正干活的执行/读写方式，路径安全这块的逻辑完全没受影响。
+All four tools share the exact same sandbox boundary check (`safePath()`) — Sandbox only swaps out what's actually doing the execution/reading/writing behind each tool, and the path-safety logic underneath is completely unaffected.
 
-![图：bash 与文件工具的双路由](./images/dual-routing-06.png)
+![Figure: Dual routing for bash vs. file tools](/blog/sandbox/images/dual-routing-06.png)
 
 
-### MainAgent 与 SubAgent 的 Sandbox 是隔离的
+### The MainAgent's and SubAgent's Sandboxes Are Isolated From Each Other
 
-Sandbox 的隔离粒度是按 Agent 分的，不是全局共用一个容器。`main.go` 里主 Agent 在启动阶段就调一次 `sandboxMgr.Create`：
+Sandbox isolation granularity is per-Agent, not one shared global container. In `main.go`, the main agent calls `sandboxMgr.Create` once at startup:
 
 ```go
 sandboxEnv, sandboxErr = sandboxMgr.Create(ctx, workDir)
 ```
 
-而每一个 Sub-Agent 在 `Runner.Run` 里，会独立地再创建一个属于自己的容器，用完就销毁：
+while every Sub-Agent, inside `Runner.Run`, independently creates its own separate container, and destroys it once it's done:
 
 ```go
 if r.sandboxMgr != nil {
 	sandboxEnv, err := r.sandboxMgr.Create(ctx, r.workDir)
 	if err != nil {
-		return SubAgentResult{}, fmt.Errorf("sandbox: 为子代理创建环境失败: %w", err)
+		return SubAgentResult{}, fmt.Errorf("sandbox: failed to create environment for sub-agent: %w", err)
 	}
 	defer r.sandboxMgr.Destroy(r.baseCtx, sandboxEnv.ID())
 	effectiveBaseTools = wrapToolsWithSandbox(r.baseTools, sandboxEnv, r.workDir)
 }
 ```
 
-`wrapToolsWithSandbox` 干的活是把 Sub-Agent 用的这套基础工具重新包一层，塞进它专属的那个 `Environment`：
+What `wrapToolsWithSandbox` does is take the base tool set used by the Sub-Agent and re-wrap it, plugging in its own dedicated `Environment`:
 
 ```go
 func wrapToolsWithSandbox(ts []tools.BaseTool, env sandbox.Environment, workDir string) []tools.BaseTool {
@@ -341,7 +347,7 @@ func wrapToolsWithSandbox(ts []tools.BaseTool, env sandbox.Environment, workDir 
 		switch t.Name() {
 		case "bash":
 			result[i] = tools.NewBashTool(workDir, tools.WithEnvironment(env))
-		// read_file / write_file / edit_file 同理
+		// read_file / write_file / edit_file follow the same pattern
 		default:
 			result[i] = t
 		}
@@ -350,13 +356,13 @@ func wrapToolsWithSandbox(ts []tools.BaseTool, env sandbox.Environment, workDir 
 }
 ```
 
-也就是说，如果主 Agent 一口气委派了三个并发的 Sub-Agent，同一时刻其实会有四个各自独立的容器在跑——主 Agent 一个，每个 Sub-Agent 一个。某个 Sub-Agent 里跑的破坏性命令，物理上根本碰不到主 Agent 或者其他 Sub-Agent 的容器。`defer r.sandboxMgr.Destroy(r.baseCtx, sandboxEnv.ID())` 保证了不管 Sub-Agent 任务是成功还是失败，结束了容器立马回收，不会一直占着资源不放。**这样也就实现了 MainAgent 与 SubAgent 的完全隔离。**
+In other words, if the main agent delegates three concurrent Sub-Agents in one go, at any given moment there are actually four completely independent containers running — one for the main agent, and one for each Sub-Agent. A destructive command running inside one Sub-Agent physically cannot touch the main agent's container or any other Sub-Agent's container. `defer r.sandboxMgr.Destroy(r.baseCtx, sandboxEnv.ID())` guarantees that whether the Sub-Agent's task succeeds or fails, its container is reclaimed the moment it finishes, instead of hogging resources indefinitely. **This is how full isolation between the main agent and Sub-Agents gets achieved.**
 
 ---
 
-## 最小化 Sandbox 权限
+## Minimizing Sandbox Privileges
 
-容器启动时传的那些参数，是整个 Sandbox 安全模型的核心，值得把 `Start` 里 `docker run` 的每一行都拆开看看：
+The arguments passed at container startup are the core of the entire Sandbox security model, and it's worth unpacking every single line of the `docker run` call inside `Start`:
 
 ```go
 c.run(startCtx,
@@ -378,53 +384,53 @@ c.run(startCtx,
 )
 ```
 
-**`--cap-drop all` 只是个起点，不是终点。** 可以把 Linux capability 理解成把"root 权限"这个大权限拆成了几十个小开关：能不能绑定特权网络端口、能不能读写原始网络包、能不能加载内核模块……每一项都是独立的开关。全部关掉之后，容器里就算是 root 用户，能干的事也跟一个普通用户差不多。但完全不留一个开关会出问题：像 `apt install`、`pip install` 这类装软件包的工具，装的过程中经常需要临时切换文件的属主、或者处理带 setuid 标记的二进制文件（比如 `sudo` 本身，或者某些需要临时提权的动态库钩子）。这些动作依赖三个特定的开关：
+**`--cap-drop all` is only the starting point, not the destination.** You can think of Linux capabilities as splitting the giant "root privilege" bundle into dozens of individual switches: can it bind a privileged network port, can it read and write raw network packets, can it load a kernel module... each one is an independent toggle. With all of them switched off, even a root user inside the container can't do much more than an ordinary user. But leaving zero switches on causes problems: package-installing tools like `apt install` and `pip install` frequently need to temporarily change a file's owner during installation, or handle setuid-flagged binaries (like `sudo` itself, or certain dynamic-library hooks that need to temporarily elevate privileges). These actions depend on three specific switches:
 
-- `DAC_OVERRIDE`：绕过常规的文件读写执行权限检查——包管理器解压文件、往系统目录里覆盖写文件的时候要用到
-- `SETUID` / `SETGID`：允许进程切换自己的用户/组身份——有些安装脚本（比如 postinst）要以特定用户的身份跑，靠的就是这个
+- `DAC_OVERRIDE`: bypasses the normal file read/write/execute permission checks — needed when a package manager unpacks files or overwrites files in system directories
+- `SETUID` / `SETGID`: lets a process switch its own user/group identity — some install scripts (like postinst hooks) need to run as a specific user, and this is how they do it
 
-这三个开关加起来，刚好是让 `apt`、`pip` 这类工具能正常干活的**最小权限集合**，不是"反正要留几个索性多留几个"图省事的做法。类似能直接读磁盘设备的 `SYS_ADMIN`、能绑定特权端口的 `NET_BIND_SERVICE`、能加载内核模块的 `SYS_MODULE` 这些风险更高的开关，始终保持关闭状态，不会被打开。
+Together, these three switches add up to exactly the **minimal permission set** required for tools like `apt` and `pip` to work properly — not something left open just because "we might as well leave a few extras on for convenience." Riskier switches like `SYS_ADMIN` (which allows direct disk device access), `NET_BIND_SERVICE` (which allows binding privileged ports), and `SYS_MODULE` (which allows loading kernel modules) stay switched off at all times and are never enabled.
 
-**`--security-opt no-new-privileges:true`** 防的是另一种攻击手法：就算容器里某个二进制文件本身带着 setuid 标记（意味着执行它能临时提权），这个选项也会拦住进程通过 `execve` 去获得比启动时更高的权限。这是第二道防线——就算前面收紧的权限被想办法绕开了，这一层依然拦得住。
+**`--security-opt no-new-privileges:true`** guards against a different attack vector: even if some binary inside the container already carries a setuid flag (meaning executing it can temporarily elevate privileges), this option blocks the process from gaining higher privileges than it started with via `execve`. This is the second line of defense — even if the tightened permissions upstream get worked around somehow, this layer still holds the line.
 
-**`--pids-limit 256`** 就是专门防 fork bomb（进程炸弹，指一个脚本疯狂地自我复制进程）的。一条经典的 fork bomb，或者一个失控的递归脚本，如果容器不限制进程数，能把宿主机的进程表直接撑爆，导致整台机器卡死；`PidsLimit` 把这个上限硬性定在 256，容器里的进程数一超过这个数字，新进程直接创建失败，破坏范围被死死锁在这一个容器内部。
+**`--pids-limit 256`** exists specifically to guard against fork bombs (a process bomb — a script that maniacally replicates itself). A classic fork bomb, or a runaway recursive script, could blow up the host's entire process table if the container doesn't cap the process count, freezing the whole machine solid; `PidsLimit` hard-caps this at 256, so the moment the process count inside the container exceeds that number, new process creation simply fails, and the blast radius is locked down firmly inside that one container.
 
-**`--tmpfs /tmp:size=256m,nosuid,noexec,nodev`** 是专门给 `/tmp` 目录加的一道保险——这个目录天生就是攻击者爱用的跳板。`nosuid` 让这里面就算有 setuid 标记的文件也不生效，`noexec` 直接禁止在这里执行任何二进制文件（很多攻击链的套路就是先把恶意程序写到 `/tmp`，再从那儿执行），`nodev` 禁止在这里创建设备文件。三个选项加在一起，`/tmp` 就变成一个只能存东西、没法拿来搞事情的临时空间。
+**`--tmpfs /tmp:size=256m,nosuid,noexec,nodev`** is a dedicated safeguard for the `/tmp` directory — a location that's naturally attackers' favorite stepping stone. `nosuid` disables setuid flags on any files in there even if present, `noexec` outright forbids executing any binary from that location (a lot of attack chains follow the pattern of writing a malicious program to `/tmp` first, then executing it from there), and `nodev` forbids creating device files there. Together, these three options turn `/tmp` into a space that can only store things, with no way to use it to cause trouble.
 
-![图：安全加固的四层防御](./images/security-hardening-layers-07.png)
+![Figure: The four layers of security hardening](/blog/sandbox/images/security-hardening-layers-07.png)
 
 
 ---
 
-## `SANDBOX_ENABLED=false` 时一切照旧
+## Everything Stays the Same When `SANDBOX_ENABLED=false`
 
-`SandboxConfig.Enabled` 默认读环境变量 `SANDBOX_ENABLED`，只有明确设成 `"false"` 才会关掉：
+`SandboxConfig.Enabled` reads from the `SANDBOX_ENABLED` environment variable by default, and only turns off when it's explicitly set to `"false"`:
 
 ```go
 Enabled: strings.ToLower(os.Getenv("SANDBOX_ENABLED")) != "false",
 ```
 
-`main.go` 里只有 `sandboxCfg.Enabled` 是真的时候才会去创建 `Manager` 和容器；否则 `sandboxEnv` 就一直是 `nil`，所有工具都走本地那条老路。这个默认值本身也值得说一下：**Sandbox 默认是开着的，不是默认关着**——harness9 把容器隔离当成生产环境里理所当然该有的东西，而不是一个需要用户自己发现、自己动手打开的加分项。
+In `main.go`, the `Manager` and its containers only get created when `sandboxCfg.Enabled` is actually true; otherwise `sandboxEnv` simply stays `nil`, and every tool takes the old local path. This default is itself worth calling out: **Sandbox is on by default, not off by default** — harness9 treats container isolation as something that should obviously be present in a production environment, not a bonus feature users have to discover and switch on themselves.
 
-万一容器启动失败了（比如本地根本没装 Docker daemon），`main.go` 会接住这个错误，自动降级：
+If container startup fails for some reason (say, the Docker daemon isn't installed locally at all), `main.go` catches the error and degrades gracefully:
 
 ```go
 if sandboxErr != nil {
-	log.Print(logfmt.FormatMsg("main", fmt.Sprintf("Sandbox 启动失败，已降级为本地进程模式: %v", sandboxErr)))
+	log.Print(logfmt.FormatMsg("main", fmt.Sprintf("sandbox startup failed, falling back to local process mode: %v", sandboxErr)))
 	sandboxMgr = nil
 	sandboxEnv = nil
 }
 ```
 
-这是一条降级路径：Sandbox 初始化失败不会导致整个程序直接退出，而是退回到本地执行模式，同时把失败原因打印出来方便排查。配合前面说的 `Environment` 接口"传 `nil` 就走本地路径"这个默认语义，"降级"这件事在代码层面其实就是把一个指针留空而已，没有任何额外的特殊分支要处理。
+This is a degradation path: a Sandbox initialization failure doesn't bring the whole program down — instead it falls back to local execution mode, while printing out the failure reason for easier troubleshooting. Combined with the `Environment` interface's default semantics described earlier — "pass `nil` and you get the local path" — "degrading" here, at the code level, really just amounts to leaving a pointer empty, with no extra special-case branch to handle.
 
 ---
 
-## TUI 侧展示 Sandbox 状态
+## Displaying Sandbox Status in the TUI
 
-TUI 在状态栏下方会渲染一条 SandboxBar，只有存在活跃的 Sandbox 时才显示出来：
+The TUI renders a SandboxBar below the status bar, which only appears when there's an active Sandbox present:
 
-![图：TUI 侧展示 Sandbox 状态](./images/tui-sandbox-08.png)
+![Figure: Displaying Sandbox status in the TUI](/blog/sandbox/images/tui-sandbox-08.png)
 
 ```go
 func (m tuiModel) renderSandboxBar() string {
@@ -442,18 +448,18 @@ func (m tuiModel) renderSandboxBar() string {
 }
 ```
 
-四种状态对应四种颜色：`Running` 绿色、`Pending` 黄色、`Stopping`/`Terminated` 灰色、`Failed` 红色。这个映射直接复用了 `ContainerState` 这个枚举，TUI 不用理解状态机是怎么转的，只要把状态值映射成颜色就行——展示层和背后的领域逻辑再一次靠接口/枚举分开了，TUI 不需要自己再维护一份重复的状态判断。`Manager.WithUpdateNotify` 把状态变化通过 channel 推给 TUI，`sandboxNotifyCh` 这个通知通道必须在第一次调用 `Create` 之前就注册好，不然启动时的初始状态通知会因为回调还没设置好而丢掉——这是 `main.go` 里专门用注释提醒过的一个时序上的坑。
+The four states map to four colors: `Running` is green, `Pending` is yellow, `Stopping`/`Terminated` are gray, and `Failed` is red. This mapping directly reuses the `ContainerState` enum — the TUI doesn't need to understand how the state machine transitions, it just maps a state value to a color. Once again, the presentation layer and the underlying domain logic are kept apart via an interface/enum, so the TUI doesn't need to maintain its own duplicate copy of state logic. `Manager.WithUpdateNotify` pushes state changes to the TUI through a channel, and the `sandboxNotifyCh` notification channel must be registered before the very first call to `Create` — otherwise the initial state notification at startup gets dropped because the callback isn't wired up yet. This is a timing pitfall that `main.go` specifically calls out with a comment.
 
 ---
 
-## 结语
+## Closing Thoughts
 
-回头把这几件事串一遍。Agent 手里那个不设限的 bash 工具，是 YOLO 哲学定的调——相信 LLM，但信任得有兜底。这就引出第一个问题：要不要隔离。答案是要，而且不用隔离得太狠：Docker 的 namespace 加 capability 裁剪，就够挡住"删错文件"、"装乱依赖"、"进程失控"这几类风险，用不着 gVisor、Firecracker 那种给互不信任的多租户准备的重装备。
+Let's walk back through the whole thread. The Agent's unrestricted bash tool is set by the YOLO philosophy — trust the LLM, but trust it with a safety net. That raises the first question: should you isolate it at all? Yes, and you don't need to go overboard: Docker's namespaces plus capability trimming are enough to block the main risk categories — "deleted the wrong files," "installed a mess of dependencies," "process spiraled out of control" — with no need for the heavy-duty gear that gVisor or Firecracker bring to bear for mutually untrusted multi-tenant scenarios.
 
-隔离方式定了，下一个问题是容器怎么活下去。Container 老老实实转五个状态；Start 反复轮询，确认容器真的起来了；Stop 不管前面成不成功，都把资源收拾干净；Manager 用锁保证并发创建销毁不会互相打架；ReapOrphans 专门捡进程被强杀之后落下的孤儿。容器能稳定地生、稳定地死，才轮到下一步：怎么让 Agent 已有的工具无缝接进去。bash 走 docker exec，文件走 bind mount——两条路由方式不同，工具代码却一行没改，靠的是 `Environment` 接口把"在哪跑"这件事从工具逻辑里摘了出去。最后落到权限上：`--cap-drop all` 打底，只留 apt、pip 干活所需的三个开关；`pids-limit` 防 fork bomb；tmpfs 挂载选项把 `/tmp` 变成没法搞事的地方。每一个参数背后都是同一句追问：这个功能到底需不需要这项权限。
+With the isolation approach settled, the next question is how the container stays alive. Container faithfully cycles through its five states; Start polls repeatedly to confirm the container is genuinely up; Stop cleans up resources regardless of whether the earlier step succeeded; Manager uses locking to guarantee concurrent create/destroy operations never collide; ReapOrphans specifically picks up the orphans left behind when a process gets force-killed. Only once containers can be reliably born and reliably die does it become time for the next step: hooking the Agent's existing tools in seamlessly. bash goes through docker exec, files go through a bind mount — two different routing mechanisms, yet not a single line of tool code needed to change, because the `Environment` interface strips "where does this actually run" out of the tool logic entirely. Finally it comes down to permissions: `--cap-drop all` as the baseline, keeping only the three switches that apt and pip actually need to function; `pids-limit` guarding against fork bombs; the tmpfs mount options turning `/tmp` into a place that can't be used to cause trouble. Behind every single parameter is the same recurring question: does this feature actually need this privilege?
 
-这几层做的其实是同一件事：先弄清楚问题的真实边界，再用刚好够用的机制去盖住它——多一分是浪费，少一分是隐患。这个思路在 harness9 里不止用了这一次：`Environment` 接口把领域逻辑和调用方式拆开，`ContainerState` 这个状态机被 TUI 直接拿去当颜色映射表用，`cmdRunner` 定义成函数类型，方便测试时替换掉真实的 docker 命令。单独看都是小决定，连起来看，做的是让每一层只管好自己该管的事，剩下的交给接口去屏蔽。这个思路不只对 Sandbox 有用——任何一个要在"安全"和"能不能正常干活"之间找平衡的系统，大概都得先问同一个问题：到底在防什么，防住它最少需要收紧到什么程度？
+All of these layers are ultimately doing the same thing: first pin down the real boundary of the problem, then apply exactly enough mechanism to cover it — any more is waste, any less is a liability. This way of thinking shows up more than once in harness9: the `Environment` interface splits domain logic apart from execution mechanics, the `ContainerState` state machine gets picked up directly by the TUI as a color-mapping table, `cmdRunner` is defined as a function type specifically so tests can swap out the real docker command. Individually these all look like small decisions, but taken together, what they're doing is making sure each layer only has to worry about its own concern, and everything else gets handled by an interface underneath. This way of thinking isn't only useful for Sandbox — any system that has to strike a balance between "security" and "can it still actually get work done" probably has to start by asking the same question: what exactly are we defending against, and what's the minimum tightening needed to actually defend against it?
 
-如果是你来设计这套权限模型，你会在那三个 `--cap-add` 里再多留一个，还是干脆全部去掉，换成一个只读的静态分析模式？
+If you were the one designing this permission model, would you leave one more capability turned on among those three `--cap-add` entries, or would you strip them all out entirely and switch to a read-only static-analysis mode instead?
 
 ---

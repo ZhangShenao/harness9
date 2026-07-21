@@ -1,42 +1,42 @@
 ---
-title: "Planning 模块：Plan Mode、TodoStore 与执行自动化"
+title: "The Planning Module: Plan Mode, TodoStore, and Execution Automation"
 date: 2026-06-08
 tags: [harness9, agent, golang, planning, todo, stagnation-detection]
-summary: "harness9 的 Planning 模块如何用工具层硬约束替代 prompt 层软约束，以及 TodoStore 的全量替换语义、防作弊校验与跨 runLoop 的停滞检测机制。"
+summary: "How the harness9 Planning module replaces soft prompt-level constraints with hard tool-layer gates, plus the TodoStore's full-replace semantics, anti-cheat validation, and cross-runLoop stagnation detection."
 ---
 
-# Planning 模块：工具层权限门禁、TodoStore 状态机与执行自动化
+# The Planning Module: Plan Mode, TodoStore, and Execution Automation
 
-## 关于 harness9
+## About harness9
 
-harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
+harness9 is a local-first, lightweight, fully-featured, production-ready general-purpose Go Agent framework.
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
-- **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
+- **Website**: [https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **GitHub**: [https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
-⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
+⭐ Stars are the most direct way to support open-source work — issues and PRs are welcome.
 
 ---
 
 ## TL;DR
 
-harness9 的 Planning 模块把"LLM 能做什么"的控制权从 prompt 下沉到工具 schema，把"LLM 有没有真正在干活"的校验从运行时观察变成前置拒绝，把"执行卡住了"的判断从人工干预变成停滞计数器。三件事各找最合适的层来做，没有上移也没有下移。
+harness9's Planning module moves control over "what the LLM is allowed to do" from the prompt down into the tool schema; it turns the check for "is the LLM actually doing the work" from runtime observation into upfront rejection; and it turns the judgment of "is execution stuck" from manual intervention into a stagnation counter. Each of these three concerns is handled at the layer best suited for it — nothing has been pushed up or down unnecessarily.
 
-## 本文你将学到
+## What you'll learn
 
-- 你将看清 Plan Mode 为什么用工具层白名单硬过滤，而不是在 prompt 里说"不要创建文件"——以及这个区别在 Agent 工程中意味着什么
-- 你将理解 TodoStore 为什么选择全量替换而非增量 API，以及"双重 copy"策略背后的数据竞争考量
-- 你将看到 `todo_write` 防作弊校验如何从一个真实 bug（11 个任务被一次性批量完成）演化为"阈值 1"的设计决策
-- 你将理解停滞检测（stagnation detection）为什么用 `done` 计数而非 `pending` 计数来判断进度
-- 你将掌握 FilePlanWriter 的路径策略：git 项目与非 git 项目的持久化位置差异及其原因
+- Why Plan Mode uses a hard tool-layer whitelist filter instead of telling the prompt "don't create files" — and what that distinction means for agent engineering
+- Why TodoStore chose full-replace semantics over an incremental API, and the data-race reasoning behind its "double copy" strategy
+- How the `todo_write` anti-cheat validation evolved from a real bug (11 tasks batch-completed at once) into a "threshold of 1" design decision
+- Why stagnation detection counts `done` items rather than `pending` items to judge progress
+- FilePlanWriter's path strategy: why git repos and non-git repos persist plans to different locations
 
 ---
 
-## Plan Mode：一扇门，不是一句话
+## Plan Mode: a gate, not a sentence
 
-大多数 Agent 框架在"规划阶段"的实现方式是在 prompt 里加一段话："现在你处于规划阶段，不要修改文件，只做分析。" 这是软约束（soft constraint）。LLM 可以忘记它，可以被历史上下文里的工具用例"诱导"绕过它，可以在上下文压缩后丢失它。
+Most agent frameworks implement a "planning phase" by adding a line to the prompt: "You are now in planning mode — don't modify files, only analyze." This is a soft constraint. The LLM can forget it, can be "lured" past it by tool examples in the historical context, or can lose it entirely after context compaction.
 
-harness9 的做法是从工具 schema 里把写工具直接拿掉。
+harness9's approach is to remove the write tools from the tool schema entirely.
 
 ```go
 // internal/engine/agent_loop.go
@@ -58,48 +58,49 @@ func filterReadOnlyTools(tools []schema.ToolDefinition) []schema.ToolDefinition 
 }
 ```
 
-`write_file` 和 `edit_file` 不在白名单里。Plan Mode 下，LLM 收到的工具列表里根本不存在这两个工具——它在 API 层就不存在了，而不是"存在但被要求不要用"。
+`write_file` and `edit_file` are not on the whitelist. In Plan Mode, the tool list the LLM receives simply doesn't contain these two tools — they don't exist at the API layer, as opposed to "existing but being asked not to be used."
 
-这是工具层硬约束（hard constraint）与 prompt 层软约束的本质差异：前者是物理限制，后者是行为建议。
+This is the essential difference between a hard constraint at the tool layer and a soft constraint at the prompt layer: the former is a physical restriction, the latter is a behavioral suggestion.
 
-![图：Plan Mode 权限门禁架构](./images/plan-mode-gatekeeper-01.png)
+![Diagram: Plan Mode permission gate architecture](/blog/planning-module/images/plan-mode-gatekeeper-01.png)
 
 
-`filterReadOnlyTools` 在 `runLoop` 内部每个 Turn 开始时调用，而 `planMode` 本身在 `runLoop` 入口被快照：
+`filterReadOnlyTools` is called at the start of every Turn inside `runLoop`, while `planMode` itself is snapshotted at the entry point of `runLoop`:
 
 
 ```go
-// agent_loop.go — runLoop 入口
+// agent_loop.go — runLoop entry
 e.mu.RLock()
-planMode := e.planMode   // 快照一次，整个循环内不变
+planMode := e.planMode   // snapshot once; unchanged for the rest of the loop
 e.mu.RUnlock()
 
-// 每个 Turn 开始时
+// at the start of each Turn
 if planMode == planning.PlanModePlan {
     availableTools = filterReadOnlyTools(availableTools)
 }
 ```
 
-快照的意义：TUI goroutine 可以在任何时候调用 `eng.SetPlanMode()`，但正在运行的 `runLoop` 已经拿到了开始时的模式副本，不会在循环中途被切换。这是 harness9 处理 goroutine 间状态一致性的惯用手法——不是加锁保护整个循环，而是在入口快照，循环内读只读变量。
+The point of the snapshot: the TUI goroutine can call `eng.SetPlanMode()` at any time, but a `runLoop` already in flight has already captured a copy of the mode as it was at start time, and won't be switched mid-loop. This is harness9's idiomatic way of handling state consistency across goroutines — instead of locking the entire loop, it snapshots at the entry point and reads a read-only variable throughout the loop.
 
-工具层过滤之外，`runLoop` 还对用户 prompt 注入了行为引导前缀：
+Beyond tool-layer filtering, `runLoop` also injects a behavioral guidance prefix into the user prompt:
 
 ```go
 if planMode == planning.PlanModePlan {
-    userPrompt = "分析以下请求，用 todo_write 输出一份可直接执行的实现计划，然后用纯文字简述计划后停止。\n" +
+    userPrompt = "Analyze the following request, use todo_write to output an actionable implementation plan, " +
+        "then summarize the plan in plain text and stop.\n" +
         // ...
-        "不要创建文件、执行 build/install 或做任何实际修改。\n\n" +
+        "Do not create files, run build/install, or make any actual changes.\n\n" +
         userPrompt
 }
 ```
 
-注意措辞：prompt 说的是"不要这么做"，而不是"你没有权限这么做"。权限由工具层决定，prompt 只引导行为。两层分工清晰，互不越权。
+Note the phrasing: the prompt says "don't do this," not "you don't have permission to do this." Permission is decided at the tool layer; the prompt only guides behavior. The two layers have a clear division of responsibility and don't overstep into each other's territory.
 
 ---
 
-## TodoStore：全量替换的设计取舍
+## TodoStore: the trade-off behind full replacement
 
-`TodoStore` 是一个线程安全的内存任务列表，但它的 API 设计是反直觉的——它没有 `Add`、`Update`、`Delete`，只有 `Write` 和 `Read`。
+`TodoStore` is a thread-safe in-memory task list, but its API design is counter-intuitive — it has no `Add`, `Update`, or `Delete`, only `Write` and `Read`.
 
 ```go
 // internal/planning/todo.go
@@ -117,45 +118,46 @@ func (s *TodoStore) Write(items []TodoItem) []TodoItem {
 }
 ```
 
-为什么全量替换而非增量 API？
+Why full replacement instead of an incremental API?
 
-LLM 调用 `todo_write` 时，它的自然输出形式是完整的任务列表，而不是"把第 3 项的 status 从 pending 改为 in_progress"这样的增量指令。增量 API 要求 LLM 对当前状态有精确的认知——ID 拼错了，状态就发散了。全量替换则不依赖 LLM 对历史状态的记忆，每次写入都是一个确定性快照。
+When the LLM calls `todo_write`, its natural output form is a complete task list, not an incremental instruction like "change the status of item 3 from pending to in_progress." An incremental API would require the LLM to have a precise understanding of the current state — get an ID wrong, and the state diverges. Full replacement doesn't depend on the LLM remembering historical state; every write is a deterministic snapshot.
 
-实现简单是次要好处：`Write` 方法 5 行代码，没有合并逻辑，没有冲突处理。
+Simplicity of implementation is a secondary benefit: the `Write` method is 5 lines of code, with no merge logic and no conflict handling.
 
-`Write` 的双重 copy 策略值得注意：
+The double-copy strategy in `Write` is worth calling out:
 
 ```go
-// 第一次 copy：入参 items 与内部存储解耦
+// First copy: decouples the input items from internal storage
 s.items = make([]TodoItem, len(items))
 copy(s.items, items)
-// 第二次 copy（s.copy()）：返回值与内部存储解耦
+// Second copy (s.copy()): decouples the return value from internal storage
 return s.copy()
 ```
 
-调用方传进来的 `items` 切片、`TodoStore` 内部的 `s.items`、返回给调用方的副本，三者各自独立。如果直接 `s.items = items`，调用方后续修改原切片就会悄悄影响 `TodoStore` 内部状态。这类 bug 在并发环境下往往是间歇性的，极难复现。双重 copy 用 20 字节的内存代价换来了确定性的隔离。
+The `items` slice passed in by the caller, `TodoStore`'s internal `s.items`, and the copy returned to the caller are all independent of one another. If it were simply `s.items = items`, a caller later mutating the original slice would silently corrupt `TodoStore`'s internal state. Bugs like this tend to be intermittent under concurrency and extremely hard to reproduce. The double copy trades a few dozen bytes of memory for deterministic isolation.
 
-![图：TodoStore 状态机与全量替换语义](./images/todostore-state-machine-02.png)
+![Diagram: TodoStore state machine and full-replace semantics](/blog/planning-module/images/todostore-state-machine-02.png)
 
 
 
-状态转换约束刻意没有放在 `TodoStore` 里：
+State-transition constraints were deliberately kept out of `TodoStore`:
 
 ```go
-// TodoStatus 状态转换约束由 todo_write 工具（tools 包）负责执行，TodoStore 本身不做校验。
+// TodoStatus transition constraints are enforced by the todo_write tool (the tools package);
+// TodoStore itself performs no validation.
 ```
 
-`TodoStore` 是无判断的存储层，业务约束由工具层表达。这个分层是蓄意的——`TodoStore` 可以被测试代码直接写入任意状态，不需要绕过校验逻辑；而工具层的校验逻辑可以独立变化，不需要改动存储层。
+`TodoStore` is a judgment-free storage layer; business constraints are expressed at the tool layer. This separation is intentional — `TodoStore` can be written to directly with arbitrary states in test code, without needing to bypass validation logic; and the tool layer's validation logic can evolve independently, without touching the storage layer.
 
 ---
 
-## todo_write：防作弊的工程故事
+## todo_write: the engineering story behind anti-cheat
 
-`todo_write` 工具的防作弊校验不是从设计文档里推导出来的，它来自一个具体的 bug。
+The anti-cheat validation in the `todo_write` tool wasn't derived from a design document — it came from a concrete bug.
 
-在一次连续对话中，LLM 将 11 个任务中的 9 个一次性批量完成（从 2/11 跳到 11/11），没有对应的文件创建或 bash 执行操作。这是"幻觉执行"——LLM 省略了实际工作，直接伪造进度。
+In one continuous conversation, the LLM batch-completed 9 of 11 tasks in a single call (jumping from 2/11 to 11/11), with no corresponding file creation or bash execution. This was "hallucinated execution" — the LLM skipped the actual work and simply fabricated progress.
 
-修复策略是：在一次 `todo_write` 调用中，最多允许 1 个任务从非 `in_progress` 状态直接跳转到 `completed`：
+The fix: in a single `todo_write` call, allow at most 1 task to jump directly from a non-`in_progress` state to `completed`:
 
 ```go
 // internal/tools/todo_write.go — Execute()
@@ -172,67 +174,67 @@ for _, item := range input.Todos {
     }
     prior, exists := prevStatus[item.ID]
     if !exists || prior == planning.TodoPending {
-        directCompletions++  // pending → completed，计入
+        directCompletions++  // pending → completed, counted
         continue
     }
     if prior == planning.TodoCancelled {
-        return "", fmt.Errorf("任务 %q 已取消，不能直接标记为 completed...", item.ID)
+        return "", fmt.Errorf("task %q was cancelled and cannot be marked completed directly...", item.ID)
     }
-    // in_progress → completed：合法，不计入
+    // in_progress → completed: legal, not counted
 }
 if directCompletions > 1 {
     return "", fmt.Errorf(
-        "不允许在一次调用中将 %d 个任务直接标记为 completed（未经 in_progress）...",
+        "not allowed to mark %d tasks as completed directly (without passing through in_progress) in a single call...",
         directCompletions)
 }
 ```
 
-阈值为什么是 1 而不是 0？
+Why is the threshold 1 rather than 0?
 
-阈值 0 在续跑场景中会产生误伤：Agent 在一次续跑中完成了一项真实工作（调用了 bash 或 write_file），然后直接把对应 todo 标记为 `completed` 而没有经过 `in_progress` 中间步骤——这是正当行为，Agent 省略了状态标记的中间步骤，但工作是真实的。阈值 0 会导致 Agent 反复收到拒绝错误并陷入重试循环。
+A threshold of 0 would cause false positives during continuation runs: the Agent completes a genuine piece of work in one continuation (calling bash or write_file), then marks the corresponding todo as `completed` directly, without going through the `in_progress` intermediate step — this is legitimate behavior; the Agent skipped the intermediate status-marking step, but the work itself is real. A threshold of 0 would cause the Agent to repeatedly receive rejection errors and get stuck in a retry loop.
 
-阈值 1 保留了对原始 bug 模式（大量批量完成）的防护，同时允许单项直接完成这一正常用法。
+A threshold of 1 preserves protection against the original bug pattern (mass batch completion) while still allowing the normal case of completing a single item directly.
 
-校验失败时，`todo_write` 返回 `error`，引擎将其包装为 `ToolResult{IsError: true}` 注入上下文。LLM 看到工具调用失败的错误信息，被迫重新组织参数。循环不会终止，Agent 自己修正自己——这是 harness9"自愈"（self-healing）设计的标准模式。
+When validation fails, `todo_write` returns an `error`, which the engine wraps as `ToolResult{IsError: true}` and injects into the context. The LLM sees the tool-call failure message and is forced to reorganize its arguments. The loop doesn't terminate — the Agent corrects itself. This is the standard pattern behind harness9's "self-healing" design.
 
-![图：todo_write 防作弊双重防护](./images/todo-write-anticheat-03.png)
+![Diagram: todo_write's dual anti-cheat safeguards](/blog/planning-module/images/todo-write-anticheat-03.png)
 
 
 ---
 
-## 执行 Prompt 的设计意图
+## The intent behind the execution prompt
 
-用户批准计划后，TUI 不是简单地发送"开始执行"，而是发送一段精心设计的规范：
+Once the user approves the plan, the TUI doesn't simply send "start executing" — it sends a carefully crafted specification:
 
 ```go
 // cmd/harness9/tui_update.go
-const execPrompt = "按照 todo 清单逐项执行。规则：\n" +
-    "1. 每开始一项前，用 todo_write 将其状态设为 in_progress\n" +
-    "2. 用工具完成该项的实际工作——创建文件、写代码、运行命令等；" +
-    "仅更新 todo_write 状态而不调用其他工具，不算完成该项\n" +
-    "3. 确认实际产出后，用 todo_write 将其状态设为 completed\n" +
-    "4. 不要输出进度摘要文字，立即处理下一项\n" +
-    "全部完成后，用一句话汇报整体结果。"
+const execPrompt = "Work through the todo list item by item. Rules:\n" +
+    "1. Before starting each item, use todo_write to set its status to in_progress\n" +
+    "2. Use tools to do the actual work for that item — create files, write code, run commands, etc.; " +
+    "merely updating the todo_write status without calling any other tool does not count as completing the item\n" +
+    "3. Once you've confirmed real output, use todo_write to set its status to completed\n" +
+    "4. Do not output progress-summary text; move on to the next item immediately\n" +
+    "Once everything is done, report the overall result in one sentence."
 ```
 
-规则 2 是关键："仅更新状态而不调用其他工具，不算完成该项。" 这是 prompt 层对抗幻觉执行的约束，与工具层的批量完成检测形成双重防护。一层是硬拒绝，一层是行为引导——两层都在防同一件事，但机制不同。
+Rule 2 is the key one: "merely updating the status without calling any other tool does not count as completing the item." This is a prompt-layer constraint against hallucinated execution, forming a second line of defense alongside the tool layer's batch-completion detection. One layer is a hard rejection; the other is behavioral guidance — both guard against the same failure mode, but through different mechanisms.
 
-续跑时用更精简的 `execContinuePrompt`：
+Continuation runs use a leaner `execContinuePrompt`:
 
 ```go
-const execContinuePrompt = "继续处理 todo 清单中下一个 pending 或 in_progress 的任务项。" +
-    "先用 todo_write 标记为 in_progress，然后用工具完成实际工作（写文件、执行命令等），" +
-    "确认产出后标记为 completed，再处理下一项。" +
-    "不要只更新状态而不做实际操作，不要输出进度摘要。"
+const execContinuePrompt = "Continue processing the next pending or in_progress item in the todo list. " +
+    "First use todo_write to mark it in_progress, then use tools to do the actual work (write files, run commands, etc.), " +
+    "and once you've confirmed the output, mark it completed before moving to the next item. " +
+    "Do not just update the status without doing real work, and do not output a progress summary."
 ```
 
-续跑不需要重复完整规则——LLM 的上下文里有 `execPrompt` 的历史，已知晓基本框架。精简版只需要提示"继续下一项"，减少无效 token 消耗。
+Continuation doesn't need to repeat the full rule set — the LLM's context already contains the history of `execPrompt` and already knows the basic framework. The leaner version only needs to say "continue to the next item," reducing wasted token consumption.
 
 ---
 
-## 停滞检测：用 done 计数，而非 pending 计数
+## Stagnation detection: counting `done`, not `pending`
 
-自动执行（autoExecuting）模式下，每次 `EventDone` 触发以下决策：
+In auto-execution (`autoExecuting`) mode, every `EventDone` triggers the following decision:
 
 ```go
 // cmd/harness9/tui_update.go — EventDone handler
@@ -249,52 +251,52 @@ if m.autoExecuting && m.todoStore != nil {
     }
     if pending > 0 {
         if done > m.autoExecPrevDone {
-            m.autoExecStuck = 0  // 有进度，重置
+            m.autoExecStuck = 0  // progress made, reset
         } else {
-            m.autoExecStuck++   // 无进度，计数
+            m.autoExecStuck++   // no progress, count it
         }
         if m.autoExecStuck < 3 {
             m.autoExecPrevDone = done
             return m.dispatch(execContinuePrompt)
         }
         m.autoExecuting = false
-        m.lines = append(m.lines, dimStyle.Render("  ⚠ 执行停滞，请手动描述下一步"))
+        m.lines = append(m.lines, dimStyle.Render("  ⚠ Execution stalled, please describe the next step manually"))
     } else {
-        m.autoExecuting = false  // 全部完成
+        m.autoExecuting = false  // everything done
     }
 }
 ```
 
-停滞检测的判断基准是 `done`（已完成数）而非 `pending`（待完成数）。这个选择值得展开说。
+Stagnation detection is judged against `done` (number completed) rather than `pending` (number remaining). This choice is worth unpacking.
 
-`pending` 的变化有两种来源：任务真正完成（`pending → in_progress → completed`）和任务被标记为进行中（`pending → in_progress`）。如果用 `pending` 减少来判断进度，LLM 只要不断把任务改成 `in_progress` 而不真正完成，就能持续通过进度检测——这是另一种形式的幻觉执行。
+Changes in `pending` can come from two sources: a task actually being completed (`pending → in_progress → completed`) or a task simply being marked in progress (`pending → in_progress`). If progress were judged by a decrease in `pending`, the LLM could keep progress detection passing indefinitely just by continuously flipping tasks to `in_progress` without ever really finishing them — another form of hallucinated execution.
 
-只有 `completed` 状态才代表真实的工作产出。`done` 计数在一轮 `EventDone` 后没有增加，意味着 LLM 运行了一整轮推理但没有推进任何任务到完成状态。连续 3 次如此，停滞检测介入。
+Only the `completed` state represents genuine work output. If the `done` count doesn't increase after a round of `EventDone`, it means the LLM ran a full round of reasoning without advancing any task to completion. After 3 consecutive rounds like this, stagnation detection kicks in.
 
-阈值 3 是经验值：给 LLM 一些缓冲空间应对需要多轮探索才能完成的复杂任务，但不允许无限空转。
+The threshold of 3 is an empirical value: it gives the LLM some buffer for complex tasks that need multiple rounds of exploration to complete, while still preventing indefinite spinning.
 
-![图：停滞检测决策流](./images/stagnation-detection-04.png)
+![Diagram: stagnation detection decision flow](/blog/planning-module/images/stagnation-detection-04.png)
 
 
 
-`dispatch()` 本身内置了并发保护：
+`dispatch()` itself has built-in concurrency protection:
 
 ```go
 func (m tuiModel) dispatch(prompt string) (tuiModel, tea.Cmd) {
     if m.running {
-        return m, nil  // 已有推理在进行，静默忽略
+        return m, nil  // reasoning already in progress, silently ignore
     }
     // ...
 }
 ```
 
-autoExecuting 续跑时，`dispatch` 由 `EventDone` handler 在 Elm Update 单线程循环内调用，不存在并发问题。`running` 检查是额外安全网，防止其他代码路径意外触发双路推理。
+During `autoExecuting` continuation, `dispatch` is called by the `EventDone` handler within the single-threaded Elm Update loop, so there's no concurrency issue there. The `running` check is an extra safety net, guarding against other code paths accidentally triggering dual concurrent reasoning.
 
 ---
 
-## FilePlanWriter：不只是写文件
+## FilePlanWriter: more than just writing a file
 
-每次 `todo_write` 工具成功写入后，如果注入了 `FilePlanWriter`，任务列表会被持久化为 Markdown 文件：
+Every time the `todo_write` tool successfully writes, if a `FilePlanWriter` has been injected, the task list is persisted as a Markdown file:
 
 ```go
 // internal/hooks/plan_writer.go
@@ -313,15 +315,15 @@ func NewFilePlanWriter(workDir, homeDir, sessionID string) (*FilePlanWriter, err
 }
 ```
 
-路径策略有一个简单但有意思的分支：`isGitRepo(workDir)` 检测工作目录是否含有 `.git`。
+The path strategy has a simple but interesting branch: `isGitRepo(workDir)` checks whether the working directory contains a `.git` folder.
 
-git 项目写入 `workDir/.harness9/plans/`——这个路径在项目目录下，可以被纳入版本控制，也可以通过 `.gitignore` 排除。把规划产物放在项目旁边，让任务状态与代码变更保持上下文关联。
+For git repos, plans are written to `workDir/.harness9/plans/` — this path lives under the project directory, so it can be tracked in version control or excluded via `.gitignore`. Keeping planning artifacts next to the project keeps task state contextually tied to code changes.
 
-非 git 项目写入 `homeDir/.harness9/plans/`——没有项目目录的概念，集中存放在 home 目录下的个人数据区，不污染当前工作目录。
+For non-git repos, plans are written to `homeDir/.harness9/plans/` — there's no notion of a project directory, so they're stored centrally under a personal data area in the home directory, without polluting the current working directory.
 
-这个判断是在构造时做的，不是在每次写入时做的。`isGitRepo` 调用一次，路径固定下来，`Write` 方法每次覆写同一个文件而不是重新计算路径。
+This decision is made at construction time, not on every write. `isGitRepo` is called once, the path is fixed, and the `Write` method overwrites the same file each time rather than recomputing the path.
 
-`PlanWriter` 接口定义在 `planning` 包而非 `hooks` 包：
+The `PlanWriter` interface is defined in the `planning` package, not the `hooks` package:
 
 ```go
 // internal/planning/plan_writer.go
@@ -330,28 +332,28 @@ type PlanWriter interface {
 }
 ```
 
-这是 harness9 一贯的接口位置原则：接口定义在使用者侧，而非实现者侧。`TodoWriteTool` 使用 `PlanWriter`，接口就定义在 `planning` 包。`FilePlanWriter` 实现这个接口，但接口不在 `hooks` 包里声明。这个选择的实际作用是切断了 `tools` 包对 `hooks` 包的依赖——如果接口在 `hooks` 包，`tools` 就必须 import `hooks`，而 `hooks` 又会 import `tools`，循环导入立刻出现。
+This follows harness9's consistent principle for interface placement: interfaces are defined on the consumer side, not the implementer side. `TodoWriteTool` uses `PlanWriter`, so the interface is defined in the `planning` package. `FilePlanWriter` implements this interface, but the interface isn't declared in the `hooks` package. The practical effect of this choice is that it cuts off the `tools` package's dependency on the `hooks` package — if the interface lived in the `hooks` package, `tools` would have to import `hooks`, and `hooks` would in turn import `tools`, producing an immediate import cycle.
 
-![图：FilePlanWriter 路径策略与接口位置](./images/file-plan-writer-05.png)
+![Diagram: FilePlanWriter path strategy and interface placement](/blog/planning-module/images/file-plan-writer-05.png)
 
 
 
 ---
 
-## 跨 runLoop 的状态连续性
+## State continuity across runLoop invocations
 
-`TodoStore` 的内容随 Session 持久化到 SQLite，每次 `runLoop` 启动和结束时自动同步：
+The contents of `TodoStore` are persisted to SQLite alongside the Session, automatically synced each time `runLoop` starts and ends:
 
 ```go
 // agent_loop.go — runLoop
-// 启动：从 Session 恢复
+// On start: restore from Session
 if sess != nil && todoStore != nil {
     if todos, err := sess.GetTodos(ctx); err == nil {
         todoStore.Write(todos)
     }
 }
 
-// 结束：defer 保证所有退出路径都执行
+// On end: defer guarantees execution on every exit path
 defer func() {
     if sess != nil && todoStore != nil {
         if err := sess.SaveTodos(ctx, todoStore.Read()); err != nil {
@@ -361,11 +363,11 @@ defer func() {
 }()
 ```
 
-`autoExecuting` 模式下，每次续跑都是一次独立的 `runLoop` 调用。每次 `runLoop` 启动时从 DB 恢复 `TodoStore`，结束时写回——这确保了 `todo_write` 防作弊校验的正确性：`pending` 的任务在上次运行后保存到 DB，下次运行时加载回内存，`prevStatus` 快照能准确反映任务的历史状态。如果不做持久化，跨 `runLoop` 的状态对照就会失效，批量完成检测就成了哑炮。
+In `autoExecuting` mode, each continuation is a separate call to `runLoop`. Every `runLoop` invocation restores `TodoStore` from the DB on start and writes it back on exit — this is what makes the `todo_write` anti-cheat validation correct: `pending` tasks are saved to the DB after the previous run, loaded back into memory on the next run, and the `prevStatus` snapshot accurately reflects the historical state of each task. Without this persistence, the cross-`runLoop` state comparison would break down, and batch-completion detection would become a dud.
 
-`defer` 是关键细节：不管 `runLoop` 因为自然终止（LLM 不再调用工具）、MaxTurns 超限还是 context 取消而退出，`SaveTodos` 都会执行。
+The `defer` is the key detail: whether `runLoop` exits via natural termination (the LLM stops calling tools), MaxTurns being exceeded, or context cancellation, `SaveTodos` always runs.
 
-上下文压缩时，活跃任务会随摘要一起注入：
+During context compaction, active tasks are injected alongside the summary:
 
 ```go
 // internal/memory/summarization.go — Compact()
@@ -376,30 +378,30 @@ if c.TodoInjector != nil {
 }
 ```
 
-压缩后的摘要消息末尾会追加：
+The compacted summary message ends with something like:
 
 ```
 ## Active Tasks
-[ ] 实现 handler/user.go
-[>] 配置数据库连接
-[ ] 添加路由注册
+[ ] Implement handler/user.go
+[>] Configure database connection
+[ ] Add route registration
 ```
 
-即使对话历史被压缩得面目全非，未完成的任务也不会从 LLM 的视野中消失。
+Even if the conversation history has been compacted beyond recognition, unfinished tasks never disappear from the LLM's view.
 
-![图：Planning 完整数据流：从 Shift+Tab 到任务完成](./images/planning-full-journey-06.png)
+![Diagram: the full Planning data flow, from Shift+Tab to task completion](/blog/planning-module/images/planning-full-journey-06.png)
 
 
 
 ---
 
-## todo_write 工具的设计细节
+## Design details of the todo_write tool
 
-`todo_write` 是 Planning 模块对 LLM 暴露的唯一任务管理接口。它的设计值得多看一眼，因为细节里藏着几个有意思的工程决策。
+`todo_write` is the sole task-management interface the Planning module exposes to the LLM. It's worth a closer look, because a few interesting engineering decisions are hiding in the details.
 
-### 双模式：一个工具，两种调用语义
+### Dual mode: one tool, two calling semantics
 
-`todo_write` 的参数定义只有一个字段：`todos`。但这个字段有两种完全不同的语义：
+`todo_write`'s parameter definition has only one field: `todos`. But this field carries two entirely different semantics:
 
 ```go
 // internal/tools/todo_write.go
@@ -407,23 +409,23 @@ type todoWriteArgs struct {
     Todos []planning.TodoItem `json:"todos"`
 }
 
-// Execute：通过 len(input.Todos) > 0 区分读写模式
+// Execute: distinguishes read/write mode via len(input.Todos) > 0
 if len(input.Todos) > 0 {
-    // 写操作：全量替换 + 防作弊校验
+    // write: full replacement + anti-cheat validation
     current = t.store.Write(input.Todos)
 } else {
-    // 读操作：返回当前快照，不修改状态
+    // read: return the current snapshot without mutating state
     current = t.store.Read()
 }
 ```
 
-省略 `todos` 字段或传空数组，工具变成只读查询；传入非空数组，工具执行全量替换。两种模式复用同一个工具注册名，LLM 不需要区分"读取 todo"和"写入 todo"两个工具——一个工具，用参数控制行为。
+Omitting the `todos` field or passing an empty array turns the tool into a read-only query; passing a non-empty array triggers a full replacement. Both modes share the same registered tool name — the LLM doesn't need to distinguish between a "read todos" tool and a "write todos" tool. One tool, behavior controlled by arguments.
 
-这不只是为了简洁。工具列表的长度会消耗 LLM 的上下文窗口，也影响模型对工具选择的分发准确性。在工具数量本来就不少的情况下，把读写合并进一个工具是减少认知负担的务实选择。
+This isn't just for the sake of tidiness. The length of the tool list consumes the LLM's context window and affects the model's accuracy in selecting the right tool. With an already sizable number of tools, merging read and write into a single tool is a pragmatic way to reduce cognitive load.
 
-### Schema 里的状态机
+### A state machine inside the schema
 
-`todo_write` 的 JSON Schema 把 `status` 字段定义为有限枚举：
+`todo_write`'s JSON Schema defines the `status` field as a finite enum:
 
 ```go
 "status": map[string]interface{}{
@@ -432,13 +434,13 @@ if len(input.Todos) > 0 {
 },
 ```
 
-四个合法值，其他值不会被提交到 API。这是把状态机的合法集合下推到 Schema 层——不需要在 `Execute` 里做枚举校验，模型在调用工具时就已经被约束在合法状态范围内了。
+Four legal values; anything else never even reaches the API. This pushes the state machine's set of legal values down into the schema layer — there's no need for enum validation inside `Execute`, because the model is already constrained to a legal state range at the moment it calls the tool.
 
-这和 Plan Mode 的工具过滤是同一个思路的不同粒度：Plan Mode 在工具列表层面做约束（某些工具整体不可见），Schema 在参数层面做约束（某个字段的合法值有限）。两者都在"工具定义"这一层动手，不依赖 prompt 里的措辞。
+This is the same idea as Plan Mode's tool filtering, just applied at a different granularity: Plan Mode constrains at the level of the tool list (certain tools are entirely invisible), while the schema constrains at the level of a parameter (a given field's legal values are limited). Both operate at the "tool definition" layer, rather than relying on prompt wording.
 
-### nil 到 `[]` 的规范化
+### Normalizing nil to `[]`
 
-`Execute` 的返回路径有一个细节：
+There's a subtle detail in `Execute`'s return path:
 
 ```go
 if current == nil {
@@ -447,11 +449,11 @@ if current == nil {
 b, err := json.Marshal(current)
 ```
 
-`json.Marshal(nil)` 产生 `"null"`，`json.Marshal([]planning.TodoItem{})` 产生 `"[]"`。两者对 Go 程序来说语义等价，但对 LLM 来说差异很大——`null` 是一个无结构的值，`[]` 是一个明确的空列表。LLM 需要知道"当前没有任务"而不是"任务列表字段不存在"，这一个字符的差异决定了 LLM 能否正确推断下一步行为。
+`json.Marshal(nil)` produces `"null"`; `json.Marshal([]planning.TodoItem{})` produces `"[]"`. The two are semantically equivalent to a Go program, but very different to an LLM — `null` is an unstructured value, while `[]` is an explicit empty list. The LLM needs to know "there are currently no tasks," not "the task-list field doesn't exist." This one-character difference determines whether the LLM can correctly infer its next action.
 
-### WithPlanWriter：可选注入而非必选依赖
+### WithPlanWriter: optional injection, not a mandatory dependency
 
-`TodoWriteTool` 通过 Option 模式注入 `PlanWriter`：
+`TodoWriteTool` injects a `PlanWriter` via the Option pattern:
 
 ```go
 // internal/tools/todo_write.go
@@ -462,26 +464,26 @@ func WithPlanWriter(pw planning.PlanWriter) TodoWriteOption {
 }
 ```
 
-`planWriter` 字段默认为 `nil`，不注入时跳过持久化，工具本身仍然可用。这意味着 `TodoWriteTool` 在单元测试中可以直接实例化，不需要构造一个真实的 `FilePlanWriter`——测试只需要验证任务列表的状态变化，不需要关心文件系统。
+The `planWriter` field defaults to `nil`; when it's not injected, persistence is simply skipped, and the tool itself remains fully usable. This means `TodoWriteTool` can be instantiated directly in unit tests, without needing to construct a real `FilePlanWriter` — the tests only need to verify task-list state changes, not care about the filesystem.
 
-Option 模式在 harness9 里是构造函数的标准约定（`WithMaxTurns`、`WithToolTimeout` 等都是这个模式），`WithPlanWriter` 遵循了同样的设计语言，新读者不需要额外学习就能理解注入语义。
+The Option pattern is the standard convention for constructors throughout harness9 (`WithMaxTurns`, `WithToolTimeout`, and others all follow it), and `WithPlanWriter` follows the same design language, so new readers don't need to learn anything extra to understand the injection semantics.
 
-持久化失败时的处理也值得注意：
+The handling of persistence failure is also worth noting:
 
 ```go
 if t.planWriter != nil {
     if err := t.planWriter.Write(current); err != nil {
-        log.Print(logfmt.FormatMsg("todo_write", fmt.Sprintf("写入计划文件失败: %v", err)))
+        log.Print(logfmt.FormatMsg("todo_write", fmt.Sprintf("failed to write plan file: %v", err)))
     }
 }
 ```
 
-写文件失败只记日志，不向 LLM 回传错误。这是 fail-open 策略——持久化是辅助功能，不是任务管理的核心路径。如果 `FilePlanWriter` 因磁盘满或权限问题失败，任务列表本身已经写入 `TodoStore`（内存中），Agent 可以继续运行，只是这次的规划产物不会落盘。反过来如果 `planWriter.Write` 的失败被 propagate 给 LLM，会导致 Agent 进入错误恢复循环，为一个非核心功能的失败付出不必要的代价。
+A failed file write is only logged; it's not propagated back to the LLM as an error. This is a fail-open strategy — persistence is an auxiliary feature, not part of the core task-management path. If `FilePlanWriter` fails due to a full disk or a permissions issue, the task list has already been written to `TodoStore` (in memory), and the Agent can keep running; only this round's planning artifact fails to land on disk. Conversely, if `planWriter.Write`'s failure were propagated to the LLM, it would push the Agent into an error-recovery loop, paying an unnecessary cost for the failure of a non-core feature.
 
 ---
 
-## 结语
+## Closing thoughts
 
-Planning 模块的真正价值不是"给 Agent 加了个规划阶段"，而是把 Agent 行为的几个关键约束点从软层（prompt）挪到了硬层（代码）。每一个挪移都需要一个理由：为什么这件事不能靠 prompt 说清楚？答案通常是：prompt 可以被忘记、被压缩、被绕过——代码不会。
+The real value of the Planning module isn't "adding a planning phase to the Agent" — it's moving several key behavioral constraint points for the Agent from the soft layer (the prompt) to the hard layer (the code). Every such move needs a justification: why can't this be handled by the prompt alone? The answer is usually: prompts can be forgotten, compacted away, or bypassed — code cannot.
 
-思考题：`todo_write` 的防作弊阈值是 1，如果改成 2 会影响什么场景？改成 0 又会影响什么？
+Something to think about: `todo_write`'s anti-cheat threshold is 1. What scenarios would change if it were 2? What about 0?
