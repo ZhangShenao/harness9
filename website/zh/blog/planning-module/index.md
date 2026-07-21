@@ -11,7 +11,7 @@ summary: "harness9 的 Planning 模块如何用工具层硬约束替代 prompt �
 
 harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **官网**：[https://zhangshenao.github.io/harness9/zh/](https://zhangshenao.github.io/harness9/zh/)
 - **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
 ⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
@@ -62,7 +62,7 @@ func filterReadOnlyTools(tools []schema.ToolDefinition) []schema.ToolDefinition 
 
 这是工具层硬约束（hard constraint）与 prompt 层软约束的本质差异：前者是物理限制，后者是行为建议。
 
-![图：Plan Mode 权限门禁架构](./images/plan-mode-gatekeeper-01.png)
+![图：Plan Mode 权限门禁架构](/blog/planning-module/images/plan-mode-gatekeeper-01.png)
 
 
 `filterReadOnlyTools` 在 `runLoop` 内部每个 Turn 开始时调用，而 `planMode` 本身在 `runLoop` 入口被快照：
@@ -135,7 +135,7 @@ return s.copy()
 
 调用方传进来的 `items` 切片、`TodoStore` 内部的 `s.items`、返回给调用方的副本，三者各自独立。如果直接 `s.items = items`，调用方后续修改原切片就会悄悄影响 `TodoStore` 内部状态。这类 bug 在并发环境下往往是间歇性的，极难复现。双重 copy 用 20 字节的内存代价换来了确定性的隔离。
 
-![图：TodoStore 状态机与全量替换语义](./images/todostore-state-machine-02.png)
+![图：TodoStore 状态机与全量替换语义](/blog/planning-module/images/todostore-state-machine-02.png)
 
 
 
@@ -195,7 +195,7 @@ if directCompletions > 1 {
 
 校验失败时，`todo_write` 返回 `error`，引擎将其包装为 `ToolResult{IsError: true}` 注入上下文。LLM 看到工具调用失败的错误信息，被迫重新组织参数。循环不会终止，Agent 自己修正自己——这是 harness9"自愈"（self-healing）设计的标准模式。
 
-![图：todo_write 防作弊双重防护](./images/todo-write-anticheat-03.png)
+![图：todo_write 防作弊双重防护](/blog/planning-module/images/todo-write-anticheat-03.png)
 
 
 ---
@@ -273,7 +273,7 @@ if m.autoExecuting && m.todoStore != nil {
 
 阈值 3 是经验值：给 LLM 一些缓冲空间应对需要多轮探索才能完成的复杂任务，但不允许无限空转。
 
-![图：停滞检测决策流](./images/stagnation-detection-04.png)
+![图：停滞检测决策流](/blog/planning-module/images/stagnation-detection-04.png)
 
 
 
@@ -332,7 +332,7 @@ type PlanWriter interface {
 
 这是 harness9 一贯的接口位置原则：接口定义在使用者侧，而非实现者侧。`TodoWriteTool` 使用 `PlanWriter`，接口就定义在 `planning` 包。`FilePlanWriter` 实现这个接口，但接口不在 `hooks` 包里声明。这个选择的实际作用是切断了 `tools` 包对 `hooks` 包的依赖——如果接口在 `hooks` 包，`tools` 就必须 import `hooks`，而 `hooks` 又会 import `tools`，循环导入立刻出现。
 
-![图：FilePlanWriter 路径策略与接口位置](./images/file-plan-writer-05.png)
+![图：FilePlanWriter 路径策略与接口位置](/blog/planning-module/images/file-plan-writer-05.png)
 
 
 
@@ -387,7 +387,7 @@ if c.TodoInjector != nil {
 
 即使对话历史被压缩得面目全非，未完成的任务也不会从 LLM 的视野中消失。
 
-![图：Planning 完整数据流：从 Shift+Tab 到任务完成](./images/planning-full-journey-06.png)
+![图：Planning 完整数据流：从 Shift+Tab 到任务完成](/blog/planning-module/images/planning-full-journey-06.png)
 
 
 

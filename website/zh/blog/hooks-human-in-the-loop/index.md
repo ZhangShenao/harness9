@@ -11,7 +11,7 @@ summary: "harness9 的权限体系由洋葱模型 HookRegistry、HookDecision �
 
 harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **官网**：[https://zhangshenao.github.io/harness9/zh/](https://zhangshenao.github.io/harness9/zh/)
 - **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
 ⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
@@ -68,7 +68,7 @@ func (r *HookRegistry) Execute(ctx context.Context, call schema.ToolCall) schema
 
 执行前每层 Hook 依次往里走，执行后再从里往外逐层收尾——标准洋葱模型。`executed` 记录已完成前置检查的 Hook 数量，确保只有真正走过前置检查的 Hook 才会收到后置回调。Deny 短路后不触发任何后置回调，语义上保持一致。
 
-![洋葱模型：HookRegistry 控制流](./images/hook-registry-onion-01.png)
+![洋葱模型：HookRegistry 控制流](/blog/hooks-human-in-the-loop/images/hook-registry-onion-01.png)
 
 
 ---
@@ -120,7 +120,7 @@ case HookActionAsk:
 
 两个标记语义不同：`withApproved` 是用户实时点击"允许"的结果；`withExplicitlyAllowed` 是白名单规则静默放行的结果。它们都能阻止后续 Hook 重复弹框，但来源可追溯，行为日志里不会混淆。
 
-![HookDecision 三级决策状态机](./images/hook-decision-state-02.png)
+![HookDecision 三级决策状态机](/blog/hooks-human-in-the-loop/images/hook-decision-state-02.png)
 
 
 ---
@@ -161,7 +161,7 @@ for _, p := range h.patterns {
 
 两个变体覆盖空格差异（`"| bash"` 和 `"|bash"`）也体现了这种思路：宁可多写一条，不留规避空间。
 
-![DangerHook 19 条模式分级](./images/danger-hook-patterns-03.png)
+![DangerHook 19 条模式分级](/blog/hooks-human-in-the-loop/images/danger-hook-patterns-03.png)
 
 
 ---
@@ -223,7 +223,7 @@ func (h *Hook) BeforeExecute(ctx context.Context, tc schema.ToolCall) (...) {
 
 磁盘 IO 的代价在工具调用这个粒度上完全可以接受——工具执行本身往往是毫秒到秒级的，多一次文件读取不是瓶颈。
 
-![PermissionHook 动态重载流程](./images/permission-hook-reload-04.png)
+![PermissionHook 动态重载流程](/blog/hooks-human-in-the-loop/images/permission-hook-reload-04.png)
 
 
 ---
@@ -260,7 +260,7 @@ func safePath(workDir, inputPath string) (string, error) {
 
 路径穿越（Path Traversal）防护也在同一个函数里：`filepath.Abs` 规范化后检查是否仍以 `workDir` 为前缀，绝对路径和相对路径分别处理，防止 `../` 逃逸和绝对路径翻倍（`workDir + "/workDir/subpath"` 的经典陷阱）。
 
-![敏感路径双重防线](./images/sensitive-path-guard-05.png)
+![敏感路径双重防线](/blog/hooks-human-in-the-loop/images/sensitive-path-guard-05.png)
 
 ---
 
@@ -268,7 +268,7 @@ func safePath(workDir, inputPath string) (string, error) {
 
 用户在 TUI 里看到审批对话框时，有五个选项：
 
-![工具调用审批](./images/tool_call_approval.png)
+![工具调用审批](/blog/hooks-human-in-the-loop/images/tool_call_approval.png)
 
 
 选项 5 触发内联输入框，用户可以用自然语言说明拒绝原因。这段反馈通过 `ApprovalResponse.Feedback` 回传给引擎，以 `"操作被用户拒绝: <反馈>"` 的形式作为工具调用的错误结果注入上下文。LLM 能读到这段文字，下一轮可以据此调整策略。
@@ -299,7 +299,7 @@ case 2:
 
 `writeApprovalToConfig` 对 bash 工具取命令的第一个单词作为关键词，生成 `bash(*git*)` 这样的 glob 模式追加到 allow 列表。粒度不算精细，但在实际使用中够用——用户说"总是允许 git 操作"，以后所有 `git *` 命令静默通过。
 
-![TUI 五选项审批对话框交互流](./images/tui-approval-dialog-06.png)
+![TUI 五选项审批对话框交互流](/blog/hooks-human-in-the-loop/images/tui-approval-dialog-06.png)
 
 
 ---
@@ -326,7 +326,7 @@ const (
 
 BypassAll 的存在揭示了一个重要的设计立场：harness9 的权限系统是给人机协作场景设计的，不是给完全自动化场景设计的。当运行环境本身已提供隔离时，软件层的权限检查只是开销，可以关掉。
 
-![PermissionMode 与 PlanMode 正交关系](./images/permission-mode-matrix-07.png)
+![PermissionMode 与 PlanMode 正交关系](/blog/hooks-human-in-the-loop/images/permission-mode-matrix-07.png)
 
 
 ---
@@ -345,7 +345,7 @@ Sub-Agent 的工具集在 `SubAgentDefinition.ResolveTools` 里计算：
 
 从 Hook 视角看，Sub-Agent 运行在独立的引擎实例上，拥有自己的 HookRegistry。主 Agent 的审批决策（`withApproved`、`withExplicitlyAllowed`）不会泄漏到子 Agent 的 Context，每次委派都是一个权限意义上的新会话。
 
-![Sub-Agent 权限继承链](./images/subagent-permission-chain-08.png)
+![Sub-Agent 权限继承链](/blog/hooks-human-in-the-loop/images/subagent-permission-chain-08.png)
 
 
 ---
@@ -378,7 +378,7 @@ ToolResult 回传 LLM
 
 每一层都是可以独立替换的。PermissionHook 可以换成任何实现了 `ToolHook` 接口的结构体，DangerHook 可以用自定义规则覆盖，`ApprovalFunc` 在不同运行环境里映射到不同的 UI 或自动决策逻辑。`safePath` 是唯一不可替换的层，它在工具内部，不经过接口。
 
-![完整工具调用权限拦截路径](./images/full-permission-pipeline-09.png)
+![完整工具调用权限拦截路径](/blog/hooks-human-in-the-loop/images/full-permission-pipeline-09.png)
 
 
 ---

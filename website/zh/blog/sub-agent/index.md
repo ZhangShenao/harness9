@@ -11,7 +11,7 @@ summary: "harness9 的 SubAgent 系统把每一次委派都还原成一个隔离
 
 harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **官网**：[https://zhangshenao.github.io/harness9/zh/](https://zhangshenao.github.io/harness9/zh/)
 - **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
 ⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
@@ -52,7 +52,7 @@ stream, err := sub.RunStream(execCtx, prompt)
 
 `Runner.Run` 里这两行就是 SubAgent 的全部执行内核。没有单独的 SubAgent Loop，没有专门调度器。SubAgent 和 MainAgent 所执行的的是同一个标准 ReAct 循环，区别只在工具集更窄、Session 更干净、Context 派生方式不同。
 
-![主代理与SubAgent共用同一套 AgentEngine 执行内核](./images/shared-engine-kernel-01.png)
+![主代理与SubAgent共用同一套 AgentEngine 执行内核](/blog/sub-agent/images/shared-engine-kernel-01.png)
 
 
 ---
@@ -99,7 +99,7 @@ func (r *Registry) List() []SubAgentDefinition
 
 两条路最终都会走到同一个 `Runner.Run`——委派的"决策"可以有两种发起方式，但"执行"只有一套实现。
 
-![创建与委派：两条独立路径汇入同一个 Runner](./images/creation-vs-delegation-02.png)
+![创建与委派：两条独立路径汇入同一个 Runner](/blog/sub-agent/images/creation-vs-delegation-02.png)
 
 
 ---
@@ -239,7 +239,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 
 这个设计把"工具调用必须同步返回字符串"这个硬约束，和"后台任务本质异步"这个语义需求解耦开了——`task` 永远同步返回，但返回内容要么是最终结果，要么是指向未来结果的指针（`taskID`），指针怎么兑现全交给 `TaskTracker` 处理。这也是为什么 `TaskTool` 要同时持有 `Registry`、`Runner`、`TaskTracker` 三个协作者——`Execute` 本身只是一次编排，不持有状态。
 
-![task 工具作为委派入口：参数 schema 与两种返回协议](./images/task-tool-entrypoint-03.png)
+![task 工具作为委派入口：参数 schema 与两种返回协议](/blog/sub-agent/images/task-tool-entrypoint-03.png)
 
 
 ---
@@ -303,7 +303,7 @@ func parseAgentFile(content string) (SubAgentDefinition, error) {
 
 没引入 YAML 库，因为 frontmatter 字段集合固定又扁平，手写解析比引入 `gopkg.in/yaml.v3` 更符合"最小化抽象层"的原则。`LoadFromDir` 扫描时，目录不存在就静默返回 nil——零配置也能跑；单文件解析失败只记 warning 不中断；文件定义覆盖同名编程式定义（记日志），所以项目可以直接用文件定义盖掉内置的 `general-purpose`。
 
-![文件式SubAgent定义从 Markdown 到注册表的加载路径](./images/file-based-agent-loading-04.png)
+![文件式SubAgent定义从 Markdown 到注册表的加载路径](/blog/sub-agent/images/file-based-agent-loading-04.png)
 
 
 ---
@@ -364,7 +364,7 @@ func (denyTaskHook) BeforeExecute(ctx context.Context, tc schema.ToolCall) (cont
 
 这里有个思路值得记：就算未来某次重构不小心让 `task` 混进了 SubAgent 的工具注册表，这个 Hook 还能在执行前拦下来。禁止递归不靠一处检查兜底，靠两处独立机制叠加。
 
-![ResolveTools 三步收紧算法](./images/resolve-tools-narrowing-05.png)
+![ResolveTools 三步收紧算法](/blog/sub-agent/images/resolve-tools-narrowing-05.png)
 
 
 ---
@@ -440,7 +440,7 @@ return fmt.Sprintf(`<task state="completed"><task_result>%s</task_result></task>
 return fmt.Sprintf(`<task id=%q state="running"/>`, taskID), nil
 ```
 
-![前台阻塞与后台异步的两条委派路径](./images/foreground-background-paths-06.png)
+![前台阻塞与后台异步的两条委派路径](/blog/sub-agent/images/foreground-background-paths-06.png)
 
 
 ---
@@ -478,7 +478,7 @@ Runner.Run
     后台: TaskTracker.Finish → 下次 dispatch 前 DrainCompleted → 注入主 LLM prompt
 ```
 
-![SubAgent 完整委派数据流](./images/subagent-full-dataflow-07.png)
+![SubAgent 完整委派数据流](/blog/sub-agent/images/subagent-full-dataflow-07.png)
 
 
 ---

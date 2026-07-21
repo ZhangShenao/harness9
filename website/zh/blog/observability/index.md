@@ -11,7 +11,7 @@ summary: "harness9 的 Observability 模块用三个已有扩展点 ————
 
 harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **官网**：[https://zhangshenao.github.io/harness9/zh/](https://zhangshenao.github.io/harness9/zh/)
 - **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
 ⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
@@ -73,7 +73,7 @@ harness9.interaction   [session.id="abc123"]
 
 唯一需要小心的地方是：harness9 引擎中间还夹着"压缩历史消息"、"加载会话"这类逻辑，它们可能会不小心替换掉 ctx。为了防止这种情况把父子关系搞断，`OTELEngineObserver` 在传递 ctx 的同时，多留了一份备份，下一层创建 Span 前会先检查备份还在不在，不在就用备份补回来。说白了就是"关键信息多存一份，防止半路弄丢"。
 
-![图：Span 四层与引擎运行阶段的对应关系](./images/span-four-layers-01.png)
+![图：Span 四层与引擎运行阶段的对应关系](/blog/observability/images/span-four-layers-01.png)
 
 ---
 
@@ -119,7 +119,7 @@ func (h *ObservabilityHook) BeforeExecute(ctx context.Context, tc schema.ToolCal
 
 三条路径的共同点是：可观测性要用到的每一个"钩子"，harness9 里早就有一个为了别的目的而存在的接口在那个位置等着。挂上去就行，不用再开一个新口子。
 
-![图：三条接入路径与核心引擎的关系](./images/three-entry-points-02.png)
+![图：三条接入路径与核心引擎的关系](/blog/observability/images/three-entry-points-02.png)
 
 ---
 
@@ -182,10 +182,10 @@ span.SetAttributes(
 
 Langfuse 看到这两个属性名，就知道该按对应模型的价目表算一遍费用，展示成"25,269 prompt → 1,027 completion"这样的费用估算，不用 harness9 自己维护任何定价逻辑。
 
-![图：属性名怎么对应到 Langfuse 的展示区域](./images/langfuse-attr-mapping-03.png)
+![图：属性名怎么对应到 Langfuse 的展示区域](/blog/observability/images/langfuse-attr-mapping-03.png)
 
 最终展示在 Langfuse 上的 Trace 看板长这样：
-![图：Langfuse Trace 看板](./images/langfuse-trace-board-04.png)
+![图：Langfuse Trace 看板](/blog/observability/images/langfuse-trace-board-04.png)
 
 ---
 

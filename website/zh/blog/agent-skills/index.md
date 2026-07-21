@@ -40,7 +40,7 @@ harness9 的 Agent Skill 系统解决一个核心矛盾：**Agent 需要大量�
 
 harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **官网**：[https://zhangshenao.github.io/harness9/zh/](https://zhangshenao.github.io/harness9/zh/)
 - **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
 Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
@@ -65,7 +65,7 @@ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
 
 harness9 的 Agent Skill 系统给出了一个不同的答案：**不要把能力塞进去，而是告诉 LLM 能力在哪里、什么时候去拿。**
 
-![图：System Prompt 膨胀与 Skill 索引的对比](./images/prompt-inflation-vs-skill-index-01.png)
+![图：System Prompt 膨胀与 Skill 索引的对比](/blog/agent-skills/images/prompt-inflation-vs-skill-index-01.png)
 
 
 ---
@@ -127,7 +127,7 @@ func parseFrontmatter(content string) (name, description, trigger, body string) 
 
 没有引入 YAML 解析库。这是有意为之的权衡：frontmatter 的字段集是固定且极小的（三个字段），手写解析完全覆盖需求，同时避免了一个间接依赖。harness9 的设计哲学之一是"极少的直接依赖数"，Skill 格式解析是这一哲学的具体体现。
 
-![图：Skill 文件格式解析流程](./images/skill-file-parsing-02.png)
+![图：Skill 文件格式解析流程](/blog/agent-skills/images/skill-file-parsing-02.png)
 
 
 ---
@@ -254,7 +254,7 @@ Turn N（LLM 判断需要 Skill）
 
 额外的 +1 Turn 是 Progressive Disclosure 唯一付出的代价。harness9 认为这是值得的——换来的是透明的召回控制、更好的注意力效率、以及零外部依赖。
 
-![图：三种 Skill 召回策略对比](./images/skill-retrieval-comparison-03.png)
+![图：三种 Skill 召回策略对比](/blog/agent-skills/images/skill-retrieval-comparison-03.png)
 
 
 ---
@@ -332,7 +332,7 @@ func (t *UseSkillTool) Execute(_ context.Context, args json.RawMessage) (string,
 
 `UseSkillTool` 是工具注册表中的普通工具，通过 Go 的结构类型（Structural Typing）隐式满足 `tools.BaseTool` 接口——注意代码注释里明确写了"无需 import tools 包"，这避免了一个循环导入。
 
-![图：三层加载机制时序](./images/skill-loading-sequence-04.png)
+![图：三层加载机制时序](/blog/agent-skills/images/skill-loading-sequence-04.png)
 
 
 ---
@@ -375,7 +375,7 @@ if strings.Contains(prompt, "Always run go vet first.") {
 
 这条断言不只是测试，它是协议的**不变量声明**：body 永远不能渗透进 System Prompt。
 
-![图：System Prompt 分段结构与 Skill 索引位置](./images/system-prompt-anatomy-05.png)
+![图：System Prompt 分段结构与 Skill 索引位置](/blog/agent-skills/images/system-prompt-anatomy-05.png)
 
 
 ---
@@ -404,7 +404,7 @@ Turn N+1:
 
 Skill 的全文内容出现在 `ToolResult`（工具观察结果）里，而不是 System Prompt 里。这是上下文注入位置的关键差异：ToolResult 是会话历史的一部分，随着压缩轮次可以被摘要或裁剪；System Prompt 是永久开销，不参与压缩。
 
-![图：Skill 调用在 ReAct 循环中的位置](./images/skill-in-react-loop-06.png)
+![图：Skill 调用在 ReAct 循环中的位置](/blog/agent-skills/images/skill-in-react-loop-06.png)
 
 
 ---
@@ -419,7 +419,7 @@ LLM 自主判断，通过 `use_skill` 工具调用触发。这是生产场景的
 
 **路径二：Slash Command（人工快速通道）**
 
-![图：通过Slash Command执行Skill](./images/slash-command-skill.png)
+![图：通过Slash Command执行Skill](/blog/agent-skills/images/slash-command-skill.png)
 
 CLI REPL 模式下，用户可以直接输入 `/skill-name` 绕过 LLM 判断：
 
@@ -448,7 +448,7 @@ func resolvePrompt(input string, idx *skills.Index) (prompt string, ok bool) {
 
 TUI 模式下，Tab 补全会把 Skills 名称和内置命令合并在一个补全列表里，`/` 前缀触发，并用青色（`Color("14")`）高亮区分。这是一个细节：`skillStyle` 和普通命令用不同颜色，视觉上的区分反映了语义上的区分——Skill 是用户定义的领域能力，内置命令是框架控制命令。
 
-![图：两条 Skill 触发路径对比](./images/skill-trigger-paths-07.png)
+![图：两条 Skill 触发路径对比](/blog/agent-skills/images/skill-trigger-paths-07.png)
 
 
 ---

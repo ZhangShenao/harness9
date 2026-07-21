@@ -11,7 +11,7 @@ summary: "harness9 的上下文工程：DefaultPromptBuilder 多段组装、双�
 
 harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **官网**：[https://zhangshenao.github.io/harness9/zh/](https://zhangshenao.github.io/harness9/zh/)
 - **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
 ⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
@@ -55,7 +55,7 @@ harness9 把这个问题拆成四层来解决：
 
 每一层都是独立的，可以单独关掉，也可以叠加。
 
-![Context Engineering 四层架构](./images/context-engineering-overview-01.png)
+![Context Engineering 四层架构](/blog/context-engineering/images/context-engineering-overview-01.png)
 
 
 ---
@@ -96,7 +96,7 @@ func (b *DefaultPromptBuilder) Build() string {
 
 **System Prompt 不持久化到 SQLite**。`loadHistoryWith` 在加载历史时重新注入 system 消息，`saveHistoryWith` 保存的是 `msgs[startLen:]`，system 消息被跳过。这样 prompt 可以随配置更新而变化，历史数据不会锁定 prompt 版本。
 
-![DefaultPromptBuilder 六段组装流程](./images/prompt-builder-assembly-02.png)
+![DefaultPromptBuilder 六段组装流程](/blog/context-engineering/images/prompt-builder-assembly-02.png)
 
 
 ---
@@ -213,7 +213,7 @@ func repairOrphanedToolPairs(msgs []schema.Message) []schema.Message {
 
 `SummarizationCompactor`、`TokenBudgetCompactor`、`SlidingWindowCompactor` 三者都在压缩后调用这个修复函数。占位消息的内容是 `[工具结果不可用：上下文已被压缩]`，LLM 看到这条信息会知道历史被压缩过，而不是工具执行失败。
 
-![双重压缩策略决策树](./images/compaction-decision-tree-03.png)
+![双重压缩策略决策树](/blog/context-engineering/images/compaction-decision-tree-03.png)
 
 
 ---
@@ -260,7 +260,7 @@ func (h *OffloadHook) AfterExecute(_ context.Context, tc schema.ToolCall, result
 
 DefaultPromptBuilder 里有专门的 offload 检索指引段落，告诉 LLM 如何用 `read_file` 配合 `offset`/`limit` 分页读取 offload 的文件。这是 LLM 和文件系统之间的协议层——LLM 知道大输出在哪里，知道怎么按需取回。
 
-![OffloadHook 数据流](./images/offload-hook-dataflow-04.png)
+![OffloadHook 数据流](/blog/context-engineering/images/offload-hook-dataflow-04.png)
 
 
 ---
@@ -313,7 +313,7 @@ if b.ltmReader != nil {
 
 为什么是闭包而不是在构造时读取一次？因为 `memory_write` 工具在 agent 运行过程中会写入新记忆、重建 MEMORY.md，下一轮循环的 Build() 需要读到最新版本。闭包让"写入即下一轮可见"成为自然结果，不需要额外的通知机制。
 
-![LTM 与 Context 接缝：MEMORY.md 物化视图生命周期](./images/ltm-context-integration-05.png)
+![LTM 与 Context 接缝：MEMORY.md 物化视图生命周期](/blog/context-engineering/images/ltm-context-integration-05.png)
 
 
 ---
@@ -341,7 +341,7 @@ func appendUserNudge(history []schema.Message, text string) []schema.Message {
 
 同样的模式也用在 `WithStallNudge`——停滞检测：连续多轮没有调用 `write_file`/`edit_file`（进展工具）时，注入一次提示打断空转，然后重置计数。
 
-![WithMemoryNudge 防御性注入机制](./images/memory-nudge-mechanism-06.png)
+![WithMemoryNudge 防御性注入机制](/blog/context-engineering/images/memory-nudge-mechanism-06.png)
 
 
 ---
@@ -374,7 +374,7 @@ e.saveHistoryWith(ctx, sess, contextHistory, startLen)
 
 这个分离保证了一件事：压缩是无损的。下一轮压缩时，`applyCompactionWith` 拿到的是完整历史，可以重新决定保留哪些消息、摘要哪些消息，而不是对已经压缩过的结果再次压缩（那样会叠加信息损失）。代价是内存里始终持有完整历史，但对于绝大多数 Agent 任务来说，这个代价是可以接受的。
 
-![非破坏性压缩：contextHistory 与 compactedHistory 分离](./images/nondestructive-compaction-07.png)
+![非破坏性压缩：contextHistory 与 compactedHistory 分离](/blog/context-engineering/images/nondestructive-compaction-07.png)
 
 
 ---

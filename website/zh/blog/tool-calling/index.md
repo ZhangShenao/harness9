@@ -11,7 +11,7 @@ summary: "深入 harness9 工具调用系统的每一层设计：BaseTool 接口
 
 harness9 是一款轻量、完备、生产可用的 Go 语言 Agent Harness 框架。
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **官网**：[https://zhangshenao.github.io/harness9/zh/](https://zhangshenao.github.io/harness9/zh/)
 - **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
 Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
@@ -52,7 +52,7 @@ type ToolDefinition struct {
 
 `InputSchema` 使用 `any` 同理。内置工具以 `map[string]interface{}` 形式声明 JSON Schema，各 Provider 适配器再把它转换为自家 SDK 要求的类型（OpenAI 的 `shared.FunctionParameters`、Anthropic 的 `map[string]any`），schema 包本身不感知厂商差异。
 
-![图：核心数据类型协议层](./images/schema-types-01.jpg)
+![图：核心数据类型协议层](/blog/tool-calling/images/schema-types-01.jpg)
 
 
 ---
@@ -105,7 +105,7 @@ func (r *registryImpl) Execute(ctx context.Context, call schema.ToolCall) schema
 
 错误不终止循环，错误是下一轮推理的原材料——这是 harness9 自愈（Self-Healing）能力的物质基础。
 
-![图：Registry 执行路径与自愈回路](./images/registry-selfheal-02.jpg)
+![图：Registry 执行路径与自愈回路](/blog/tool-calling/images/registry-selfheal-02.jpg)
 
 
 ---
@@ -159,7 +159,7 @@ func (e *AgentEngine) executeTools(ctx context.Context, turn int,
 
 引擎的默认配置是 `maxTurns=50, toolTimeout=60s`，为生产场景提供合理的上限兜底。
 
-![图：并发工具执行时序](./images/concurrent-tools-timing-03.jpg)
+![图：并发工具执行时序](/blog/tool-calling/images/concurrent-tools-timing-03.jpg)
 
 
 ---
@@ -208,7 +208,7 @@ func safePath(workDir, inputPath string) (string, error) {
 
 硬编码的敏感路径列表包含 `~/.ssh`、`~/.aws`、`~/.kube`、`~/.gnupg`、`~/.netrc`、`~/.config/gcloud`——这些是凭证泄漏风险最高的目录，无论 `workDir` 设置成什么都会被拒绝。
 
-![图：safePath 双层防线](./images/safepath-defense-04.jpg)
+![图：safePath 双层防线](/blog/tool-calling/images/safepath-defense-04.jpg)
 
 
 ---
@@ -262,7 +262,7 @@ defer unlock()
 
 与全局 `sync.RWMutex` 相比，路径级锁的优势在吞吐量上：LLM 同时调用 `read_file("a.go")` 和 `write_file("b.go")` 时，两个操作可以完全并行。
 
-![图：路径级锁与全局锁对比](./images/path-locker-comparison-05.jpg)
+![图：路径级锁与全局锁对比](/blog/tool-calling/images/path-locker-comparison-05.jpg)
 
 
 
@@ -311,7 +311,7 @@ L4 的逐行去缩进是最后的容错防线，专门应对 LLM 对缩进的不
 
 这套机制的工程意义在于：LLM 不需要完美地复现代码格式，框架会帮它找到最接近的匹配。同时，唯一性校验确保这种"宽容"不会变成"危险"。
 
-![图：edit_file 四级匹配流水线](./images/edit-file-pipeline-06.jpg)
+![图：edit_file 四级匹配流水线](/blog/tool-calling/images/edit-file-pipeline-06.jpg)
 
 
 
@@ -352,7 +352,7 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 
 命令失败时返回 `(string, nil)` 而非 `(string, error)`——这是 YOLO 哲学的实现细节。返回 `nil` 意味着 Registry 会生成 `IsError=false` 的 `ToolResult`，错误内容（包含 exit code 和 stderr）作为普通文本进入上下文，LLM 阅读后自行决策。不做半吊子沙箱：bash 工具本质上提供完整 shell 访问，加 `cd /` 就能逃逸 workDir，做命令白名单只是制造安全假象。如果需要路径安全，用 `read_file` 和 `write_file`。
 
-![图：bash 工具的双重超时保护](./images/bash-timeout-guard-07.jpg)
+![图：bash 工具的双重超时保护](/blog/tool-calling/images/bash-timeout-guard-07.jpg)
 
 
 
@@ -382,7 +382,7 @@ ContextHistory（RoleUser + ToolCallID 关联）
 下一轮 LLM 推理
 ```
 
-![图：工具调用系统整体架构鸟瞰](./images/toolcalling-overview-08.jpg)
+![图：工具调用系统整体架构鸟瞰](/blog/tool-calling/images/toolcalling-overview-08.jpg)
 
 
 ---

@@ -11,7 +11,7 @@ summary: "harness9 的 Sandbox 模块用一个 Environment 接口把 LocalEnviro
 
 harness9 是一款 Local-First、轻量级、功能完备、生产可用的通用 Go Agent 框架。
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **官网**：[https://zhangshenao.github.io/harness9/zh/](https://zhangshenao.github.io/harness9/zh/)
 - **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
 ⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
@@ -50,7 +50,7 @@ harness9 的 `bash` 工具走的是"YOLO 哲学"：不限制能执行什么命�
 
 虽然项目里已经有 `hooks.DangerHook` 拦截 19 条已知的高危命令模式，还有 `PermissionHook` 做白名单审批，但这两个说到底都是"提前识别出已知的坏东西再拦下来"。真正拦不住的是**那些没见过的、拐弯抹角组合出来的、绕开关键词匹配的破坏路径**——想彻底兜底，靠的不是列举更多危险命令，而是从根本上现在高危操作的影响范围。这正是容器隔离要干的事：不管 LLM 到底生成了什么命令，它的执行结果都被框在一个独立的空间里，宿主机的其他部分碰都碰不到。
 
-![图：LocalEnvironment 与 Sandbox 隔离的风险对比](./images/local-vs-sandbox-risk-01.png)
+![图：LocalEnvironment 与 Sandbox 隔离的风险对比](/blog/sandbox/images/local-vs-sandbox-risk-01.png)
 
 
 ---
@@ -74,7 +74,7 @@ func realCmdRunner(ctx context.Context, args ...string) (string, error) {
 
 这个选择跟项目一贯"尽量少引入直接依赖"的做法是一致的——调命令行换来的好处是：编译期不用多依赖任何库，行为跟你自己手敲 `docker run` 完全一样，出问题的时候把参数复制到终端就能复现。`cmdRunner` 被定义成一个函数类型，可以在测试时换成假的实现，不用真的拉起 Docker 环境就能验证状态机转换对不对。
 
-![图：三种隔离技术的粒度与部署成本对比](./images/isolation-tech-comparison-02.png)
+![图：三种隔离技术的粒度与部署成本对比](/blog/sandbox/images/isolation-tech-comparison-02.png)
 
 
 ### Environment 接口封装不同环境
@@ -102,7 +102,7 @@ return t.runLocal(timeoutCtx, input.Command, timeout)
 
 也就是说，`SANDBOX_ENABLED=false` 的时候，代码走的分支跟没有 Sandbox 之前几乎一样，只多了一次判断，没别的差异。这种向后兼容不是靠外面裹一层开关判断实现的，而是接口本身"给个空值就退回原来的行为"这个语义天然就成立。
 
-![图：Environment 接口统一 Local 与 Docker 两种实现](./images/environment-interface-03.png)
+![图：Environment 接口统一 Local 与 Docker 两种实现](/blog/sandbox/images/environment-interface-03.png)
 
 
 ---
@@ -148,7 +148,7 @@ c.setState(StateTerminated, nil)
 
 如果容器因为某些原因已经卡死了，`docker stop` 有可能失败或者超时，但资源该回收还是得回收——所以这两条命令的返回值都被直接丢掉了（`_, _ =`），因为不管前面成不成功，最终都会走到 `StateTerminated` 这个状态。这是一种"先把资源收拾干净，不追求每一步都精确"的做法：宁可默默吞掉一次 stop 失败，也不能让容器一直占着资源不放。`Stop` 开头还有个小小的保险：已经是 `Terminated` 或 `Failed` 状态的容器，直接返回 `nil`，避免并发调用时重复清理。
 
-![图：Container 五状态转换图](./images/container-state-machine-04.png)
+![图：Container 五状态转换图](/blog/sandbox/images/container-state-machine-04.png)
 
 
 ---
@@ -248,7 +248,7 @@ m.mu.RUnlock()
 
 `ListAll` 里还留了一句很明确的提醒：拿锁的顺序必须是先 `Manager.mu`（读锁）、再 `Container.mu`（读锁），绝对不能反过来，不然可能会死锁。这种"锁的顺序说明"在并发代码里花不了几个字，但关键时刻真的能救命。
 
-![图：孤儿容器回收流程](./images/orphan-reaping-flow-05.png)
+![图：孤儿容器回收流程](/blog/sandbox/images/orphan-reaping-flow-05.png)
 
 
 ---
@@ -308,7 +308,7 @@ tools.NewEditFileTool(workDir, tools.EditFileWithEnvironment(sandboxEnv)),
 
 这四个工具共用同一套沙箱边界校验（`safePath()`），Sandbox 只是替换了它们各自背后真正干活的执行/读写方式，路径安全这块的逻辑完全没受影响。
 
-![图：bash 与文件工具的双路由](./images/dual-routing-06.png)
+![图：bash 与文件工具的双路由](/blog/sandbox/images/dual-routing-06.png)
 
 
 ### MainAgent 与 SubAgent 的 Sandbox 是隔离的
@@ -391,7 +391,7 @@ c.run(startCtx,
 
 **`--tmpfs /tmp:size=256m,nosuid,noexec,nodev`** 是专门给 `/tmp` 目录加的一道保险——这个目录天生就是攻击者爱用的跳板。`nosuid` 让这里面就算有 setuid 标记的文件也不生效，`noexec` 直接禁止在这里执行任何二进制文件（很多攻击链的套路就是先把恶意程序写到 `/tmp`，再从那儿执行），`nodev` 禁止在这里创建设备文件。三个选项加在一起，`/tmp` 就变成一个只能存东西、没法拿来搞事情的临时空间。
 
-![图：安全加固的四层防御](./images/security-hardening-layers-07.png)
+![图：安全加固的四层防御](/blog/sandbox/images/security-hardening-layers-07.png)
 
 
 ---
@@ -424,7 +424,7 @@ if sandboxErr != nil {
 
 TUI 在状态栏下方会渲染一条 SandboxBar，只有存在活跃的 Sandbox 时才显示出来：
 
-![图：TUI 侧展示 Sandbox 状态](./images/tui-sandbox-08.png)
+![图：TUI 侧展示 Sandbox 状态](/blog/sandbox/images/tui-sandbox-08.png)
 
 ```go
 func (m tuiModel) renderSandboxBar() string {

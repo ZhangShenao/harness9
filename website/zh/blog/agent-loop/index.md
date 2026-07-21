@@ -11,7 +11,7 @@ summary: "harness9 的 AgentLoop 用不到 500 行 Go 代码实现了生产可�
 
 harness9 是一款轻量、完备、生产可用的 Go 语言 Agent Harness 框架。
 
-- **官网**：[https://zhangshenao.github.io/harness9/](https://zhangshenao.github.io/harness9/)
+- **官网**：[https://zhangshenao.github.io/harness9/zh/](https://zhangshenao.github.io/harness9/zh/)
 - **GitHub**：[https://github.com/ZhangShenao/harness9](https://github.com/ZhangShenao/harness9)
 
 ⭐ Star 是对开源工作最直接的支持，欢迎提 Issue 和 PR。
@@ -42,7 +42,7 @@ Go 的 `for` 循环加上 `goroutine`，已经足够。
 
 ## ReAct 主循环的结构
 
-![图：ReAct 主循环完整控制流](./images/react-loop-control-flow-01.png)
+![图：ReAct 主循环完整控制流](/blog/agent-loop/images/react-loop-control-flow-01.png)
 
 
 
@@ -123,7 +123,7 @@ func (e *AgentEngine) loadHistoryWith(ctx context.Context, userPrompt string, se
 
 无限循环是 Agent 系统最常见的故障模式。harness9 用三层机制防止它：
 
-![图：三重终止保障机制](./images/triple-termination-guard-02.png)
+![图：三重终止保障机制](/blog/agent-loop/images/triple-termination-guard-02.png)
 
 
 
@@ -176,7 +176,7 @@ err = eng.Run(ctx, "cancelled task")
 
 当模型在一轮内发起多个工具调用时，串行执行是一种性能浪费。harness9 用 goroutine 并发执行所有工具。
 
-![图：并发工具执行架构](./images/concurrent-tool-execution-03.png)
+![图：并发工具执行架构](/blog/agent-loop/images/concurrent-tool-execution-03.png)
 
 
 
@@ -281,7 +281,7 @@ lastMsg := p.calls[1].messages[len(p.calls[1].messages)-1]
 
 harness9 的一个核心设计决策是：**阻塞模式（`Run`）和流式模式（`RunStream`）共享同一个 `runLoop` 实现**。两者的区别完全封装在 `emitter` 结构体中。
 
-![图：emitter 解耦双模式输出架构](./images/emitter-dual-mode-04.png)
+![图：emitter 解耦双模式输出架构](/blog/agent-loop/images/emitter-dual-mode-04.png)
 
 
 
@@ -339,7 +339,7 @@ em := emitter{
 
 `RunStream` 的数据流经过两层 channel 转换：
 
-![图：两层 channel 流式数据流](./images/stream-two-layer-channel-05.png)
+![图：两层 channel 流式数据流](/blog/agent-loop/images/stream-two-layer-channel-05.png)
 
 
 
