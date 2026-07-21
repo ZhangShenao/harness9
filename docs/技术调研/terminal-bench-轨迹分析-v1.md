@@ -21,8 +21,8 @@
 | 结论 | 任务 | 说明 |
 |---|---|---|
 | **Resolved（9）** | git-leak-recovery / sqlite-db-truncate / nginx-request-logging / openssl-selfsigned-cert / build-pmars / git-multibranch（名义 unresolved，实为 resolved，见下） / configure-git-webserver / pypi-server / build-pov-ray | 后三者首轮因并发噪声超时，重跑干净通过；git-multibranch 首轮 pytest 1/1 passed 但 Harbor 自身 verifier 采集阶段误判超时 |
-| **P0：真实内核缺陷（1 类，命中 1/9）** | kv-store-grpc | `bash` 工具本地执行路径对"`A && B &`"复合后台任务模式存在真实的进程管理缺陷，导致工具调用永久挂起直至 880s 硬超时；已用最小 Go 程序复现 |
-| **P1：基础设施韧性缺陷（1 类，命中 3/9）** | compile-compcert / merge-diff-arc-agi-task / sqlite-with-gcov | Turn 1 首次 LLM 调用即遭遇 TLS x509 证书校验失败（OpenRouter 出站连接），重试 3 次后耗尽退避、进程非零退出；不区分"可重试的瞬时网络错误"与"同类错误"，重试策略本身合理但强度不足以应对这类间歇性故障 |
+| **P0：真实内核缺陷（1 类，命中 1/9）【已修复 `5e80576`】** | kv-store-grpc | `bash` 工具本地执行路径对"`A && B &`"复合后台任务模式存在真实的进程管理缺陷，导致工具调用永久挂起直至 880s 硬超时；已用最小 Go 程序复现。改用临时文件承接输出后返回时间从 20s 降到 ~5ms，且不误杀后台进程。Docker 路径经真实容器验证**未**复现同类问题（曾推测同构，实测驳回，见 §4 item 3） |
+| **P1：基础设施韧性缺陷（1 类，命中 3/9）【已修复 `e27453f`】** | compile-compcert / merge-diff-arc-agi-task / sqlite-with-gcov | Turn 1 首次 LLM 调用即遭遇 TLS x509 证书校验失败（OpenRouter 出站连接），重试 3 次后耗尽退避、进程非零退出；不区分"可重试的瞬时网络错误"与"同类错误"，重试策略本身合理但强度不足以应对这类间歇性故障。新增网络错误分类 + 独立更宽松的重试预算（6 次、5s 起、上限 60s）；**注意**：这只是给了重试更多机会，没有解决这 3 个任务背后的证书信任问题本身，它们仍需要单独排查（见 §6 建议顺序第 2 步） |
 | **不算 harness9 问题（2 类，命中 2/9）** | fix-git（非确定性判断错误）/ custom-memory-heap-crash + fix-ocaml-gc（任务复杂度超预算，2/9） | fix-git 是 LLM 采样层面的推理判断错误，非工具/引擎缺陷；后两者是真实、有条理的深度调试/编译在 880s 预算内没跑完，非空转 |
 | **纯模型能力差距（2/9）** | sanitize-git-repo / build-cython-ext | 隐藏测试真的跑了、真的失败，agent 有机会自我纠正但没有——不是 harness9 工具/引擎问题 |
 
@@ -139,7 +139,7 @@ out, err := c.CombinedOutput()
 
 ### P1 — LLM 生成重试的错误分类（中杠杆）
 
-4. **`internal/engine/agent_loop.go` `generateWithRetry`**：区分错误类别后采用不同重试策略。TLS/证书/DNS 解析失败这类连接建立阶段的错误，本质上和限流/5xx 不同——它可能需要更长的等待窗口（网络路径抖动、CDN 边缘节点切换），当前"3 次、1s→2s、总计 &lt;10s 退避后即放弃整个 turn 并使 harness9 进程非零退出"的窗口太窄。建议：识别 `x509`/`tls:`/`no such host`/`connection refused` 一类传输层错误，对这类错误使用更多次数（如 5–8 次）、更长退避（如 5s 起、指数增长到 60s）的独立重试预算，与其余错误（如 4xx/5xx HTTP 状态码）区分对待，因为 880s 的整体任务预算相对于多等 1-2 分钟网络重试是完全负担得起的。
+4. **【已修复，commit `e27453f`（+ 文档修正 `7612b73`）】`internal/engine/agent_loop.go` `generateWithRetry`**：区分错误类别后采用不同重试策略。TLS/证书/DNS 解析失败这类连接建立阶段的错误，本质上和限流/5xx 不同——它可能需要更长的等待窗口（网络路径抖动、CDN 边缘节点切换），原先"3 次、1s→2s、总计仅 3s 退避后即放弃整个 turn 并使 harness9 进程非零退出"的窗口太窄。**实际实现**：新增 `isTransientNetworkError`（识别 `x509:`/`tls:`/`no such host`/`connection refused`/`connection reset`/`i/o timeout`/`dial tcp` 一类传输层错误字符串）+ `WithNetworkRetry` 独立重试预算（默认 6 次、5s 起指数退避、上限 60s），与其余错误（4xx/5xx HTTP 状态码等）完全独立，不影响非网络错误仍使用默认预算（3 次、总计 3s）——已用表驱动测试覆盖分类正负样本，用 `flakyProvider` 验证两套预算互不借用。
 5. **Terminal-Bench 适配器超时对齐（`benchmarks/terminal_bench/harness9_agent.py`）**：`_RUN_TIMEOUT_SEC=880` 是所有任务统一硬编码，但部分任务自身在 `task.toml` 声明了远高于 900s 的 `agent.timeout_sec`（如 fix-ocaml-gc 的 3600s）。建议适配器读取任务自身声明的超时并取 `min(task 声明值, 一个更宽松的硬上限如 3300s) - 缓冲`，而不是无差别用 880s 兜底——这不是 harness9 内核问题，但影响 pilot 的评测公平性，是评测基础设施层面值得改的一项。
 
 ### P2 — 低风险收敛项
@@ -170,8 +170,8 @@ out, err := c.CombinedOutput()
 **建议顺序**：
 1. 【已完成】落地 P0（`internal/tools/bash.go` `runLocal` 改用临时文件承接输出，commit `5e80576`；
    Docker 路径经真实容器验证未复现，未做改动，见 §4 item 3）和 P1（`generateWithRetry` 按错误
-   类别区分重试预算）。
-2. 排查并修复 compile-compcert / merge-diff-arc-agi-task / sqlite-with-gcov 三个任务命中的 TLS 证书信任问题（这 3 个任务目前从未被真正测试过，网络环境问题不解决，扩大规模也测不出它们的真实能力）。
+   类别区分重试预算，commit `e27453f`）。
+2. 【待办】排查并修复 compile-compcert / merge-diff-arc-agi-task / sqlite-with-gcov 三个任务命中的 TLS 证书信任问题（这 3 个任务目前从未被真正测试过，P1 修复只是给了它们更宽松的重试窗口，没有解决证书信任本身的问题——网络环境问题不解决，扩大规模也测不出它们的真实能力）。
 3. 修复后再评估是否扩大到全量 89 题——彼时的目标应该是"验证 P0/P1 修复是否解决了同类问题、有没有暴露新的根因类型"，而不是单纯为了对标官方 leaderboard 刷分。
 
 **不需要新增工具能力**：本轮暴露的都是既有 `bash` 工具的进程管理健壮性问题、既有重试逻辑的错误分类问题，不存在"agent 想用但没有对应工具"的情况——18 个任务里现有的 bash/read_file/write_file/edit_file 工具集覆盖了包括起后台服务、编译、底层符号调试在内的全部实际操作需求。
