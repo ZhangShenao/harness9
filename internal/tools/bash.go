@@ -159,6 +159,10 @@ func (t *BashTool) runInSandbox(ctx context.Context, cmd string, timeout time.Du
 // Go 对 *os.File 类型的 Stdout/Stderr 走原始 fd 直传，不经 pipe/拷贝 goroutine，
 // Wait() 只等待直接子进程（bash -c 本身）退出，不受后台化进程影响，也不会误杀它
 // （已实测验证：返回时间从挂起 20s 降到 ~5ms，且后台进程验证仍在运行）。
+//
+// 注意：本调用返回后临时文件即被删除，任何在此之后才写入继承 fd 的内容都无法再被
+// 读取——因此被后台化的命令应该自行重定向输出（如 nohup cmd > file 2>&1 &），
+// 不要依赖继承自 bash -c 的 stdout/stderr。
 func (t *BashTool) runLocal(ctx context.Context, cmd string, timeout time.Duration) (string, error) {
 	tmp, err := os.CreateTemp("", "harness9-bash-*.log")
 	if err != nil {

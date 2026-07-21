@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -145,7 +146,10 @@ func TestBashTool_Execute_BackgroundedProcessDoesNotHang(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewBashTool(dir, WithBashTimeout(5*time.Second))
 
-	cmd := fmt.Sprintf(`cd %s && nohup sleep 20 > bg.log 2>&1 & echo "started"`, dir)
+	// 用 echo $! 拿到后台进程的精确 PID，之后按 PID 而非命令行子串核对存活状态——
+	// 避免 pgrep -f 的子串匹配在共享 CI 机器上误命中不相关进程（历史上出现过的
+	// flakiness 来源）。
+	cmd := fmt.Sprintf(`cd %s && nohup sleep 20 > bg.log 2>&1 & echo "PID:$!"`, dir)
 	args, err := json.Marshal(bashArgs{Command: cmd})
 	if err != nil {
 		t.Fatal(err)
@@ -161,20 +165,25 @@ func TestBashTool_Execute_BackgroundedProcessDoesNotHang(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("应在后台进程退出前就返回（不应等待 sleep 20），实际耗时 %v", elapsed)
 	}
-	if !strings.Contains(out, "started") {
-		t.Errorf("应捕获到前台部分的输出，got %q", out)
+	pidLine := strings.TrimSpace(out)
+	if !strings.HasPrefix(pidLine, "PID:") {
+		t.Fatalf("应捕获到前台部分的输出（含后台进程 PID），got %q", out)
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(pidLine, "PID:"))
+	if err != nil {
+		t.Fatalf("解析后台进程 PID 失败: %v, 原始输出: %q", err, out)
 	}
 
 	t.Cleanup(func() {
-		_ = exec.Command("pkill", "-f", "sleep 20").Run()
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	})
 
 	// 确认后台进程没有被误杀——不能用"杀进程组"解决挂起，否则会杀掉任务明确要求
-	// "保持运行"的后台服务（如启动一个长驻服务器）。
+	// "保持运行"的后台服务（如启动一个长驻服务器）。signal 0 只检查进程是否存在，
+	// 不会真的发信号。
 	time.Sleep(200 * time.Millisecond)
-	checkOut, _ := exec.Command("pgrep", "-f", "sleep 20").CombinedOutput()
-	if strings.TrimSpace(string(checkOut)) == "" {
-		t.Error("后台进程应仍在运行，不应被本次修复误杀")
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Errorf("后台进程（PID %d）应仍在运行，不应被本次修复误杀: %v", pid, err)
 	}
 }
 
