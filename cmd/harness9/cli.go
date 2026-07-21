@@ -21,6 +21,17 @@ func RunCLI(ctx context.Context, eng *engine.AgentEngine, idx *skills.Index) {
 	runCLI(ctx, eng, os.Stdin, idx)
 }
 
+// RunOnce 从指定文件读取完整 prompt，非交互执行一次后返回，用于评测/CI 场景（--prompt-file）。
+// 与 RunCLI 的逐行 REPL 不同，文件全部内容作为单次 userPrompt 传给 eng.Run，
+// 避免多行任务指令被误拆成多个独立 Turn。
+func RunOnce(ctx context.Context, eng *engine.AgentEngine, promptFilePath string) error {
+	data, err := os.ReadFile(promptFilePath)
+	if err != nil {
+		return fmt.Errorf("读取 prompt 文件失败: %w", err)
+	}
+	return eng.Run(ctx, string(data))
+}
+
 // runCLI 是 RunCLI 的可测试内核，允许注入任意 io.Reader 作为输入源。
 func runCLI(ctx context.Context, eng *engine.AgentEngine, in io.Reader, idx *skills.Index) {
 	fmt.Println("harness9 │ 输入 \"exit\" 或按 Ctrl-C 退出")

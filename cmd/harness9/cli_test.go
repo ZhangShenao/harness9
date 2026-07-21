@@ -115,6 +115,42 @@ func TestResolvePrompt_UnknownSkill(t *testing.T) {
 	}
 }
 
+// TestRunOnce_Success 验证 --prompt-file 场景下能读取文件内容并执行一次（不按行拆分）。
+func TestRunOnce_Success(t *testing.T) {
+	eng := newTestEngine(t)
+	path := filepath.Join(t.TempDir(), "prompt.txt")
+	content := "第一行任务描述\n第二行补充说明\n第三行验收标准"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunOnce(context.Background(), eng, path); err != nil {
+		t.Errorf("RunOnce 应该成功，got error: %v", err)
+	}
+}
+
+// TestRunOnce_FileNotFound 验证 prompt 文件不存在时返回可读的错误，而不是 panic。
+func TestRunOnce_FileNotFound(t *testing.T) {
+	eng := newTestEngine(t)
+	err := RunOnce(context.Background(), eng, filepath.Join(t.TempDir(), "not-exist.txt"))
+	if err == nil {
+		t.Fatal("期望文件不存在时返回错误，got nil")
+	}
+}
+
+// TestRunOnce_ContextCancelled 验证 ctx 已取消时 RunOnce 返回错误而不是挂起。
+func TestRunOnce_ContextCancelled(t *testing.T) {
+	eng := newTestEngine(t)
+	path := filepath.Join(t.TempDir(), "prompt.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := RunOnce(ctx, eng, path); err == nil {
+		t.Error("期望 ctx 已取消时返回错误，got nil")
+	}
+}
+
 // makeTestIndex 在临时目录创建子目录结构的 skill 并返回 Index。
 func makeTestIndex(t *testing.T, name, body string) *skills.Index {
 	t.Helper()

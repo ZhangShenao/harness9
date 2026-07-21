@@ -69,6 +69,7 @@ func main() {
 	}
 
 	versionMode := flag.Bool("version", false, "打印版本号并退出")
+	promptFile := flag.String("prompt-file", "", "从文件读取完整 prompt，非交互执行一次后退出（用于评测/CI 场景）")
 	flag.Usage = func() {
 		fmt.Print(`harness9 — 轻量级 AI Agent Harness 框架
 
@@ -77,8 +78,9 @@ func main() {
   harness9 <command>
 
 Flags:
-  --version   打印版本号并退出
-  --help      打印此帮助信息并退出
+  --version             打印版本号并退出
+  --help                打印此帮助信息并退出
+  --prompt-file <path>  从文件读取完整 prompt，非交互执行一次后退出（用于评测/CI 场景）
 
 命令:
   upgrade     升级 harness9 到最新版本
@@ -407,12 +409,19 @@ Flags:
 	}
 	eng := engine.NewAgentEngine(llm, hookReg, workDir, engOpts...)
 
-	if term.IsTerminal(os.Stdin.Fd()) {
+	switch {
+	case *promptFile != "":
+		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("harness9 单次执行模式 │ workDir=%s promptFile=%s", workDir, *promptFile)))
+		if err := RunOnce(ctx, eng, *promptFile); err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+	case term.IsTerminal(os.Stdin.Fd()):
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("harness9 TUI 启动 │ workDir=%s", workDir)))
 		if err := RunTUI(ctx, eng, mgr, sess, skillsIndex, todoStore, subAgentTracker, subAgentReg, subAgentRunner, workDir, modelName, sandboxNotifyCh, mcpNotifyCh); err != nil {
 			log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("TUI 退出: %v", err)))
 		}
-	} else {
+	default:
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("harness9 CLI 启动 │ workDir=%s", workDir)))
 		RunCLI(ctx, eng, skillsIndex)
 	}
