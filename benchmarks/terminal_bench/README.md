@@ -17,7 +17,7 @@ docker --version     # Harbor 任务环境依赖 Docker
 ## 构建二进制
 
 ```bash
-cd /Users/zsa/Desktop/harness/harness9
+cd <repo-root>  # harness9 仓库根目录
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
   -o benchmarks/terminal_bench/bin/harness9 \
   ./cmd/harness9
@@ -30,7 +30,7 @@ export OPENAI_API_KEY=...
 # 可选：export OPENAI_BASE_URL=... （OpenRouter 等兼容端点）
 # 可选：export LLM_MODEL=...
 
-cd /Users/zsa/Desktop/harness/harness9
+cd <repo-root>  # harness9 仓库根目录
 PYTHONPATH=benchmarks harbor run \
   -d terminal-bench@2.0 \
   -a terminal_bench.harness9_agent:Harness9Agent \
@@ -59,7 +59,8 @@ benchmarks/terminal_bench/runs/<job_name>/               # job_name = 时间戳�
     ├── result.json                                      # trial 级详细结果（见下方字段说明，含各阶段时间戳）
     ├── trial.log                                        # 该 trial 执行的宿主机命令日志（install/run 两条 exec_as_root/exec_as_agent 命令 + "Command outputs captured" 确认，不含 harness9 内部 stdout/ReAct 轨迹）
     ├── agent/
-    │   └── setup/                                       # 空目录（本次 pilot 未产生 agent setup 产物）
+    │   ├── setup/                                       # 空目录（本次 pilot 未产生 agent setup 产物）
+    │   └── harness9.log                                 # harness9 完整 turn-by-turn 执行轨迹（见下方说明）
     ├── artifacts/
     │   ├── manifest.json                                # 声明式产物清单（本次为 /logs/artifacts → artifacts/logs/artifacts，status: "empty"）
     │   └── logs/
@@ -70,11 +71,13 @@ benchmarks/terminal_bench/runs/<job_name>/               # job_name = 时间戳�
         └── reward.txt                                    # 单行数字，最终 reward（本次为 "1"）
 ```
 
-**关键结论：harness9 自身的 ReAct 轨迹（LLM 调用、工具调用明细）不会被 Harbor 落盘。**
-`trial.log` 只记录 Harbor 适配器发起的宿主机侧命令（`chmod +x` / `harness9 --prompt-file ...`）
-及"Command outputs captured"确认，看不到 harness9 内部的 turn-by-turn 过程。Task 6 做轨迹分析时
-需要额外方案（如让 harness9_agent.py 把 harness9 的 stdout/stderr 重定向落盘到 workDir 下再通过
-`artifacts` 声明收集，或使用 Harbor 的 `resume_trajectory`/`load_trajectory` 机制）。
+**已修复：harness9 自身的 ReAct 轨迹现在会被采集到 `agent/harness9.log`。**
+Harbor 默认不会持久化被适配的二进制的内部 stdout/stderr（`trial.log` 只记录适配器发起的宿主机侧
+shell 命令），最初的 pilot 单任务验证发现了这个缺口。`harness9_agent.py`（commit `7a95e98`）
+已修复：`run()` 把 harness9 的 stdout+stderr 重定向到容器内的临时文件，执行结束后（无论成功还是
+失败，`try/finally`）下载到 `self.logs_dir`，落在每个 trial 的 `agent/harness9.log`，包含完整的
+`[engine] Turn N ...` 逐轮工具调用、LLM 输出与耗时——这是做轨迹分析（`docs/技术调研/
+terminal-bench-轨迹分析-v1.md`）的核心数据来源。
 
 ### 关键结果文件字段说明（实测）
 

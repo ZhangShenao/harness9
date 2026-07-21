@@ -51,3 +51,7 @@ swebench-results/
 # Terminal-Bench (Harbor) pilot：预编译二进制与评测结果均为生成物，不纳入版本控制
 benchmarks/terminal_bench/bin/
 benchmarks/terminal_bench/runs/
+
+# Python 字节码缓存（本仓库首次引入 Python 源码，benchmarks/ 下的 Harbor 适配器）
+__pycache__/
+*.pyc
