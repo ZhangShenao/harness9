@@ -1,12 +1,13 @@
-// 此脚本把根 docs/核心功能/ 的 markdown 转换为 VitePress 页面与侧边栏。
-// 根 docs 为唯一信息源；website/docs 与 sidebar.generated.js 均为生成产物（已 gitignore）。
+// 此脚本把根 docs/ 的中英文 markdown 转换为 VitePress 页面与侧边栏（双 locale）。
+// 根 docs/核心功能/（中文）与 docs/core-features-en/（英文）均为唯一信息源；
+// website/docs/、website/zh/docs/ 与 sidebar.generated.js 均为生成产物（已 gitignore）。
 //
-// 转换规则：
+// 转换规则（两个 locale 共用）：
 //   - slug：文件名 _ -> -，去 .md（quick_start -> quick-start）
 //   - title：正文首个 # 一级标题（缺失则回退为 slug 并 warning）
 //   - description：首个非空正文段落，剥离常见 markdown 标记，截断到 ~120 字
 //   - 正文中 .md 链接目标统一 _ -> -
-//   - 侧边栏：quick-start 单列「快速开始」，其余进「核心功能」；
+//   - 侧边栏：quick-start 单列一组，其余进核心功能组；
 //     组内先按 CORE_ORDER 排序，未列出的新文档按字典序追加末尾（加文档零改动）
 
 import fs from 'node:fs'
@@ -15,9 +16,6 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '../..') // website/scripts -> website -> repo 根
-const sourceDir = path.join(repoRoot, 'docs/核心功能')
-const websiteDocsDir = path.resolve(__dirname, '../docs')
-const sidebarOut = path.resolve(__dirname, '../.vitepress/sidebar.generated.js')
 
 // 唯一手工配置：核心功能组的展示顺序（未列出的新文档自动追加末尾）
 const CORE_ORDER = [
@@ -34,6 +32,27 @@ const CORE_ORDER = [
   'file-system',
   'cli',
   'eval',
+]
+
+const LOCALES = [
+  {
+    id: 'en',
+    sourceDir: path.join(repoRoot, 'docs/core-features-en'),
+    outDir: path.resolve(__dirname, '../docs'),
+    docsPrefix: '/docs/',
+    sidebarExport: 'docsSidebarEn',
+    quickStartGroup: 'Quick Start',
+    coreGroup: 'Core Features',
+  },
+  {
+    id: 'zh',
+    sourceDir: path.join(repoRoot, 'docs/核心功能'),
+    outDir: path.resolve(__dirname, '../zh/docs'),
+    docsPrefix: '/zh/docs/',
+    sidebarExport: 'docsSidebarZh',
+    quickStartGroup: '快速开始',
+    coreGroup: '核心功能',
+  },
 ]
 
 function toSlug(filename) {
@@ -99,27 +118,27 @@ function yamlQuote(value) {
     .replace(/\r/g, '\\r')}"`
 }
 
-function main() {
-  if (!fs.existsSync(sourceDir)) {
-    console.error(`[sync-docs] 源目录不存在: ${sourceDir}`)
+function buildLocale(locale) {
+  if (!fs.existsSync(locale.sourceDir)) {
+    console.error(`[sync-docs] 源目录不存在: ${locale.sourceDir}`)
     process.exit(1)
   }
   // 生成前清空旧的生成页，避免源文档重命名/删除后本地残留孤儿页面
-  fs.rmSync(websiteDocsDir, { recursive: true, force: true })
-  fs.mkdirSync(websiteDocsDir, { recursive: true })
+  fs.rmSync(locale.outDir, { recursive: true, force: true })
+  fs.mkdirSync(locale.outDir, { recursive: true })
 
-  const files = fs.readdirSync(sourceDir).filter((f) => f.endsWith('.md'))
+  const files = fs.readdirSync(locale.sourceDir).filter((f) => f.endsWith('.md'))
   const generated = []
   for (const file of files) {
-    const raw = fs.readFileSync(path.join(sourceDir, file), 'utf8')
+    const raw = fs.readFileSync(path.join(locale.sourceDir, file), 'utf8')
     const { title, description } = extractMeta(raw)
     const slug = toSlug(file)
     const finalTitle = title || slug
     if (!title) {
-      console.warn(`[sync-docs] warning: ${file} 无 # 标题，title 回退为 ${slug}`)
+      console.warn(`[sync-docs:${locale.id}] warning: ${file} 无 # 标题，title 回退为 ${slug}`)
     }
     const fm = `---\ntitle: ${yamlQuote(finalTitle)}\ndescription: ${yamlQuote(description)}\n---\n\n`
-    fs.writeFileSync(path.join(websiteDocsDir, `${slug}.md`), fm + rewriteLinks(raw))
+    fs.writeFileSync(path.join(locale.outDir, `${slug}.md`), fm + rewriteLinks(raw))
     generated.push({ slug, title: finalTitle })
   }
 
@@ -138,20 +157,32 @@ function main() {
 
   const sidebar = []
   if (quick) {
-    sidebar.push({ text: '快速开始', items: [{ text: quick.title, link: '/docs/quick-start' }] })
+    sidebar.push({ text: locale.quickStartGroup, items: [{ text: quick.title, link: `${locale.docsPrefix}quick-start` }] })
   }
   if (core.length > 0) {
     sidebar.push({
-      text: '核心功能',
-      items: core.map((g) => ({ text: g.title, link: `/docs/${g.slug}` })),
+      text: locale.coreGroup,
+      items: core.map((g) => ({ text: g.title, link: `${locale.docsPrefix}${g.slug}` })),
     })
   }
 
+  console.log(`[sync-docs:${locale.id}] 已生成 ${generated.length} 个页面 (${locale.outDir})`)
+  return sidebar
+}
+
+function main() {
+  const sidebarOut = path.resolve(__dirname, '../.vitepress/sidebar.generated.js')
+  const exportBlocks = []
+  for (const locale of LOCALES) {
+    const sidebar = buildLocale(locale)
+    exportBlocks.push(`export const ${locale.sidebarExport} = ${JSON.stringify(sidebar, null, 2)}`)
+  }
   const out =
     '// 此文件由 website/scripts/sync-docs.mjs 自动生成，请勿手工编辑。\n' +
-    `export const docsSidebar = ${JSON.stringify(sidebar, null, 2)}\n`
+    exportBlocks.join('\n\n') +
+    '\n'
   fs.writeFileSync(sidebarOut, out)
-  console.log(`[sync-docs] 已生成 ${generated.length} 个页面 + 侧边栏 (${sidebarOut})`)
+  console.log(`[sync-docs] 侧边栏已写入 ${sidebarOut}`)
 }
 
 main()
