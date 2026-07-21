@@ -6,6 +6,7 @@ on:
     paths:
       - 'website/**'
       - 'docs/核心功能/**'
+      - 'docs/core-features-en/**'
   workflow_dispatch:
 
 # 同一分支同时只允许一个部署运行，新触发会取消旧的进行中任务，避免 gh-pages 并发写入冲突。
