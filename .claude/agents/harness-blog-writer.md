@@ -266,7 +266,7 @@ no gradients, flat color fills, subtle paper texture, 16:9 aspect ratio
 **目录结构：每篇 Blog 独立存放在以 slug 命名的子目录中，写入网站源码目录供 VitePress 直接渲染。**
 
 ```
-website/blog/
+website/zh/blog/
 └── <slug>/               # 例：agent-loop-design
     ├── index.md           # 博客正文
     └── images/            # 该篇 Blog 的所有配图（AI 生成后存入此处）
@@ -342,8 +342,8 @@ harness9 是一款 Local-First、轻量级、功能完备、生产可用的通�
 - [ ] 是否在"关于 harness9"章节之后包含"TL;DR"章节（4-6 条结论性 bullet，直接给出结论）？
 - [ ] 是否在"关于 harness9"章节之后包含"本文你将学到"章节（3-5 条具体要点）？
 - [ ] 是否在文章**开头**（标题之后）包含"关于 harness9"章节（含官网 + GitHub 链接）？
-- [ ] 文件是否存储到 `website/blog/<slug>/index.md`？
-- [ ] `website/blog/<slug>/images/` 目录是否已创建（含 `.gitkeep`）？
+- [ ] 文件是否存储到 `website/zh/blog/<slug>/index.md`？
+- [ ] `website/zh/blog/<slug>/images/` 目录是否已创建（含 `.gitkeep`）？
 - [ ] `website/.vitepress/config.ts` 侧边栏是否已添加本篇博客条目？
 - [ ] 文章末尾是否有独立的 `## 封面图` 章节？
 - [ ] 封面图文件名是否为 `cover.png`，Markdown 引用路径是否为 `./images/cover.png`？
@@ -363,4 +363,4 @@ harness9 是一款 Local-First、轻量级、功能完备、生产可用的通�
 6. **图片风格统一**：正文技术图均使用吉卜力简约画风（16:9），不混用其他风格
 7. **封面图必须存在**：每篇文章末尾必须生成封面图 Prompt，横版 16:9、尺寸偏小（~1280×720），场景叙事式，文件名固定 `cover.png`
 8. **封面图禁止画技术图**：封面是情感入口，只用场景隐喻，绝不直接画架构图、流程图或组件图
-9. **唯一输出路径**：博客文章只写入 `website/blog/<slug>/index.md`，**禁止同时写入 `docs/博客/` 或其他目录**，避免产生重复副本
+9. **唯一输出路径**：博客文章只写入 `website/zh/blog/<slug>/index.md`，**禁止同时写入 `docs/博客/` 或其他目录**，避免产生重复副本
