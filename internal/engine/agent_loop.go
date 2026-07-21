@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,6 +57,20 @@ func WithGenerateRetry(attempts int, baseDelay time.Duration) Option {
 	return func(e *AgentEngine) {
 		e.generateRetries = attempts
 		e.generateRetryBase = baseDelay
+	}
+}
+
+// WithNetworkRetry 配置网络传输层错误（TLS/DNS/连接建立，见 isTransientNetworkError）
+// 的独立重试预算：最多尝试 attempts 次，首次重试退避 baseDelay，其后指数增长
+// （上限 maxNetworkRetryDelay）。这类错误比业务层错误（4xx/5xx）间歇性更强，
+// 默认的 WithGenerateRetry 预算（默认 3 次、总计约 3s）对它们太窄——Terminal-Bench
+// pilot 里 3 个任务在 Turn 1 就命中同一条 x509 证书错误，退避耗尽后直接放弃整个 turn
+// （见 docs/技术调研/terminal-bench-轨迹分析-v1.md §2 R2）。attempts<=1 时关闭该扩展
+// （退化为使用 WithGenerateRetry 的预算）。
+func WithNetworkRetry(attempts int, baseDelay time.Duration) Option {
+	return func(e *AgentEngine) {
+		e.networkRetries = attempts
+		e.networkRetryBase = baseDelay
 	}
 }
 
@@ -164,10 +179,16 @@ type AgentEngine struct {
 	observer           EngineObserver      // 可选，nil 时自动退化为 noopObserver
 	generateRetries    int                 // LLM 生成调用最大尝试次数（默认 3）
 	generateRetryBase  time.Duration       // 重试退避基准（默认 1s）
+	networkRetries     int                 // 网络传输层错误的独立最大尝试次数（默认 6）
+	networkRetryBase   time.Duration       // 网络传输层错误的重试退避基准（默认 5s）
 }
 
 // maxGenerateRetryDelay 是生成重试指数退避的上限，避免退避时间吞掉整体预算。
 const maxGenerateRetryDelay = 30 * time.Second
+
+// maxNetworkRetryDelay 是网络传输层错误重试指数退避的上限，比 maxGenerateRetryDelay
+// 更宽松——这类故障（TLS/DNS/连接建立）间歇性更强，值得多等一会儿而不是放弃整个 turn。
+const maxNetworkRetryDelay = 60 * time.Second
 
 // NewAgentEngine 创建新的 AgentEngine。默认值：maxTurns=500, toolTimeout=60s,
 // generateRetries=3（base 1s）—— 对瞬时 LLM/流式错误具备基础韧性。
@@ -180,6 +201,8 @@ func NewAgentEngine(p provider.LLMProvider, r tools.Registry, workDir string, op
 		toolTimeout:       60 * time.Second,
 		generateRetries:   3,
 		generateRetryBase: 1 * time.Second,
+		networkRetries:    6,
+		networkRetryBase:  5 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -203,9 +226,17 @@ func (e *AgentEngine) generateWithRetry(ctx context.Context, em emitter, turn in
 	if base <= 0 {
 		base = 1 * time.Second
 	}
+	networkAttempts := e.networkRetries
+	if networkAttempts < 1 {
+		networkAttempts = 1
+	}
+	networkBase := e.networkRetryBase
+	if networkBase <= 0 {
+		networkBase = 5 * time.Second
+	}
 
 	var lastErr error
-	for attempt := 1; attempt <= attempts; attempt++ {
+	for attempt := 1; ; attempt++ {
 		if ctx.Err() != nil {
 			return nil, nil, ctx.Err()
 		}
@@ -218,21 +249,53 @@ func (e *AgentEngine) generateWithRetry(ctx context.Context, em emitter, turn in
 		if ctx.Err() != nil {
 			return nil, nil, err
 		}
-		if attempt < attempts {
-			delay := base << (attempt - 1)
-			if delay > maxGenerateRetryDelay {
-				delay = maxGenerateRetryDelay
-			}
-			log.Print(logfmt.FormatMsg("engine", fmt.Sprintf(
-				"LLM 生成失败 (turn %d, 尝试 %d/%d)，%s 后重试: %v", turn, attempt, attempts, delay, err)))
-			select {
-			case <-ctx.Done():
-				return nil, nil, ctx.Err()
-			case <-time.After(delay):
-			}
+
+		// 网络传输层错误（TLS/DNS/连接建立）间歇性更强，用独立、更宽松的预算，
+		// 不与其他错误类别共享 attempts/base——分类基于本次失败的错误本身，
+		// 不影响非网络错误仍然只用默认预算。
+		maxAttempts, delayBase, delayCap := attempts, base, maxGenerateRetryDelay
+		if isTransientNetworkError(err) {
+			maxAttempts, delayBase, delayCap = networkAttempts, networkBase, maxNetworkRetryDelay
+		}
+		if attempt >= maxAttempts {
+			break
+		}
+
+		delay := delayBase << (attempt - 1)
+		if delay > delayCap {
+			delay = delayCap
+		}
+		log.Print(logfmt.FormatMsg("engine", fmt.Sprintf(
+			"LLM 生成失败 (turn %d, 尝试 %d/%d)，%s 后重试: %v", turn, attempt, maxAttempts, delay, err)))
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(delay):
 		}
 	}
 	return nil, nil, lastErr
+}
+
+// isTransientNetworkError 判断 LLM 生成失败的根因是否为建立到 API 端点连接阶段的
+// 瞬时网络故障（TLS/证书校验、DNS 解析、连接建立），而非业务层错误（如 4xx/5xx）。
+// 这类故障间歇性更强，容错窗口需要比默认重试策略更宽——Terminal-Bench pilot 里
+// 3 个任务在同一条 x509 证书错误上耗尽默认预算后直接放弃整个 turn，详见
+// docs/技术调研/terminal-bench-轨迹分析-v1.md §2 R2。
+//
+// 采用字符串匹配而非 errors.As 类型断言：openai-go/anthropic-sdk-go 对底层
+// net/http 错误的包装不保证保留可断言的具体类型，但错误消息里的关键字符串
+// （x509:/tls:/no such host 等）是稳定、可观测的。
+func isTransientNetworkError(err error) bool {
+	msg := err.Error()
+	for _, marker := range []string{
+		"x509:", "tls:", "no such host", "connection refused",
+		"connection reset", "i/o timeout", "dial tcp",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // emitter 封装 Run 与 RunStream 在"输出侧"的差异：

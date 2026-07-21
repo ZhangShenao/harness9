@@ -171,6 +171,72 @@ func TestGenerateRetry_DoesNotRetryOnContextCancel(t *testing.T) {
 	}
 }
 
+// TestGenerateRetry_NetworkErrorGetsExtendedBudget 验证网络传输层错误（TLS/DNS/连接建立）
+// 使用独立、更宽松的重试预算，即使默认 generateRetries 已耗尽也能继续重试直到恢复。
+// 复现 docs/技术调研/terminal-bench-轨迹分析-v1.md §2 R2：3 个任务在 Turn 1 就命中同一条
+// x509 证书错误，默认 3 次/总计 3s 退避窗口耗尽后直接放弃整个 turn。
+func TestGenerateRetry_NetworkErrorGetsExtendedBudget(t *testing.T) {
+	p := &flakyProvider{failFirst: 5, err: fmt.Errorf(
+		`OpenAI 兼容 API 请求失败: Post "https://openrouter.ai/api/v1/chat/completions": ` +
+			`tls: failed to verify certificate: x509: certificate signed by unknown authority`)}
+	r := &staticRegistry{output: "ok"}
+	// 默认重试预算（3 次）明显不够跑到第 6 次才成功；网络重试预算给够（6 次），
+	// 极小退避避免拖慢测试。
+	eng := NewAgentEngine(p, r, "/test",
+		WithGenerateRetry(3, time.Millisecond),
+		WithNetworkRetry(6, time.Millisecond))
+
+	if err := eng.Run(context.Background(), "task"); err != nil {
+		t.Fatalf("网络类错误应在扩展预算内恢复，got: %v", err)
+	}
+	if p.calls != 6 {
+		t.Errorf("应尝试 6 次（前 5 次失败 + 第 6 次成功），实际 %d", p.calls)
+	}
+}
+
+// TestGenerateRetry_NonNetworkErrorUsesNormalBudget 验证非网络错误依然只用默认（更小的）
+// 重试预算，即使网络重试预算配置得更大也不会被"借用"——分类必须双向生效。
+func TestGenerateRetry_NonNetworkErrorUsesNormalBudget(t *testing.T) {
+	p := &flakyProvider{failFirst: 5, err: fmt.Errorf("persistent failure")}
+	r := &staticRegistry{output: "ok"}
+	eng := NewAgentEngine(p, r, "/test",
+		WithGenerateRetry(3, time.Millisecond),
+		WithNetworkRetry(6, time.Millisecond))
+
+	err := eng.Run(context.Background(), "task")
+	if err == nil {
+		t.Fatal("非网络类持续失败应在默认预算耗尽后返回错误，不应借用网络重试预算")
+	}
+	if p.calls != 3 {
+		t.Errorf("非网络错误应恰好尝试 3 次后放弃（默认预算），实际 %d", p.calls)
+	}
+}
+
+// TestIsTransientNetworkError 验证网络传输层错误分类的正负样本。
+func TestIsTransientNetworkError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"x509 证书错误", fmt.Errorf("tls: failed to verify certificate: x509: certificate signed by unknown authority"), true},
+		{"DNS 解析失败", fmt.Errorf(`dial tcp: lookup api.openai.com: no such host`), true},
+		{"连接被拒绝", fmt.Errorf("dial tcp 127.0.0.1:443: connect: connection refused"), true},
+		{"连接被重置", fmt.Errorf("read: connection reset by peer"), true},
+		{"IO 超时", fmt.Errorf("dial tcp: i/o timeout"), true},
+		{"429 限流不算网络错误", fmt.Errorf("OpenAI 兼容 API 请求失败: 429 Too Many Requests"), false},
+		{"5xx 服务端错误不算网络错误", fmt.Errorf("OpenAI 兼容 API 返回了空的 Choices"), false},
+		{"普通业务错误", fmt.Errorf("persistent failure"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTransientNetworkError(tt.err); got != tt.want {
+				t.Errorf("isTransientNetworkError(%q) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestReact_BasicFlow 验证单阶段 ReAct 的完整流程：
 //
 //	Turn 1: LLM Action（携带工具调用）→ Observation
