@@ -131,11 +131,7 @@ out, err := c.CombinedOutput()
 
 1. **【已修复，commit `5e80576`（+ review 修正 `27c6ce4`）】`internal/tools/bash.go` `runLocal`**：本节原先讨论的"路线 A（进程组隔离）/路线 B（流式读取）"都没有采用——两者都需要额外处理"SIGKILL 打不穿已脱离进程组的孙进程"这类边界情况。**实际采用了更简单、已实验验证的第三条路径**：把 `c.Stdout`/`c.Stderr` 直接赋值为 `*os.File`（临时文件）而非走 `CombinedOutput()`。Go 对 `*os.File` 类型的 Stdout/Stderr 走原始 fd 直传，不经 pipe + 拷贝 goroutine，`Wait()` 只等待直接子进程（`bash -c` 本身）退出——完全不需要进程组/信号管理，天然不会误杀"任务要求保持运行"的后台任务。已用真实命令验证：`cd X && nohup sleep 20 > file 2>&1 & echo ...` 从挂起 20s 降到 ~5ms 返回，且事后确认后台进程仍在运行未被杀。
 2. **【已修复，commit `5e80576`】补充自动化测试**：`internal/tools/bash_test.go` 新增 `TestBashTool_Execute_BackgroundedProcessDoesNotHang`，精确复现本文档 §1.3 的命令模式，断言 3 秒内返回且后台进程未被误杀（按精确 PID 判活，而非命令行子串匹配，避免共享 CI 机器上的误命中）。
-3. **【已订正：Docker 路径未复现，未做改动】`runInSandbox`（Docker 路径）**：原先推测 `DockerEnvironment.RunBash`（经 `internal/sandbox/manager.go:56` 注入的 `realCmdRunner`）与 `runLocal` 用同一个 `CombinedOutput()` 模式，理应存在同构挂起缺陷；这是一个**基于源码调用链的合理推断，从未端到端实测**（当时 pilot 环境没有 Docker 二进制）。修复 P0 时用真实 Docker 容器补做了这项验证（6+ 组复现变体，含与 §1.3 完全一致的命令模式），**结果是不能复现**：`docker exec` 是连接 dockerd 的瘦客户端，命令执行与 I/O 多路复用发生在守护进程的 API/socket 协议层，不是宿主机 OS 级的 pipe fd 继承语义——`realCmdRunner` 端的 `Wait()` 不会像本地 fork 的 `bash -c "... &"` 那样被容器内继续运行的后台进程拖住。**结论：`internal/sandbox/container.go` 的 `realCmdRunner` 未做任何改动**（改一个没有复现的"缺陷"违反 YAGNI），改为新增一条回归守卫测试
-（`internal/sandbox/docker_environment_integration_test.go` 的
-`TestDockerEnvironmentIntegration_RunBash_BackgroundedProcessDoesNotHang`，commit `a8f881e`）——
-如果未来某个 Docker/OS 组合确实出现了这种挂起，这个测试会失败并报警。这是本文档"对抗式复核"方法论
-的又一次生效：源码层面看起来合理的推断，实测后被驳回。
+3. **【已订正：Docker 路径未复现，未做改动】`runInSandbox`（Docker 路径）**：原先推测 `DockerEnvironment.RunBash`（经 `internal/sandbox/manager.go:56` 注入的 `realCmdRunner`）与 `runLocal` 用同一个 `CombinedOutput()` 模式，理应存在同构挂起缺陷；这是一个**基于源码调用链的合理推断，从未端到端实测**（当时 pilot 环境没有 Docker 二进制）。修复 P0 时用真实 Docker 容器补做了这项验证（6+ 组复现变体，含与 §1.3 完全一致的命令模式），**结果是不能复现**：`docker exec` 是连接 dockerd 的瘦客户端，命令执行与 I/O 多路复用发生在守护进程的 API/socket 协议层，不是宿主机 OS 级的 pipe fd 继承语义——`realCmdRunner` 端的 `Wait()` 不会像本地 fork 的 `bash -c "... &"` 那样被容器内继续运行的后台进程拖住。**结论：`internal/sandbox/container.go` 的 `realCmdRunner` 未做任何改动**（改一个没有复现的"缺陷"违反 YAGNI），改为新增一条回归守卫测试（`internal/sandbox/docker_environment_integration_test.go` 的 `TestDockerEnvironmentIntegration_RunBash_BackgroundedProcessDoesNotHang`，commit `a8f881e`）——如果未来某个 Docker/OS 组合确实出现了这种挂起，这个测试会失败并报警。这是本文档"对抗式复核"方法论的又一次生效：源码层面看起来合理的推断，实测后被驳回。
 
 ### P1 — LLM 生成重试的错误分类（中杠杆）
 
