@@ -65,8 +65,9 @@ func WithGenerateRetry(attempts int, baseDelay time.Duration) Option {
 // （上限 maxNetworkRetryDelay）。这类错误比业务层错误（4xx/5xx）间歇性更强，
 // 默认的 WithGenerateRetry 预算（默认 3 次、总计约 3s）对它们太窄——Terminal-Bench
 // pilot 里 3 个任务在 Turn 1 就命中同一条 x509 证书错误，退避耗尽后直接放弃整个 turn
-// （见 docs/技术调研/terminal-bench-轨迹分析-v1.md §2 R2）。attempts<=1 时关闭该扩展
-// （退化为使用 WithGenerateRetry 的预算）。
+// （见 docs/技术调研/terminal-bench-轨迹分析-v1.md §2 R2）。attempts<=1 时该扩展形同
+// 关闭——网络错误仅尝试 1 次，不再享有比默认预算更宽松的窗口（不会退化为借用
+// WithGenerateRetry 的预算，两者预算互相独立）。
 func WithNetworkRetry(attempts int, baseDelay time.Duration) Option {
 	return func(e *AgentEngine) {
 		e.networkRetries = attempts
