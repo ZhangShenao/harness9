@@ -14,8 +14,28 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useData } from 'vitepress'
 
-const SCRIPT = `$ harness9
+const SCRIPT_EN = `$ harness9
+
+  HARNESS9  ·  claude-sonnet-4-6
+  ctx: 0/128K (0%)  ·  new session
+
+› help me analyze this project's code structure
+
+  ✦ bash({"cmd":"find . -name '*.go' | head"}) — 18ms
+  ✦ read_file({"path":"cmd/harness9/main.go"}) — 9ms
+
+This is an Agent framework built on a standard ReAct architecture:
+
+• cmd/harness9/ — TUI + CLI dual-mode entry point
+• internal/engine/ — standard ReAct main loop
+• internal/provider/ — OpenAI / Anthropic adapters
+• internal/tools/ — built-in tool registry
+
+› `
+
+const SCRIPT_ZH = `$ harness9
 
   HARNESS9  ·  claude-sonnet-4-6
   ctx: 0/128K (0%)  ·  new session
@@ -33,6 +53,9 @@ const SCRIPT = `$ harness9
 • internal/tools/ — 内置工具注册表
 
 › `
+
+const { lang } = useData()
+const SCRIPT = lang.value.startsWith('zh') ? SCRIPT_ZH : SCRIPT_EN
 
 const output = ref('')
 const typing = ref(true)
