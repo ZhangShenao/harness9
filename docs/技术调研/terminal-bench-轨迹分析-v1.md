@@ -1,5 +1,8 @@
 # Terminal-Bench 2.0 Pilot 轨迹分析与 harness9 内核优化（v1）
 
+> **后续更新**：P0/P1 修复落地后的验证轮（同一份 18 任务清单重跑，含 P1 根因修正——不是间歇性网络故障，
+> 是 3 个任务镜像缺失 `ca-certificates`）见 `terminal-bench-轨迹分析-v2.md`。
+
 > 数据来源：Terminal-Bench 2.0 18 任务 pilot，通过 Harbor `BaseInstalledAgent` 适配器（`benchmarks/terminal_bench/harness9_agent.py`）调用预编译 harness9 二进制。9 resolved / 9 unresolved。
 > 分析方法：对每条 unresolved 轨迹逐一读取 `agent/harness9.log`（完整执行轨迹）、`verifier/test-stdout.txt` + `ctrf.json`（隐藏测试真实输出）、Harbor 任务缓存中的 `instruction.md`/`task.toml`/`tests/`/`solution/`（任务真实要求与参考解），并对每条根因归因做**对抗式复核**：核对当前 harness9 真实源码（`internal/tools/bash.go`、`internal/engine/agent_loop.go`），必要时用最小 Go 复现程序验证机制性假设，不采信仅凭日志现象的猜测。
 
