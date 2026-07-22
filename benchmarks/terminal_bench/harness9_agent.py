@@ -17,9 +17,13 @@ _BINARY_REMOTE_PATH = "/usr/local/bin/harness9"
 _INSTRUCTION_REMOTE_PATH = "/tmp/harness9-instruction.md"
 _RUN_LOG_REMOTE_PATH = "/tmp/harness9-run.log"
 
-# run() 单次执行超时（秒）：略小于 Terminal-Bench 2.0 task.toml 里统一的
-# [agent].timeout_sec=900，为收尾流程留出余量。
-_RUN_TIMEOUT_SEC = 880
+# 绝对兜底超时，不是主要的超时裁决机制（那是 Harbor 自己按 task.toml 的
+# [agent].timeout_sec 算出来的、逐任务不同的值）。Harbor 的 AgentConfig.timeout_sec
+# 定义为 float | None，task.toml 并非强制要求声明它——如果某个任务缺失这个字段、
+# CLI 也没传 --agent-timeout-multiplier/override，Harbor 外层会以 timeout=None 调用
+# asyncio.wait_for，等于完全不超时。这个值只是防止那种边界情况下真的无限挂起，
+# 定得足够宽松（远高于目前 pilot 里最长的 3600s 声明值），不应该在正常任务上生效。
+_ABSOLUTE_TIMEOUT_SEC = 4 * 60 * 60
 
 
 class Harness9Agent(BaseInstalledAgent):
@@ -35,6 +39,17 @@ class Harness9Agent(BaseInstalledAgent):
                 f"未找到预编译二进制 {_BINARY_LOCAL_PATH}，"
                 "请先执行 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build 生成"
             )
+        # 部分 Terminal-Bench 官方任务镜像（如 alexgshaw/compile-compcert:20251031）
+        # 未预装 ca-certificates，/etc/ssl/certs 目录不存在，导致 harness9（Go 静态二进制，
+        # 走 crypto/x509 系统信任链）对任何出站 HTTPS（如 OpenRouter）100% 确定性地报
+        # "x509: certificate signed by unknown authority"——不是间歇性网络故障，重试无法规避。
+        await self.exec_as_root(
+            environment,
+            command=(
+                "DEBIAN_FRONTEND=noninteractive apt-get update -qq "
+                "&& DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates"
+            ),
+        )
         await environment.upload_file(
             source_path=_BINARY_LOCAL_PATH, target_path=_BINARY_REMOTE_PATH
         )
@@ -63,6 +78,15 @@ class Harness9Agent(BaseInstalledAgent):
             run_env["LLM_MODEL"] = os.environ["LLM_MODEL"]
 
         try:
+            # 不在这里设置逐任务精确的 timeout_sec：Harbor 的 Trial._run_agent_phase
+            # 已经用 asyncio.wait_for 包住整个 run()，超时取自任务自身 task.toml 的
+            # [agent].timeout_sec（每个任务不同，如 compile-compcert=2400、
+            # fix-ocaml-gc=3600），而不是所有任务统一的某个硬编码值。之前这里固定写
+            # 880 秒，比部分任务真实声明的超时短得多，导致这些任务在完成合法工作
+            # （如 compile-compcert 正在编译 Coq/OCaml 工具链）的过程中被本适配器
+            # 提前掐断，而不是被 Harbor 自己的、真正符合任务声明的超时掐断。这里传的
+            # _ABSOLUTE_TIMEOUT_SEC 只是防止 Harbor 侧超时解析失败（task.toml 缺失该
+            # 字段）时无限挂起的绝对兜底，正常情况下 Harbor 自己的超时会先生效。
             await self.exec_as_agent(
                 environment,
                 command=(
@@ -70,7 +94,7 @@ class Harness9Agent(BaseInstalledAgent):
                     f"> {_RUN_LOG_REMOTE_PATH} 2>&1"
                 ),
                 env=run_env,
-                timeout_sec=_RUN_TIMEOUT_SEC,
+                timeout_sec=_ABSOLUTE_TIMEOUT_SEC,
             )
         finally:
             # harness9 把 [engine]/[main] 等逐轮执行轨迹写到 stdout/stderr，Harbor
