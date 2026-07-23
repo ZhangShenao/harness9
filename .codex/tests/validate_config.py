@@ -17,6 +17,9 @@ EXPECTED = {
     "organizer",
 }
 KNOWLEDGE_ROOT = "/Users/zsa/Desktop/workspace/harness9/知识库日报"
+GUARDED_CLEANUP_COMMAND = (
+    "./.codex/scripts/cleanup-knowledge-day.sh YYYYMMDD"
+)
 KNOWLEDGE_POLICIES = {
     "collector": {
         "knowledge_root": KNOWLEDGE_ROOT,
@@ -92,9 +95,7 @@ KNOWLEDGE_POLICIES = {
         "article_name": "{YYYYMMDD}-daily.md",
         "existing_name": "append_v2_v3_without_overwrite",
         "frontmatter": "forbidden",
-        "cleanup_command": (
-            "./.codex/scripts/cleanup-knowledge-day.sh YYYYMMDD"
-        ),
+        "cleanup_command": GUARDED_CLEANUP_COMMAND,
         "cleanup_order": "final_article_exists_then_guarded_cleanup",
         "direct_rm": "forbidden",
         "no_fabrication": "true",
@@ -148,6 +149,29 @@ WINDOWS_DRIVE_PATH = re.compile(
 )
 WINDOWS_UNC_PATH = re.compile(
     r"(?<!\\)\\\\[^\\\s`\"'<>]+\\[^\\\s`\"'<>]+"
+)
+FENCED_BLOCK = re.compile(
+    r"```(?P<language>[^\n`]*)\n(?P<body>.*?)```",
+    flags=re.DOTALL,
+)
+INLINE_CODE = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
+EXECUTABLE_FENCE_LANGUAGES = frozenset(
+    {"", "bash", "sh", "shell", "zsh", "python", "python3", "py"}
+)
+NEGATION_MARKERS = (
+    "禁止",
+    "不得",
+    "不可",
+    "不能",
+    "不应",
+    "严禁",
+    "绝不",
+    "不要",
+    "切勿",
+    "从未",
+    "不允许",
+    "无需",
+    "没有要求",
 )
 
 
@@ -228,6 +252,247 @@ def shell_commands(text: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
+def executable_fenced_blocks(text: str) -> list[str]:
+    blocks = []
+    for match in FENCED_BLOCK.finditer(text):
+        language = match.group("language").strip().casefold()
+        language = language.split(maxsplit=1)[0] if language else ""
+        if language in EXECUTABLE_FENCE_LANGUAGES:
+            blocks.append(match.group("body"))
+    return blocks
+
+
+def text_without_fenced_blocks(text: str) -> str:
+    return FENCED_BLOCK.sub(
+        lambda match: " " * len(match.group(0)),
+        text,
+    )
+
+
+def clause_around(text: str, start: int, end: int) -> str:
+    separators = "\n。！？；"
+    clause_start = max(text.rfind(char, 0, start) for char in separators)
+    clause_ends = [
+        position
+        for char in separators
+        if (position := text.find(char, end)) >= 0
+    ]
+    clause_end = min(clause_ends) if clause_ends else len(text)
+    return text[clause_start + 1 : clause_end]
+
+
+def has_negative_context(text: str) -> bool:
+    return any(marker in text for marker in NEGATION_MARKERS)
+
+
+def normalize_cleanup_command(command: str) -> str:
+    normalized = command
+    previous = None
+    while previous != normalized:
+        previous = normalized
+        normalized = normalized.replace("''", "").replace('""', "")
+    normalized = re.sub(r"^\s*\$\s*", "", normalized)
+    return " ".join(normalized.split())
+
+
+def looks_like_unsafe_or_alternative_cleanup(command: str) -> bool:
+    normalized = normalize_cleanup_command(command)
+    if not normalized or normalized == GUARDED_CLEANUP_COMMAND:
+        return False
+
+    destructive_patterns = (
+        r"(?:^|[\s;&|])(?:/[^\s;&|]+/)?rm(?=\s|$|[;&|])",
+        r"(?:^|[\s;&|])(?:/[^\s;&|]+/)?(?:unlink|rmdir)"
+        r"(?=\s|$|[;&|])",
+        r"(?:^|[\s;&|])find(?=\s).*(?:^|\s)-delete(?=\s|$)",
+        r"\bos\s*\.\s*(?:remove|unlink)\s*\(",
+        r"\bshutil\s*\.\s*rmtree\s*\(",
+        r"(?:\bpathlib\s*\.\s*)?\bPath\s*\([^)]*\)"
+        r"\s*\.\s*(?:unlink|rmdir)\s*\(",
+    )
+    if any(
+        re.search(pattern, normalized, flags=re.IGNORECASE | re.DOTALL)
+        for pattern in destructive_patterns
+    ):
+        return True
+
+    cleanup_command_patterns = (
+        r"(?:^|[\s;&|])\S*(?:cleanup|clean-up|purge|prune|delete|remove)"
+        r"\S*(?=\s|$|[;&|])",
+        r"(?:^|[\s;&|])(?:git|make)\s+clean(?=\s|$|[;&|])",
+    )
+    return any(
+        re.search(pattern, normalized, flags=re.IGNORECASE)
+        for pattern in cleanup_command_patterns
+    )
+
+
+def looks_like_executable_inline(command: str) -> bool:
+    normalized = normalize_cleanup_command(command)
+    return bool(
+        re.match(
+            r"^(?:\./|\.\./)\S+"
+            r"|^(?:(?:sudo|command|env|busybox|xargs)\s+)*"
+            r"(?:rm|find|unlink|rmdir|python\d*|bash|sh|shell|zsh|"
+            r"git|make)(?=\s|$)",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def validate_organizer_cleanup_instructions(
+    instructions: str,
+) -> list[str]:
+    errors = []
+    guarded_cleanup_found = False
+
+    for block in executable_fenced_blocks(instructions):
+        for line in block.splitlines():
+            command = line.strip()
+            if not command or command.startswith("#"):
+                continue
+            normalized = normalize_cleanup_command(command)
+            if normalized == GUARDED_CLEANUP_COMMAND:
+                guarded_cleanup_found = True
+                continue
+            errors.append(
+                "organizer: unsafe or alternative cleanup command forbidden"
+            )
+            break
+
+    inline_text = text_without_fenced_blocks(instructions)
+    for match in INLINE_CODE.finditer(inline_text):
+        command = match.group(1).strip()
+        context = clause_around(
+            inline_text,
+            match.start(),
+            match.end(),
+        )
+        normalized = normalize_cleanup_command(command)
+        if normalized == GUARDED_CLEANUP_COMMAND:
+            guarded_cleanup_found = True
+            continue
+        if has_negative_context(context):
+            continue
+        if (
+            looks_like_unsafe_or_alternative_cleanup(command)
+            or looks_like_executable_inline(command)
+        ):
+            errors.append(
+                "organizer: unsafe or alternative cleanup command forbidden"
+            )
+            break
+
+    if not guarded_cleanup_found:
+        errors.append("organizer: exact guarded cleanup invocation missing")
+    return errors
+
+
+def text_outside_contract(text: str, contract: str) -> str:
+    start = f"<!-- codex-contract:{contract}:start -->"
+    end = f"<!-- codex-contract:{contract}:end -->"
+    pattern = re.compile(
+        re.escape(start) + r".*?" + re.escape(end),
+        flags=re.DOTALL,
+    )
+    return pattern.sub(
+        lambda match: " " * len(match.group(0)),
+        text,
+    )
+
+
+def operative_instruction_clauses(instructions: str) -> list[str]:
+    operative = text_outside_contract(instructions, "knowledge-policy")
+    return [
+        clause.strip()
+        for clause in re.split(r"[\n。！？；]+", operative)
+        if clause.strip()
+    ]
+
+
+def has_write_boundary_contradiction(
+    instructions: str,
+    allowed_directory: str,
+) -> bool:
+    allowed_prefix = f"{KNOWLEDGE_ROOT}/{allowed_directory}/"
+    write_intent = re.compile(
+        r"(?:写入|另存|保存(?:到|至)|持久化(?:到|至)|"
+        r"输出(?:到|至)|创建(?:文件)?(?:到|于|在))"
+    )
+    for clause in operative_instruction_clauses(instructions):
+        if has_negative_context(clause) or not write_intent.search(clause):
+            continue
+
+        paths = [
+            match.group(1).strip()
+            for match in INLINE_CODE.finditer(clause)
+            if (match.group(1).strip()).startswith("/")
+        ]
+        paths.extend(
+            match.group(0)
+            for match in re.finditer(
+                re.escape(KNOWLEDGE_ROOT) + r"(?:/[^\s`，、：]*)?",
+                clause,
+            )
+        )
+        for path in paths:
+            if path != allowed_prefix.rstrip("/") and not path.startswith(
+                allowed_prefix
+            ):
+                return True
+    return False
+
+
+def has_unconditional_fetch_contradiction(instructions: str) -> bool:
+    fetch_action = re.compile(r"(?:回源|抓取|访问|获取)")
+    unconditional_scope = re.compile(
+        r"(?:无条件|无论|所有条目|每(?:一)?条(?:记录|条目|URL)|"
+        r"全部条目)"
+    )
+    for clause in operative_instruction_clauses(instructions):
+        if has_negative_context(clause):
+            continue
+        if fetch_action.search(clause) and unconditional_scope.search(clause):
+            return True
+    return False
+
+
+def has_cleanup_order_contradiction(instructions: str) -> bool:
+    article_creation = re.compile(
+        r"(?:写(?:入)?|创建|生成)(?:最终)?(?:文章|终稿)"
+    )
+    for clause in operative_instruction_clauses(instructions):
+        if has_negative_context(clause):
+            continue
+        cleanup_position = clause.find("清理")
+        creation = article_creation.search(clause)
+        if (
+            cleanup_position >= 0
+            and creation is not None
+            and cleanup_position < creation.start()
+        ):
+            return True
+    return False
+
+
+def has_alternative_cleanup_policy_contradiction(
+    instructions: str,
+) -> bool:
+    alternate = re.compile(r"(?:备用|替代|其他|任意)")
+    execution = re.compile(r"(?:使用|执行|运行|调用|改用|允许)")
+    for clause in operative_instruction_clauses(instructions):
+        if has_negative_context(clause):
+            continue
+        if (
+            "清理" in clause
+            and alternate.search(clause)
+            and execution.search(clause)
+        ):
+            return True
+    return False
+
+
 def normalize_framework_name(value: str) -> str:
     without_markup = re.sub(r"[`*_]", "", value)
     return " ".join(without_markup.split()).casefold()
@@ -267,21 +532,6 @@ def has_cd_shell_command(instructions: str) -> bool:
         for line in block.splitlines():
             command = line.strip()
             if re.match(r"^(?:\$\s*)?cd(?:\s|$)", command, re.IGNORECASE):
-                return True
-    return False
-
-
-def has_direct_rm_shell_command(instructions: str) -> bool:
-    for block in shell_blocks(instructions):
-        for line in block.splitlines():
-            command = line.strip()
-            if not command or command.startswith("#"):
-                continue
-            if re.search(
-                r"(?:^|[\s;&|])rm(?=\s|$)",
-                command,
-                re.IGNORECASE,
-            ):
                 return True
     return False
 
@@ -491,8 +741,30 @@ def validate_knowledge_agent(
         ):
             errors.append(f"{name}: knowledge policy mismatch")
 
-    if name == "organizer" and has_direct_rm_shell_command(instructions):
-        errors.append("organizer: direct rm command forbidden")
+    allowed_write_directories = {
+        "collector": "raw",
+        "analyzer": "analysis",
+        "organizer": "articles",
+    }
+    if has_write_boundary_contradiction(
+        instructions,
+        allowed_write_directories[name],
+    ):
+        errors.append(f"{name}: operative write boundary contradiction")
+
+    if name == "analyzer" and has_unconditional_fetch_contradiction(
+        instructions
+    ):
+        errors.append("analyzer: conditional fetch contradiction")
+
+    if name == "organizer":
+        errors.extend(validate_organizer_cleanup_instructions(instructions))
+        if has_cleanup_order_contradiction(instructions):
+            errors.append("organizer: cleanup order contradiction")
+        if has_alternative_cleanup_policy_contradiction(instructions):
+            errors.append(
+                "organizer: alternative cleanup policy contradiction"
+            )
     return errors
 
 

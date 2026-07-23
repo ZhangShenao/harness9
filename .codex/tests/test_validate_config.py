@@ -290,28 +290,252 @@ class AgentContractTest(unittest.TestCase):
                 )
                 self.assert_error(errors, "knowledge policy mismatch")
 
-    def test_organizer_rejects_direct_rm_shell_commands(self) -> None:
-        commands = (
-            f'rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
-            f'rm -- "{KNOWLEDGE_ROOT}/analysis/20260723/file.json"',
-            f'sudo rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
-            f'command rm -r "{KNOWLEDGE_ROOT}/analysis/20260723"',
-            (
-                "./.codex/scripts/cleanup-knowledge-day.sh 20260723"
-                f' && rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"'
+    def test_organizer_rejects_fenced_cleanup_bypasses(self) -> None:
+        bypasses = {
+            "empty quote obfuscation": (
+                "zsh",
+                f'r\'\'m -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
             ),
-        )
-        for command in commands:
-            with self.subTest(command=command):
+            "absolute rm": (
+                "sh",
+                f'/bin/rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
+            ),
+            "arbitrary absolute rm": (
+                "bash",
+                f'/usr/local/bin/rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
+            ),
+            "double quote obfuscation": (
+                "shell",
+                f'r""m -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
+            ),
+            "sudo wrapper": (
+                "shell",
+                f'sudo /usr/bin/rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
+            ),
+            "command wrapper": (
+                "bash",
+                f'command rm -r "{KNOWLEDGE_ROOT}/analysis/20260723"',
+            ),
+            "env wrapper": (
+                "",
+                f'env rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
+            ),
+            "busybox wrapper": (
+                "zsh",
+                f'busybox rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
+            ),
+            "xargs wrapper": (
+                "bash",
+                f'printf "%s" target | xargs rm -rf',
+            ),
+            "find delete": (
+                "bash",
+                f'find "{KNOWLEDGE_ROOT}/raw/20260723" -delete',
+            ),
+            "unlink": (
+                "sh",
+                f'unlink "{KNOWLEDGE_ROOT}/raw/20260723/item.json"',
+            ),
+            "rmdir": (
+                "shell",
+                f'rmdir "{KNOWLEDGE_ROOT}/analysis/20260723"',
+            ),
+            "python os.remove": (
+                "",
+                "python3 -c 'import os; os.remove(\"target\")'",
+            ),
+            "python shutil.rmtree": (
+                "zsh",
+                "python3 -c 'import shutil; shutil.rmtree(\"target\")'",
+            ),
+            "python pathlib unlink": (
+                "bash",
+                "python3 -c 'from pathlib import Path; "
+                "Path(\"target\").unlink()'",
+            ),
+            "typed python os.remove": (
+                "python",
+                "import os\nos.remove(\"target\")",
+            ),
+            "typed python shutil.rmtree": (
+                "python3",
+                "import shutil\nshutil.rmtree(\"target\")",
+            ),
+            "typed python pathlib unlink": (
+                "py",
+                "from pathlib import Path\nPath(\"target\").unlink()",
+            ),
+            "alternate cleanup script": (
+                "sh",
+                "./scripts/purge-knowledge-day.sh 20260723",
+            ),
+            "unknown alternate script": (
+                "",
+                "./scripts/do-maintenance.sh 20260723",
+            ),
+            "hard-coded guarded cleanup day": (
+                "bash",
+                "./.codex/scripts/cleanup-knowledge-day.sh 20260723",
+            ),
+            "guarded cleanup chained with rm": (
+                "bash",
+                "./.codex/scripts/cleanup-knowledge-day.sh YYYYMMDD"
+                f' && rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
+            ),
+        }
+        for label, (language, command) in bypasses.items():
+            with self.subTest(label=label):
                 data = self.knowledge_data("organizer")
                 data["developer_instructions"] += (
-                    f"\n```bash\n{command}\n```\n"
+                    f"\n```{language}\n{command}\n```\n"
                 )
                 errors = validate_config.validate_agent_data(
                     "organizer",
                     data,
                 )
-                self.assert_error(errors, "direct rm command forbidden")
+                self.assert_error(
+                    errors,
+                    "unsafe or alternative cleanup command",
+                )
+
+    def test_organizer_rejects_inline_cleanup_bypasses(self) -> None:
+        commands = (
+            f'r\'\'m -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
+            f'/bin/rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
+            f'find "{KNOWLEDGE_ROOT}/raw/20260723" -delete',
+            f'unlink "{KNOWLEDGE_ROOT}/raw/20260723/item.json"',
+            f'rmdir "{KNOWLEDGE_ROOT}/analysis/20260723"',
+            "python3 -c 'import os; os.remove(\"target\")'",
+            "python3 -c 'import shutil; shutil.rmtree(\"target\")'",
+            "python3 -c 'from pathlib import Path; Path(\"target\").unlink()'",
+            "./scripts/cleanup-knowledge-day.sh 20260723",
+            "./scripts/do-maintenance.sh 20260723",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                data = self.knowledge_data("organizer")
+                data["developer_instructions"] += (
+                    f"\n文章完成后运行 `{command}`。\n"
+                )
+                errors = validate_config.validate_agent_data(
+                    "organizer",
+                    data,
+                )
+                self.assert_error(
+                    errors,
+                    "unsafe or alternative cleanup command",
+                )
+
+    def test_organizer_allows_only_exact_guarded_cleanup_examples(self) -> None:
+        exact = "./.codex/scripts/cleanup-knowledge-day.sh YYYYMMDD"
+        additions = (
+            f"\n再次强调，只能调用 `{exact}`。\n",
+            f"\n```\n{exact}\n```\n",
+            f"\n```zsh\n{exact}\n```\n",
+        )
+        for addition in additions:
+            with self.subTest(addition=addition):
+                data = self.knowledge_data("organizer")
+                data["developer_instructions"] += addition
+                self.assertEqual(
+                    [],
+                    validate_config.validate_agent_data("organizer", data),
+                )
+
+    def test_knowledge_agents_reject_operative_policy_contradictions(
+        self,
+    ) -> None:
+        mutations = {
+            "collector analysis write": (
+                "collector",
+                "\n将采集结果写入 "
+                f"`{KNOWLEDGE_ROOT}/analysis/{{YYYYMMDD}}/collector.json`。\n",
+                "operative write boundary contradiction",
+            ),
+            "collector articles write": (
+                "collector",
+                "\n另存一份到 "
+                f"`{KNOWLEDGE_ROOT}/articles/collector.json`。\n",
+                "operative write boundary contradiction",
+            ),
+            "collector fenced write instruction": (
+                "collector",
+                "\n```text\n将结果写入 "
+                f"`{KNOWLEDGE_ROOT}/analysis/{{YYYYMMDD}}/collector.json`。"
+                "\n```\n",
+                "operative write boundary contradiction",
+            ),
+            "analyzer unconditional fetch": (
+                "analyzer",
+                "\n对所有条目无条件回源抓取。\n",
+                "conditional fetch contradiction",
+            ),
+            "analyzer fetch every URL": (
+                "analyzer",
+                "\n无论本地摘要是否充分，都访问每条 URL 获取网页正文。\n",
+                "conditional fetch contradiction",
+            ),
+            "analyzer fenced unconditional fetch": (
+                "analyzer",
+                "\n```markdown\n对所有条目无条件回源抓取。\n```\n",
+                "conditional fetch contradiction",
+            ),
+            "organizer cleanup first": (
+                "organizer",
+                "\n先清理，再写文章。\n",
+                "cleanup order contradiction",
+            ),
+            "organizer cleanup before create": (
+                "organizer",
+                "\n清理中间数据后再创建最终文章。\n",
+                "cleanup order contradiction",
+            ),
+            "organizer fenced cleanup first": (
+                "organizer",
+                "\n```text\n先清理，再写文章。\n```\n",
+                "cleanup order contradiction",
+            ),
+            "organizer alternate cleanup prose": (
+                "organizer",
+                "\n也可以使用备用清理命令完成中间数据清理。\n",
+                "alternative cleanup policy contradiction",
+            ),
+        }
+        for label, (name, addition, marker) in mutations.items():
+            with self.subTest(label=label):
+                data = self.knowledge_data(name)
+                data["developer_instructions"] += addition
+                errors = validate_config.validate_agent_data(name, data)
+                self.assert_error(errors, marker)
+
+    def test_knowledge_agents_allow_harmless_negative_policy_text(self) -> None:
+        additions = {
+            "collector": (
+                "\n不得将结果写入 "
+                f"`{KNOWLEDGE_ROOT}/analysis/{{YYYYMMDD}}/collector.json`；"
+                "没有要求另存到 "
+                f"`{KNOWLEDGE_ROOT}/articles/collector.json`。\n"
+            ),
+            "analyzer": (
+                "\n不得对所有条目无条件回源；"
+                "无需访问每条 URL 获取网页正文。\n"
+            ),
+            "organizer": (
+                "\n不得先清理再写文章；不要运行 "
+                f"`/bin/rm -rf \"{KNOWLEDGE_ROOT}/raw/20260723\"`，"
+                "也不能执行 "
+                f"`find \"{KNOWLEDGE_ROOT}/analysis/20260723\" -delete`；"
+                "不允许使用备用清理命令。\n"
+            ),
+        }
+        for name, addition in additions.items():
+            with self.subTest(name=name):
+                data = self.knowledge_data(name)
+                data["developer_instructions"] += addition
+                self.assertEqual(
+                    [],
+                    validate_config.validate_agent_data(name, data),
+                )
 
     def test_blog_writer_requires_every_image_contract_key(self) -> None:
         required = {
