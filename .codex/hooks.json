@@ -1,0 +1,18 @@
+{
+  "description": "Synchronize harness9 Markdown outputs to the local Obsidian vault.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "^(apply_patch|Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/.codex/hooks/sync-to-obsidian.sh\"",
+            "timeout": 30,
+            "statusMessage": "Syncing Markdown to Obsidian"
+          }
+        ]
+      }
+    ]
+  }
+}
