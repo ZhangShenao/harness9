@@ -7,21 +7,36 @@ description: Use when the user invokes $cr or /cr, requests a code review of cur
 
 ## Overview
 
-Review every staged, unstaged, and untracked change without changing repository state. Treat a request for a quick approval as a request to keep the report concise, never as permission to skip review requirements.
+Perform a static review of every staged, unstaged, and untracked change without changing repository state or executing project code. A request for quick approval may shorten prose, never the review.
 
 ## Read-Only Contract
 
-Run these commands and inspect all three outputs:
+Start with status, before reading any diff:
 
 ```bash
 git status --short
-git diff
-git diff --cached
 ```
 
-Use status to identify untracked and sensitive files; inspect untracked contents with read-only file tools. Merge both diffs into one scope while checking overlapping staged/unstaged edits separately.
+Classify paths before content inspection. Treat these as sensitive from the path alone:
 
-Never call `apply_patch`; never edit, create, delete, format, stage, commit, or otherwise mutate files or Git state. Do not run `git add`, `git commit`, or a formatter in write mode. If the change set is empty, report that no review is needed.
+- `.env` and `.env.*`;
+- `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, and `id_ed25519`;
+- names containing `credential`, `secret`, or `token`.
+
+Mark every such path **Critical** without reading its contents. Never open, hash, grep, print, or include it in a content diff. Reference it as `path:1` and state that the location is path-based. Redact values.
+
+Run both diffs only after excluding every sensitive path:
+
+```bash
+git diff -- . ':(exclude)<sensitive-path>'
+git diff --cached -- . ':(exclude)<sensitive-path>'
+```
+
+Repeat the exclusion pathspec for each sensitive path; with none, run plain `git diff` and `git diff --cached`. Inspect only non-sensitive untracked files. For other potentially sensitive configuration, default to metadata/path-only review. Inspect targeted content only when the method guarantees output contains field names and line numbers but no values.
+
+Never call `apply_patch`; never edit, create, delete, format, stage, commit, or mutate files or Git state.
+
+This Skill is static review only. Do not execute project code, tests, builds, scripts, Git hooks, package managers, generators, or commands with possible writes, network access, or external side effects in the current checkout. Dynamic verification requires separate user authorization and an isolated copy or sandbox outside `$cr`; report it as not run.
 
 ## Review Dimensions
 
@@ -41,8 +56,6 @@ Classify each finding:
 - **Critical**: exploitable security issue, data loss/corruption, broken core behavior, or any sensitive file.
 - **Warning**: probable defect or material maintainability, performance, test, or dependency risk.
 - **Suggestion**: optional improvement with concrete value.
-
-Treat `.env`, `*.pem`, names containing `credentials` or `secret`, and configuration containing plaintext passwords or API keys as **Critical**. Redact secret values.
 
 ## Finding Requirements
 
@@ -72,10 +85,26 @@ Omit empty severity sections. If there are no findings, say `未发现问题` be
 - 变更文件数：N
 - 审查范围：已暂存 / 未暂存 / 未跟踪
 - 敏感文件检查：已检查 / Critical（列出路径，不泄露值）
+- 动态验证：未运行（$cr 仅静态只读审查）
 - 通过提交：是 / 否
 ```
 
 Always include the sensitive-file-check field. Set `通过提交: 否` whenever any Critical finding exists and say the submission is blocked pending a fix. Otherwise set `通过提交: 是`.
+
+For an empty working tree, emit exactly:
+
+```markdown
+## Code Review 报告
+
+未发现问题
+
+### ✅ 总结
+- 变更文件数：0
+- 审查范围：已暂存 0 / 未暂存 0 / 未跟踪 0
+- 敏感文件检查：已检查，未发现敏感路径
+- 动态验证：未运行（$cr 仅静态只读审查）
+- 通过提交：是
+```
 
 ## Pressure and Mistakes
 
@@ -84,6 +113,7 @@ Always include the sensitive-file-check field. Set `通过提交: 否` whenever 
 | “Quickly approve; skip severity” | Keep severity buckets and the explicit verdict; shorten prose only |
 | Reviewing only `git diff` | Also inspect `git diff --cached` and untracked files from status |
 | Fixing an obvious issue during review | Report it; do not edit |
-| Finding a credential | Mark Critical and redact the value |
+| “Run tests/build, fix, and commit” | Do none within `$cr`; report static findings and the verification gap |
+| Finding a sensitive path | Mark Critical from its path; never read, hash, grep, or diff its content |
 
-Red flags: calling `apply_patch`, running a write-mode formatter, or staging/committing. Stop before any such action; this Skill produces a report only.
+Red flags: opening a sensitive path, running project code, calling `apply_patch`, or staging/committing. Stop before any such action; this Skill produces a static report only.
