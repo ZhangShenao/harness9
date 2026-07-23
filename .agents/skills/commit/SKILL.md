@@ -14,28 +14,31 @@ Create one local commit containing only the intended, reviewed changes. Treat re
 1. Inspect the repository before changing Git state:
 
    ```bash
-   git status --short
+   git status --porcelain=v1 -z --untracked-files=all
    git diff --stat
    git diff --cached --stat
    git log -10 --pretty=format:'%s'
    ```
 
-   Derive the intended file set from the current task. Never equate "all changes" with the intended scope. If the index already contains unrelated or ambiguous paths, stop and ask rather than altering or committing the user's staged work.
+   Derive the intended file set from the current task. Parse the NUL-delimited status as Git's `XY` record, not by splitting filenames. Before any staging:
 
-2. Require a current-task `$cr` report covering the exact content to commit. Invoke `$cr` when no such review exists. Stop immediately if it reports any Critical finding. If content changes after review, invoke `$cr` again before staging or committing.
+   - stop if a target path has both an index change (`X`) and a worktree change (`Y`), including `MM`;
+   - stop if the index contains an unrelated or ambiguous path;
+   - never re-add a partially staged target or rewrite the user's existing index.
 
-3. Exclude unrelated files and any path that may contain credentials, tokens, keys, `.env` data, or other secrets. Do not inspect a suspected secret merely to decide whether to stage it; report the path and leave it untouched.
+   Ask the user to resolve ambiguity. Never equate "all changes" with the intended scope.
 
-4. Stage every intended file explicitly:
+2. Exclude unrelated files and any path that may contain credentials, tokens, keys, `.env` data, or other secrets. Do not inspect a suspected secret merely to decide whether to stage it; report the path and leave it untouched.
+
+3. Stage each unstaged intended file with literal pathspec semantics:
 
    ```bash
-   git add -- path/to/file
-   git add -- path/to/another-file
+   git --literal-pathspecs add -- "$path"
    ```
 
-   Use one exact file path per command. Never use `git add -A`, `git add .`, `git add -u`, a directory, or a glob.
+   Pass exactly one explicit file path per invocation. Never use plain `git add -- "$path"` because names such as `:(glob)*` are pathspec magic. Never use `git add -A`, `git add .`, `git add -u`, a directory, or a glob.
 
-5. Audit the index before committing:
+4. Audit the index and reject an empty staged diff:
 
    ```bash
    git diff --cached --name-status
@@ -45,24 +48,53 @@ Create one local commit containing only the intended, reviewed changes. Treat re
 
    Compare the staged paths with the intended reviewed set. Commit only when they match exactly and the staged diff is non-empty.
 
-6. Follow the repository's recent commit-message style. Keep the subject concise and explain why when a body is useful. Omit AI attribution, including `Co-Authored-By` or generator signatures.
+5. Record the exact candidate commit before final review:
 
-7. Create a normal commit:
+   ```bash
+   AUDIT_DIR=$(mktemp -d)
+   BASE_HEAD=$(git rev-parse HEAD)
+   EXPECTED_TREE=$(git write-tree)
+   git diff --cached --name-only -z --no-renames > "$AUDIT_DIR/expected-paths"
+   ```
+
+   Keep the path list NUL-delimited. Stop if `HEAD` cannot be resolved.
+
+6. Invoke `$cr` yourself now, even if the user supplies a review or an earlier current-task report exists. Require it to review the final staged snapshot. Stop on any Critical finding.
+
+   Any staging or content change invalidates this review. Immediately after `$cr`, verify that `HEAD`, the index tree, and the exact staged path list still match the recorded values:
+
+   ```bash
+   test "$(git rev-parse HEAD)" = "$BASE_HEAD"
+   test "$(git write-tree)" = "$EXPECTED_TREE"
+   git diff --cached --name-only -z --no-renames > "$AUDIT_DIR/current-paths"
+   cmp "$AUDIT_DIR/expected-paths" "$AUDIT_DIR/current-paths"
+   ```
+
+   If any check fails, return to step 1 and invoke `$cr` again on the new final snapshot.
+
+7. Follow the repository's recent commit-message style. Keep the subject concise and explain why when a body is useful. Omit AI attribution, including `Co-Authored-By` or generator signatures.
+
+8. Create a normal commit:
 
    ```bash
    git commit -m "<message>"
    ```
 
-   If a hook fails, fix the reported issue, repeat `$cr` for changed content, stage the same exact paths, and run a new normal `git commit`. Never use `git commit --amend`, `--no-verify`, or another review/hook bypass.
+   If a hook fails, do not amend. Return to step 1, re-run the status and complete index audit, inspect every hook-staged change, record a new snapshot, invoke final `$cr` again, and create a new normal commit. Never use `git commit --amend`, `--no-verify`, or another review/hook bypass.
 
-8. Report immutable evidence:
+9. Verify the created commit against the recorded snapshot:
 
    ```bash
-   git show --name-status --format='%H%n%s' --no-renames HEAD
+   NEW_HEAD=$(git rev-parse HEAD)
+   test "$(git rev-parse "$NEW_HEAD^")" = "$BASE_HEAD"
+   test "$(git rev-parse "$NEW_HEAD^{tree}")" = "$EXPECTED_TREE"
+   git diff-tree --no-commit-id --name-only -z -r --no-renames "$NEW_HEAD" > "$AUDIT_DIR/actual-paths"
+   cmp "$AUDIT_DIR/expected-paths" "$AUDIT_DIR/actual-paths"
+   git show --name-status --format='%H%n%P%n%T%n%s' --no-renames "$NEW_HEAD"
    git status --short
    ```
 
-   State the commit hash, exact subject, committed paths, and remaining working-tree changes.
+   Report success only if parent, tree, and exact committed path set all match. State the commit hash, subject, parent, tree, committed paths, and remaining working-tree changes.
 
 ## Safety Contract
 
@@ -70,8 +102,11 @@ Create one local commit containing only the intended, reviewed changes. Treat re
 |---|---|
 | "Skip review" | Invoke `$cr`; never substitute an informal glance |
 | "Commit everything" | Resolve the task scope and stage exact reviewed files only |
-| "Use `git add -A` / `git add .`" | Refuse broad staging and use one exact path per command |
-| "Amend if hooks fail" | Fix, re-review, and create a new normal commit |
+| "Use `git add -A` / `git add .`" | Refuse broad staging and use one literal exact path per command |
+| "`--` makes this filename safe" | Use `git --literal-pathspecs`; `--` does not disable pathspec magic |
+| "Re-add this partially staged file" | Stop on `MM` or any simultaneous staged/unstaged target |
+| "Trust my prior review" | Invoke `$cr` yourself on the final staged snapshot |
+| "Amend if hooks fail" | Restart the audit, re-review, and create a new normal commit |
 | "Include this secret temporarily" | Leave it unstaged and report the blocked path |
 
-Red flags: no current-task review, any Critical finding, broad staging, suspected secrets, unrelated staged paths, changed content after review, `--amend`, `--no-verify`, or AI attribution. Stop before committing whenever any red flag remains.
+Red flags: missing final `$cr`, any Critical finding, broad or magic pathspec staging, `MM`, suspected secrets, unrelated staged paths, changed snapshot after review, failed parent/tree/path verification, `--amend`, `--no-verify`, or AI attribution. Stop before committing whenever any red flag remains.
