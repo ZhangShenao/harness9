@@ -1,0 +1,95 @@
+prefix_rule(
+    pattern = ["go", ["test", "build", "vet", "list"]],
+    decision = "allow",
+    justification = "Allow harness9 Go validation commands",
+    match = ["go test ./...", "go build ./...", "go vet ./...", "go list ./..."],
+    not_match = ["go env -w GOPROXY=off"],
+)
+
+prefix_rule(
+    pattern = [["gofmt", "goimports"]],
+    decision = "allow",
+    justification = "Allow Go source formatting",
+    match = ["gofmt -l .", "goimports -w internal/engine/agent_loop.go"],
+    not_match = ["go fmt ./..."],
+)
+
+prefix_rule(
+    pattern = ["git", ["status", "diff", "log", "show"]],
+    decision = "allow",
+    justification = "Allow read-only Git inspection",
+    match = ["git status --short", "git diff --cached", "git log -5 --oneline", "git show HEAD"],
+    not_match = ["git push origin feature"],
+)
+
+prefix_rule(
+    pattern = ["git", "branch", "--show-current"],
+    decision = "allow",
+    justification = "Allow reading the current branch",
+    match = ["git branch --show-current"],
+    not_match = ["git branch new-feature"],
+)
+
+prefix_rule(
+    pattern = ["gh", "run", ["list", "view"]],
+    decision = "allow",
+    justification = "Allow read-only GitHub Actions inspection",
+    match = ["gh run list --limit 3", "gh run view 12345"],
+    not_match = ["gh run cancel 12345"],
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", "view"],
+    decision = "allow",
+    justification = "Allow read-only pull request inspection",
+    match = ["gh pr view", "gh pr view 42 --json title,url"],
+    not_match = ["gh pr create --draft"],
+)
+
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "prompt",
+    justification = "Remote Git writes require explicit review",
+    match = ["git push -u origin feature", "git push origin v1.2.3"],
+    not_match = ["git status --short"],
+)
+
+prefix_rule(
+    pattern = ["git", "tag"],
+    decision = "prompt",
+    justification = "Tag reads and writes stay reviewable because release tags trigger automation",
+    match = ["git tag --list", "git tag v1.2.3"],
+    not_match = ["git log -1"],
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", "create"],
+    decision = "prompt",
+    justification = "Creating a pull request is an external write",
+    match = ["gh pr create --draft --base master --title feature"],
+    not_match = ["gh pr view"],
+)
+
+prefix_rule(
+    pattern = ["gh", "release", "edit"],
+    decision = "prompt",
+    justification = "Editing a GitHub Release is an external write",
+    match = ["gh release edit v1.2.3 --notes-file /tmp/notes.md"],
+    not_match = ["gh release view v1.2.3"],
+)
+
+prefix_rule(
+    pattern = ["rm", ["-rf", "-fr"]],
+    decision = "forbidden",
+    justification = "Use the guarded harness9 cleanup script for recursive deletion",
+    match = ["rm -rf docs", "rm -fr /tmp/example"],
+    not_match = ["./.codex/scripts/cleanup-knowledge-day.sh 20260723"],
+)
+
+prefix_rule(
+    pattern = ["./.codex/scripts/cleanup-knowledge-day.sh"],
+    decision = "allow",
+    justification = "The guarded script validates the date, root, article, and exact targets",
+    match = ["./.codex/scripts/cleanup-knowledge-day.sh 20260723"],
+    not_match = ["rm -rf /Users/zsa/Desktop/workspace/harness9/知识库日报/raw/20260723"],
+)
