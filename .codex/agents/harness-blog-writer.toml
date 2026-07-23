@@ -148,14 +148,14 @@ cmd/harness9/*.go            # TUI/CLI 入口逻辑
 skill = $imagegen
 tool = image_gen
 skill_before_raster_generation = true
-calls_per_distinct_asset = 1
+initial_calls_per_distinct_asset = 1
+maximum_retry_calls_per_asset = 1
 minimum_body_pngs = 6
 minimum_cover_pngs = 1
 project_image_directory = website/zh/blog/<slug>/images/
 generated_image_source = $CODEX_HOME/generated_images
 visual_inspection = every_output
 visual_inspection_tool = view_image
-targeted_retries_per_image = 1
 retain_final_prompt_in_markdown = true
 verify_project_png_existence = true
 silent_cli_or_api_fallback = forbidden
@@ -166,11 +166,11 @@ block_if_builtin_unavailable = true
 #### Codex 原生图片生成硬契约
 
 1. **先加载技能**：生成任何位图资产前，必须先使用内置 `$imagegen` 技能，完整遵循它的 built-in tool mode、保存路径和验收规则。
-2. **逐图调用工具**：每个独立资产的初始生成都必须单独调用一次内置 `image_gen`；不得用一次调用捆绑多个不同图片，不得用 `n` 代替不同 Prompt 的逐图调用。
+2. **逐图初始生成**：每个独立资产必须且只能执行 1 次初始 `image_gen` 调用；不得用一次调用捆绑多个不同图片，不得用 `n` 代替不同 Prompt 的逐图调用。这里的初始调用不包含第 6 条定义的针对性重试调用。
 3. **数量下限**：至少生成 6 张正文 PNG 和 1 张封面 PNG。正文图文件名使用 kebab-case 和序号后缀；封面固定为 `cover.png`。
 4. **生成后复制**：内置工具先把图片生成到 Codex 返回的 `$CODEX_HOME/generated_images/...` 路径。读取每次调用返回的确切路径，再把最终选中的文件复制到 `website/zh/blog/<slug>/images/`。不得假设 `image_gen` 接受项目目标路径参数。
 5. **逐张视觉检查**：每次生成后都必须用 `view_image` 打开输出，核对主题、架构关系、文字准确性、风格、构图、16:9 比例与禁用项。不能只检查文件名或命令退出码。
-6. **最多一次针对性重试**：某张图未通过视觉检查时，只允许针对发现的具体问题重试 1 次；重试使用修正后的最终 Prompt，并作为独立的 `image_gen` 调用。第二次仍不合格则停止并报告该图阻塞，不得继续假装完成。
+6. **最多一次针对性重试**：某张图未通过视觉检查时，在初始生成之外最多允许 1 次针对性重试调用；重试使用修正后的最终 Prompt，并作为独立的 `image_gen` 调用。重试次数与初始调用次数分开计数。重试输出仍不合格则停止并报告该图阻塞，不得继续假装完成。
 7. **Prompt 随文留档**：Markdown 必须保留每个最终入选 PNG 实际使用的完整最终 Prompt。若发生重试，替换为重试所用 Prompt，不能保留已经淘汰的版本冒充最终 Prompt。
 8. **项目文件是交付物**：文章引用的每张图都必须实际存在于 `website/zh/blog/<slug>/images/`。不得让任何被 Markdown 引用的资产只留在 `$CODEX_HOME/generated_images`。
 9. **禁止静默降级**：不得静默切换到 CLI、API、`scripts/image_gen.py`、自制 SDK 脚本或其他模型；也不得退化成只输出 Prompt、占位图片或要求用户自行生成。
@@ -380,7 +380,7 @@ harness9 是一款 Local-First、轻量级、功能完备、生产可用的通�
 - [ ] 所有代码片段是否来自实际代码（非臆造）？
 - [ ] 是否先使用 `$imagegen`，再调用内置 `image_gen`？
 - [ ] 是否实际生成至少 6 张正文 PNG（不含封面）和 1 张封面 PNG？
-- [ ] 是否对每个独立图片使用单独的 `image_gen` 调用？
+- [ ] 是否对每个独立图片恰好执行 1 次初始 `image_gen` 调用，并把最多 1 次针对性重试调用单独计数？
 - [ ] 每个核心章节是否至少有 1 张实际图片？
 - [ ] 每张图片是否有 `![caption](./images/<filename>.png)` Markdown 引用，且在最终 Prompt 块之前？
 - [ ] 每张图片文件名是否使用 kebab-case 且带序号后缀（如 `react-loop-01.png`）？
@@ -417,7 +417,7 @@ harness9 是一款 Local-First、轻量级、功能完备、生产可用的通�
 8. **封面图禁止画技术图**：封面是情感入口，只用场景隐喻，绝不直接画架构图、流程图或组件图
 9. **唯一输出路径**：博客文章只写入 `website/zh/blog/<slug>/index.md`，图片只写入同级 `images/`，禁止同时写入 `docs/博客/`、`website/blog/` 或其他目录，避免产生重复副本
 10. **图片工具边界**：必须使用 `$imagegen` 和内置 `image_gen`；能力不可用时阻塞并报告，禁止静默 CLI/API 降级或只交付 Prompt
-11. **视觉验收不可省略**：每张输出都必须实际打开检查；单图最多 1 次针对性重试，仍失败就报告阻塞
+11. **视觉验收不可省略**：每张图先执行 1 次初始生成并实际打开检查；未通过时最多增加 1 次针对性重试调用，仍失败就报告阻塞
 12. **Prompt 可追溯**：文章中每个 Prompt 都必须是最终入选 PNG 的实际生成 Prompt
 13. **交付完整性**：任何 Markdown 引用的 PNG 未复制到项目、未通过视觉检查或不存在，都不得宣称文章完成
 """

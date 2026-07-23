@@ -41,14 +41,14 @@ BLOG_IMAGE_GENERATION_CONTRACT = {
     "skill": "$imagegen",
     "tool": "image_gen",
     "skill_before_raster_generation": "true",
-    "calls_per_distinct_asset": "1",
+    "initial_calls_per_distinct_asset": "1",
+    "maximum_retry_calls_per_asset": "1",
     "minimum_body_pngs": "6",
     "minimum_cover_pngs": "1",
     "project_image_directory": "website/zh/blog/<slug>/images/",
     "generated_image_source": "$CODEX_HOME/generated_images",
     "visual_inspection": "every_output",
     "visual_inspection_tool": "view_image",
-    "targeted_retries_per_image": "1",
     "retain_final_prompt_in_markdown": "true",
     "verify_project_png_existence": "true",
     "silent_cli_or_api_fallback": "forbidden",
@@ -109,13 +109,21 @@ def contract_section(
     return section.strip()
 
 
-def contract_assignments(section: str) -> dict[str, str]:
+def contract_assignments(
+    section: str,
+    label: str,
+    errors: list[str],
+) -> dict[str, str] | None:
     assignments = {}
     for line in section.splitlines():
         key, separator, value = line.partition("=")
         if not separator:
             continue
-        assignments[key.strip()] = value.strip()
+        key = key.strip()
+        if key in assignments:
+            errors.append(f"{label}: duplicate contract assignment {key}")
+            return None
+        assignments[key] = value.strip()
     return assignments
 
 
@@ -193,7 +201,15 @@ def validate_enhancer(instructions: str) -> list[str]:
             "inventory_command": ENHANCER_INVENTORY_COMMAND,
             "review_every_inventory_path": "true",
         }
-        if contract_assignments(scope) != expected_scope:
+        scope_assignments = contract_assignments(
+            scope,
+            "harness-enhancer repository-scope",
+            errors,
+        )
+        if (
+            scope_assignments is not None
+            and scope_assignments != expected_scope
+        ):
             errors.append(
                 "harness-enhancer: repository scope contract mismatch"
             )
@@ -251,7 +267,15 @@ def validate_researcher(instructions: str) -> list[str]:
             "allow_academic_sources": "true",
             "http_status": "only_if_exposed",
         }
-        if contract_assignments(policy) != expected_policy:
+        policy_assignments = contract_assignments(
+            policy,
+            "harness-researcher research-policy",
+            errors,
+        )
+        if (
+            policy_assignments is not None
+            and policy_assignments != expected_policy
+        ):
             errors.append("harness-researcher: research policy mismatch")
     return errors
 
@@ -283,7 +307,15 @@ def validate_test_runner(instructions: str) -> list[str]:
             "no_writes": "true",
             "no_fixes": "true",
         }
-        if contract_assignments(communication) != expected_communication:
+        communication_assignments = contract_assignments(
+            communication,
+            "test-runner communication",
+            errors,
+        )
+        if (
+            communication_assignments is not None
+            and communication_assignments != expected_communication
+        ):
             errors.append("test-runner: communication contract mismatch")
 
     if has_cd_shell_command(instructions):
@@ -301,14 +333,19 @@ def validate_blog_writer(instructions: str) -> list[str]:
         "harness-blog-writer",
         errors,
     )
-    if (
-        image_generation is not None
-        and contract_assignments(image_generation)
-        != BLOG_IMAGE_GENERATION_CONTRACT
-    ):
-        errors.append(
-            "harness-blog-writer: image generation contract mismatch"
+    if image_generation is not None:
+        image_assignments = contract_assignments(
+            image_generation,
+            "harness-blog-writer image-generation",
+            errors,
         )
+        if (
+            image_assignments is not None
+            and image_assignments != BLOG_IMAGE_GENERATION_CONTRACT
+        ):
+            errors.append(
+                "harness-blog-writer: image generation contract mismatch"
+            )
     return errors
 
 
