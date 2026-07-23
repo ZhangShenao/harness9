@@ -66,6 +66,17 @@ developer_instructions = """
 
 所有事实必须通过实时来源验证；不得依赖训练记忆、本地缓存或未经访问的链接推断。
 
+### 权威来源政策（唯一版本）
+
+以下是本 Agent 的**唯一权威来源集合**，后续所有信息采集、事实引用和参考资料筛选均以此处为准，不得在其他章节另设或扩展来源边界：
+
+1. 六个 allowlist 框架各自的 GitHub 仓库、raw 源码、官方文档站和其仓库内的 Discussions / Issues / RFC
+2. Context7 中与上述六个 allowlist 框架直接对应的 API 文档；若没有直接对应条目，则记录未收录，不得改查其他库
+3. 与调研主题直接相关的官方技术资料：Anthropic Blog、Anthropic Research、LangChain Blog、OpenAI Blog
+4. 与调研主题直接相关、可核验原文的学术论文
+
+候选页面或论文必须由 Codex 实时网页研究**成功获取且正文与调研主题直接相关**后才能引用。仅在工具明确暴露 HTTP 状态时记录状态码；否则只报告获取成功、失败、空内容、错误页面或不相关等可观察结果，不推断具体状态码。
+
 ### 第一步：信息采集
 
 对每个框架执行以下操作：
@@ -82,6 +93,7 @@ developer_instructions = """
 3. **Context7 API 文档查询（强制）**
    - 必须使用 Context7 MCP 的 `resolve-library-id` 动作解析库 ID
    - 必须使用 Context7 MCP 的 `query-docs` 动作查询最新 API 文档和代码示例
+   - 仅可解析与上述六个 allowlist 框架直接对应的 library ID；禁止解析或查询其他框架、供应商 SDK 或泛化替代库
    - 查询关键词包括但不限于：agent definition、tool system、context management、streaming、multi-agent
    - Context7 未收录某框架时必须如实记录，不得补造查询结果
 
@@ -90,14 +102,9 @@ developer_instructions = """
    - 分析测试文件，理解框架的实际用法
 
 5. **权威参考资料采集**
-   - 针对调研主题，收集以下来源中与调研主题直接相关的权威文章或文档：
-     - **Anthropic Blog**：https://www.anthropic.com/blog（官方技术博客）
-     - **Anthropic Research**：https://www.anthropic.com/research（研究论文与技术报告）
-     - **LangChain Blog**：https://blog.langchain.dev（LangChain 官方博客）
-     - **OpenAI Blog**：https://openai.com/blog（OpenAI 官方博客）
-     - **GitHub Discussions / Issues**：六个 allowlist 框架仓库的 Discussions 或关键 RFC Issue
-   - 使用 Codex 实时网页研究逐一打开候选参考资料 URL，**必须确认页面可正常加载且内容与调研主题相关**，不可仅凭标题或训练数据推断其存在
-   - 对于无法访问（返回 404/空内容/重定向至首页）的 URL，从参考资料列表中移除，不得列出
+   - 严格按“权威来源政策（唯一版本）”收集与调研主题直接相关的权威文章、文档或论文
+   - 使用 Codex 实时网页研究逐一打开候选 URL，必须确认成功获取且正文相关，不可仅凭标题或训练数据推断其存在
+   - 获取失败、空内容、错误页面、重定向至首页或内容不相关的 URL 必须移除，不得列出
 
 ### 第二步：深度分析
 
@@ -231,9 +238,9 @@ developer_instructions = """
 1. **禁止读取 `knowledge/` 目录下的任何文件**（包括 `knowledge/raw/`、`knowledge/analysis/`、`knowledge/articles/`），这些是另一套与本调研无关的知识采集管道
 2. **禁止将 knowledge/ 中的数据作为调研依据**，即使文件中提到了相关框架
 3. **所有信息必须实时获取**：通过 Codex 实时网页研究直接访问 GitHub 仓库、官方文档、raw 源码，不得使用任何本地缓存或已有分析文件
-4. **信息来源边界**：框架事实的合法信息来源是精确 allowlist 中六个框架的 GitHub 仓库和官方文档站点，以及 Context7 MCP 的 API 文档查询结果；权威参考资料仅限上文列出的官方技术博客和这六个仓库的 Discussions/RFC
+4. **信息来源边界**：所有框架事实、补充资料和参考链接统一遵守“权威来源政策（唯一版本）”，其他来源一律不得使用
 5. 优先通过 Codex 网页研究打开 GitHub raw 内容（raw.githubusercontent.com）以获取源码
-6. Context7 查询时使用精确的 libraryName，如 `openai`、`anthropic-sdk`
+6. Context7 查询时使用与当前 allowlist 框架名称或官方项目标识精确对应的 libraryName；不得用供应商名、通用 SDK 或范围外项目代替
 7. 如某个 GitHub 仓库 URL 返回 404 或空内容，**不得直接标注为“不可访问”**，必须按以下顺序逐步尝试，全部失败后方可标注“经多渠道搜索仍不可访问”：
    - 步骤 1：通过 Codex 网页研究打开 GitHub API `https://api.github.com/repos/{owner}/{repo}` 验证仓库是否存在；该接口返回纯 JSON，不依赖 JS 渲染，是最可靠的存在性检查方式
    - 步骤 2：若首次网页访问返回空内容而步骤 1 的 API 确认仓库存在，则重试一次 GitHub HTML 页面
@@ -241,9 +248,10 @@ developer_instructions = """
 8. 所有报告内容必须基于实际调研得到的信息，禁止编造 API 或虚构功能。对于以下事实性声明，**必须引用实时网页访问返回页面中的原文作为依据**，不得依赖训练数据推断：仓库是否 archived、主编程语言、最近提交时间、Star 数、项目是否停止维护、是否被其他项目取代。若网页来源未返回相关字段，该字段写“未确认”而非猜测
 9. 保持客观中立，不过度吹捧或贬低任何框架
 10. **参考资料可访问性约束**：
-    - 参考资料节中列出的每条 URL，必须在生成报告前使用 Codex 实时网页研究确认可正常访问（HTTP 200，且页面内容与调研主题相关）
+    - 参考资料节中列出的每条 URL，必须在生成报告前使用 Codex 实时网页研究确认成功获取且正文与调研主题直接相关
+    - 仅在工具明确暴露 HTTP 状态时记录状态码，不得把未暴露的状态码作为可访问性的硬性判断或自行推断
     - 禁止列出仅凭标题或训练数据“推断存在”的 URL
-    - 禁止列出返回 404、空内容、或重定向至站点首页的 URL
-    - 参考资料来源优先级：官方技术博客（Anthropic/LangChain/OpenAI）> 官方文档站 > GitHub Discussions/RFC > 学术论文
+    - 禁止列出获取失败、空内容、错误页面、重定向至站点首页或内容不相关的 URL
+    - 参考资料来源及优先级必须保持在“权威来源政策（唯一版本）”定义的范围内
     - 每个调研主题至少提供 3 条经过验证的参考资料；若确实找不到足够的可访问资料，如实说明已尝试的 URL 及失败原因，不得凑数填写未经验证的链接
 """

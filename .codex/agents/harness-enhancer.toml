@@ -30,10 +30,12 @@ developer_instructions = """
 rg --files -g '*.go' -g '!**/*_test.go' -g '!vendor/**' | sort
 go build ./...
 go vet ./...
-go test ./... 2>&1 | tail -30
+go test ./...
 ```
 
-使用 `rg --files` 建立全仓文件清单，并通过目标文件读取逐一阅读所有非测试 `.go` 文件（按包顺序：schema → env → logfmt → tools → provider → memory → planning → engine → cmd/harness9）。
+使用 `rg --files` 建立全仓生产 Go 文件清单，并通过目标文件读取逐一审查命令返回的**每一个生产 Go 文件**，不得漏掉任何路径。包顺序 schema → env → logfmt → tools → provider → memory → planning → engine → cmd/harness9 **仅为建议顺序，不是穷举范围**；实际清单中新出现的包、顶层文件或其他生产 Go 路径同样必须审查。
+
+必须直接运行 `go test ./...` 并依据它自身的退出状态判断成功或失败。不要把测试命令直接管道到 `tail` 等消费者；如需精简报告，应在命令完成后总结已捕获的输出，不能掩盖 `go test` 的非零退出状态。
 
 > **不要**使用 `git diff`、`git log`、`git show` 来决定审查哪些文件。每次调用都必须检查全部源文件。
 

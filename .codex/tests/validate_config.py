@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import re
 import sys
 import tomllib
 
@@ -78,6 +79,14 @@ for name in sorted(EXPECTED):
         for marker in ("go build ./...", "go vet ./...", "go test ./...", "gofmt -l ."):
             if marker not in instructions:
                 errors.append(f"{name}: missing {marker}")
+        for marker in (
+            "每一个生产 Go 文件",
+            "仅为建议顺序，不是穷举范围",
+        ):
+            if marker not in instructions:
+                errors.append(f"{name}: missing {marker}")
+        if re.search(r"go test ./\.\.\.[^\n]*\|", instructions):
+            errors.append(f"{name}: go test pipeline masks the test exit status")
     if name == "harness-researcher":
         for marker in (
             "DeepAgents",
@@ -91,12 +100,45 @@ for name in sorted(EXPECTED):
         ):
             if marker not in instructions:
                 errors.append(f"{name}: missing {marker}")
+        for marker in (
+            "仅可解析与上述六个 allowlist 框架直接对应的 library ID",
+            "唯一权威来源集合",
+            "Anthropic Research",
+            "学术论文",
+            "成功获取且正文与调研主题直接相关",
+            "仅在工具明确暴露 HTTP 状态时记录状态码",
+        ):
+            if marker not in instructions:
+                errors.append(f"{name}: missing {marker}")
+        for forbidden in ("`openai`", "`anthropic-sdk`", "HTTP 200"):
+            if forbidden in instructions:
+                errors.append(f"{name}: forbidden marker {forbidden}")
+        if instructions.count("### 权威来源政策（唯一版本）") != 1:
+            errors.append(f"{name}: source policy must have one authoritative definition")
     if name == "test-runner":
         if data.get("sandbox_mode") != "read-only":
             errors.append("test-runner: sandbox_mode must be read-only")
-        for marker in ("go test ./... -v -count=1", "不修改"):
+        for marker in (
+            "go test ./... -v -count=1",
+            "不修改",
+            "调用方提供的当前工作目录",
+            "简短进度更新",
+            "结构化最终报告",
+        ):
             if marker not in instructions:
                 errors.append(f"test-runner: missing {marker}")
+        for forbidden in (
+            "/Users/",
+            "不可见",
+            "静默",
+            "只输出最终报告",
+            "不输出任何执行日志或中间过程",
+        ):
+            if forbidden in instructions:
+                errors.append(f"test-runner: forbidden marker {forbidden}")
+        exact_command = "```bash\ngo test ./... -v -count=1\n```"
+        if exact_command not in instructions:
+            errors.append("test-runner: full test command must be exact")
     if name == "harness-blog-writer":
         for marker in (
             "$imagegen",
