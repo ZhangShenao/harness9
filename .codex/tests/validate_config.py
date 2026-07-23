@@ -37,6 +37,24 @@ ENHANCER_VALIDATION_COMMANDS = (
     "gofmt -l .",
 )
 TEST_RUNNER_COMMAND = "go test ./... -v -count=1"
+BLOG_IMAGE_GENERATION_CONTRACT = {
+    "skill": "$imagegen",
+    "tool": "image_gen",
+    "skill_before_raster_generation": "true",
+    "calls_per_distinct_asset": "1",
+    "minimum_body_pngs": "6",
+    "minimum_cover_pngs": "1",
+    "project_image_directory": "website/zh/blog/<slug>/images/",
+    "generated_image_source": "$CODEX_HOME/generated_images",
+    "visual_inspection": "every_output",
+    "visual_inspection_tool": "view_image",
+    "targeted_retries_per_image": "1",
+    "retain_final_prompt_in_markdown": "true",
+    "verify_project_png_existence": "true",
+    "silent_cli_or_api_fallback": "forbidden",
+    "prompt_only_fallback": "forbidden",
+    "block_if_builtin_unavailable": "true",
+}
 UNIX_ABSOLUTE_PATH = re.compile(
     r"(?<![A-Za-z0-9_.:/\\])/"
     r"[A-Za-z0-9_~.-]+(?:/[A-Za-z0-9_~.-]+)*"
@@ -275,6 +293,25 @@ def validate_test_runner(instructions: str) -> list[str]:
     return errors
 
 
+def validate_blog_writer(instructions: str) -> list[str]:
+    errors = []
+    image_generation = contract_section(
+        instructions,
+        "image-generation",
+        "harness-blog-writer",
+        errors,
+    )
+    if (
+        image_generation is not None
+        and contract_assignments(image_generation)
+        != BLOG_IMAGE_GENERATION_CONTRACT
+    ):
+        errors.append(
+            "harness-blog-writer: image generation contract mismatch"
+        )
+    return errors
+
+
 def validate_agent_data(name: str, data: dict) -> list[str]:
     errors = []
     for field in ("name", "description", "developer_instructions"):
@@ -310,16 +347,11 @@ def validate_agent_data(name: str, data: dict) -> list[str]:
             errors.append("test-runner: sandbox_mode must be read-only")
         errors.extend(validate_test_runner(instructions))
     if name == "harness-blog-writer":
-        for marker in (
-            "$imagegen",
-            "image_gen",
-            "website/zh/blog/",
-            "至少 6 张正文",
-            "1 张封面",
-            "$CODEX_HOME/generated_images",
-        ):
-            if marker not in instructions:
-                errors.append(f"{name}: missing {marker}")
+        if data.get("sandbox_mode") != "workspace-write":
+            errors.append(
+                "harness-blog-writer: sandbox_mode must be workspace-write"
+            )
+        errors.extend(validate_blog_writer(instructions))
     if name in {"collector", "analyzer", "organizer"}:
         workspace_write = get_table(
             data,
