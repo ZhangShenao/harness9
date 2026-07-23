@@ -490,6 +490,21 @@ class AgentContractTest(unittest.TestCase):
                 "\n清理中间数据后再创建最终文章。\n",
                 "cleanup order contradiction",
             ),
+            "organizer cleanup earlier than write": (
+                "organizer",
+                "\n清理步骤早于写入文章。\n",
+                "cleanup order contradiction",
+            ),
+            "organizer cleanup prior to generation": (
+                "organizer",
+                "\n清理步骤先于生成最终文章。\n",
+                "cleanup order contradiction",
+            ),
+            "organizer cleanup before article wording": (
+                "organizer",
+                "\n清理必须在写入文章之前执行。\n",
+                "cleanup order contradiction",
+            ),
             "organizer fenced cleanup first": (
                 "organizer",
                 "\n```text\n先清理，再写文章。\n```\n",
@@ -536,6 +551,118 @@ class AgentContractTest(unittest.TestCase):
                     [],
                     validate_config.validate_agent_data(name, data),
                 )
+
+    def test_mixed_clause_negation_does_not_mask_contradictions(self) -> None:
+        mutations = {
+            "collector mixed write": (
+                "collector",
+                "\n不得编造内容，并将结果写入 "
+                f"`{KNOWLEDGE_ROOT}/analysis/{{YYYYMMDD}}/collector.json`。\n",
+                "operative write boundary contradiction",
+            ),
+            "analyzer mixed fetch": (
+                "analyzer",
+                "\n不得编造内容，但对所有条目无条件回源抓取。\n",
+                "conditional fetch contradiction",
+            ),
+            "organizer mixed cleanup order": (
+                "organizer",
+                "\n不得编造内容，但先清理再写文章。\n",
+                "cleanup order contradiction",
+            ),
+            "organizer mixed inline delete": (
+                "organizer",
+                "\n不得编造内容，并运行 "
+                f"`/bin/rm -rf \"{KNOWLEDGE_ROOT}/raw/20260723\"`。\n",
+                "unsafe or alternative cleanup command",
+            ),
+        }
+        for label, (name, addition, marker) in mutations.items():
+            with self.subTest(label=label):
+                data = self.knowledge_data(name)
+                data["developer_instructions"] += addition
+                errors = validate_config.validate_agent_data(name, data)
+                self.assert_error(errors, marker)
+
+    def test_guarded_cleanup_requires_affirmative_fenced_command(
+        self,
+    ) -> None:
+        exact = "./.codex/scripts/cleanup-knowledge-day.sh YYYYMMDD"
+
+        data = self.knowledge_data("organizer")
+        fenced = f"```bash\n{exact}\n```"
+        self.assertIn(fenced, data["developer_instructions"])
+        data["developer_instructions"] = data[
+            "developer_instructions"
+        ].replace(fenced, f"```text\n{exact}\n```", 1)
+        errors = validate_config.validate_agent_data("organizer", data)
+        self.assert_error(
+            errors,
+            "affirmative fenced guarded cleanup invocation missing",
+        )
+
+        data = self.knowledge_data("organizer")
+        data["developer_instructions"] += (
+            f"\n禁止调用 `{exact}`。\n"
+        )
+        errors = validate_config.validate_agent_data("organizer", data)
+        self.assert_error(
+            errors,
+            "explicitly prohibits guarded cleanup invocation",
+        )
+
+        data = self.knowledge_data("organizer")
+        data["developer_instructions"] = data[
+            "developer_instructions"
+        ].replace(fenced, f"```text\n{exact}\n```", 1)
+        data["developer_instructions"] += (
+            f"\n禁止执行下列命令：\n```bash\n{exact}\n```\n"
+        )
+        errors = validate_config.validate_agent_data("organizer", data)
+        self.assert_error(
+            errors,
+            "affirmative fenced guarded cleanup invocation missing",
+        )
+        self.assert_error(
+            errors,
+            "explicitly prohibits guarded cleanup invocation",
+        )
+
+    def test_analyzer_allows_local_non_network_collection(self) -> None:
+        data = self.knowledge_data("analyzer")
+        data["developer_instructions"] += (
+            "\n获取所有条目的本地标题后进行排序。\n"
+        )
+        self.assertEqual(
+            [],
+            validate_config.validate_agent_data("analyzer", data),
+        )
+
+    def test_organizer_allows_after_article_cleanup_relations(self) -> None:
+        additions = (
+            "\n清理必须在写入文章后执行。\n",
+            "\n清理步骤应晚于生成最终文章。\n",
+        )
+        for addition in additions:
+            with self.subTest(addition=addition):
+                data = self.knowledge_data("organizer")
+                data["developer_instructions"] += addition
+                self.assertEqual(
+                    [],
+                    validate_config.validate_agent_data("organizer", data),
+                )
+
+    def test_organizer_allows_negative_alternate_cleanup_statement(
+        self,
+    ) -> None:
+        data = self.knowledge_data("organizer")
+        data["developer_instructions"] += (
+            "\n只允许调用受保护脚本清理，不接受其他清理命令。\n"
+        )
+        self.assertEqual(
+            [],
+            validate_config.validate_agent_data("organizer", data),
+        )
 
     def test_blog_writer_requires_every_image_contract_key(self) -> None:
         required = {

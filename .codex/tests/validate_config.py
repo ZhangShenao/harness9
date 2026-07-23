@@ -172,7 +172,9 @@ NEGATION_MARKERS = (
     "不允许",
     "无需",
     "没有要求",
+    "不接受",
 )
+ACTION_BOUNDARY = re.compile(r"[,，]|但是|然而|但")
 
 
 def load_toml(path: Path, errors: list[str]) -> dict:
@@ -252,13 +254,17 @@ def shell_commands(text: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
-def executable_fenced_blocks(text: str) -> list[str]:
+def executable_fenced_blocks(text: str) -> list[tuple[str, str]]:
     blocks = []
     for match in FENCED_BLOCK.finditer(text):
         language = match.group("language").strip().casefold()
         language = language.split(maxsplit=1)[0] if language else ""
         if language in EXECUTABLE_FENCE_LANGUAGES:
-            blocks.append(match.group("body"))
+            preceding = text[: match.start()].rstrip()
+            preceding_line = (
+                preceding.rsplit("\n", 1)[-1] if preceding else ""
+            )
+            blocks.append((match.group("body"), preceding_line))
     return blocks
 
 
@@ -283,6 +289,43 @@ def clause_around(text: str, start: int, end: int) -> str:
 
 def has_negative_context(text: str) -> bool:
     return any(marker in text for marker in NEGATION_MARKERS)
+
+
+def explicitly_prohibits_invocation(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:禁止|不得|不要|不能|不允许|切勿|严禁)"
+            r".{0,24}(?:执行|运行|调用|使用)",
+            text,
+        )
+    )
+
+
+def action_segments(text: str) -> list[str]:
+    return [
+        segment.strip()
+        for segment in ACTION_BOUNDARY.split(text)
+        if segment.strip()
+    ]
+
+
+def action_context_around(text: str, start: int, end: int) -> str:
+    context = clause_around(text, start, end)
+    matched_text = text[start:end]
+    local_start = context.find(matched_text)
+    if local_start < 0:
+        return context
+    local_end = local_start + len(matched_text)
+
+    segment_start = 0
+    segment_end = len(context)
+    for boundary in ACTION_BOUNDARY.finditer(context):
+        if boundary.end() <= local_start:
+            segment_start = boundary.end()
+        elif boundary.start() >= local_end:
+            segment_end = boundary.start()
+            break
+    return context[segment_start:segment_end]
 
 
 def normalize_cleanup_command(command: str) -> str:
@@ -347,14 +390,20 @@ def validate_organizer_cleanup_instructions(
     errors = []
     guarded_cleanup_found = False
 
-    for block in executable_fenced_blocks(instructions):
+    for block, preceding_line in executable_fenced_blocks(instructions):
         for line in block.splitlines():
             command = line.strip()
             if not command or command.startswith("#"):
                 continue
             normalized = normalize_cleanup_command(command)
             if normalized == GUARDED_CLEANUP_COMMAND:
-                guarded_cleanup_found = True
+                if explicitly_prohibits_invocation(preceding_line):
+                    errors.append(
+                        "organizer: explicitly prohibits guarded cleanup "
+                        "invocation"
+                    )
+                else:
+                    guarded_cleanup_found = True
                 continue
             errors.append(
                 "organizer: unsafe or alternative cleanup command forbidden"
@@ -364,14 +413,18 @@ def validate_organizer_cleanup_instructions(
     inline_text = text_without_fenced_blocks(instructions)
     for match in INLINE_CODE.finditer(inline_text):
         command = match.group(1).strip()
-        context = clause_around(
+        context = action_context_around(
             inline_text,
             match.start(),
             match.end(),
         )
         normalized = normalize_cleanup_command(command)
         if normalized == GUARDED_CLEANUP_COMMAND:
-            guarded_cleanup_found = True
+            if explicitly_prohibits_invocation(context):
+                errors.append(
+                    "organizer: explicitly prohibits guarded cleanup "
+                    "invocation"
+                )
             continue
         if has_negative_context(context):
             continue
@@ -385,7 +438,10 @@ def validate_organizer_cleanup_instructions(
             break
 
     if not guarded_cleanup_found:
-        errors.append("organizer: exact guarded cleanup invocation missing")
+        errors.append(
+            "organizer: affirmative fenced guarded cleanup invocation "
+            "missing"
+        )
     return errors
 
 
@@ -421,58 +477,80 @@ def has_write_boundary_contradiction(
         r"输出(?:到|至)|创建(?:文件)?(?:到|于|在))"
     )
     for clause in operative_instruction_clauses(instructions):
-        if has_negative_context(clause) or not write_intent.search(clause):
-            continue
-
-        paths = [
-            match.group(1).strip()
-            for match in INLINE_CODE.finditer(clause)
-            if (match.group(1).strip()).startswith("/")
-        ]
-        paths.extend(
-            match.group(0)
-            for match in re.finditer(
-                re.escape(KNOWLEDGE_ROOT) + r"(?:/[^\s`，、：]*)?",
-                clause,
-            )
-        )
-        for path in paths:
-            if path != allowed_prefix.rstrip("/") and not path.startswith(
-                allowed_prefix
+        for segment in action_segments(clause):
+            if (
+                has_negative_context(segment)
+                or not write_intent.search(segment)
             ):
-                return True
+                continue
+
+            paths = [
+                match.group(1).strip()
+                for match in INLINE_CODE.finditer(segment)
+                if (match.group(1).strip()).startswith("/")
+            ]
+            paths.extend(
+                match.group(0)
+                for match in re.finditer(
+                    re.escape(KNOWLEDGE_ROOT)
+                    + r"(?:/[^\s`，、：]*)?",
+                    segment,
+                )
+            )
+            for path in paths:
+                if (
+                    path != allowed_prefix.rstrip("/")
+                    and not path.startswith(allowed_prefix)
+                ):
+                    return True
     return False
 
 
 def has_unconditional_fetch_contradiction(instructions: str) -> bool:
     fetch_action = re.compile(r"(?:回源|抓取|访问|获取)")
+    web_or_source = re.compile(
+        r"(?:回源|网页|网络|URL|链接|页面|源站)",
+        flags=re.IGNORECASE,
+    )
     unconditional_scope = re.compile(
-        r"(?:无条件|无论|所有条目|每(?:一)?条(?:记录|条目|URL)|"
-        r"全部条目)"
+        r"(?:无条件|无论|所有条目|每(?:一)?条\s*"
+        r"(?:记录|条目|URL|链接|页面)|全部条目|^都)",
+        flags=re.IGNORECASE,
     )
     for clause in operative_instruction_clauses(instructions):
-        if has_negative_context(clause):
-            continue
-        if fetch_action.search(clause) and unconditional_scope.search(clause):
-            return True
+        for segment in action_segments(clause):
+            if has_negative_context(segment):
+                continue
+            if (
+                fetch_action.search(segment)
+                and web_or_source.search(segment)
+                and unconditional_scope.search(segment)
+            ):
+                return True
     return False
 
 
 def has_cleanup_order_contradiction(instructions: str) -> bool:
-    article_creation = re.compile(
+    article_action = (
         r"(?:写(?:入)?|创建|生成)(?:最终)?(?:文章|终稿)"
     )
+    before_relations = (
+        re.compile(rf"先\s*清理.*?再\s*{article_action}"),
+        re.compile(rf"清理.*?后\s*再\s*{article_action}"),
+        re.compile(rf"清理.*?(?:早于|先于).*?{article_action}"),
+        re.compile(rf"清理.*?在.*?{article_action}.*?之前"),
+        re.compile(rf"在.*?{article_action}.*?之前.*?清理"),
+    )
     for clause in operative_instruction_clauses(instructions):
-        if has_negative_context(clause):
-            continue
-        cleanup_position = clause.find("清理")
-        creation = article_creation.search(clause)
-        if (
-            cleanup_position >= 0
-            and creation is not None
-            and cleanup_position < creation.start()
-        ):
-            return True
+        for pattern in before_relations:
+            for match in pattern.finditer(clause):
+                context = action_context_around(
+                    clause,
+                    match.start(),
+                    match.end(),
+                )
+                if not has_negative_context(context):
+                    return True
     return False
 
 
@@ -480,16 +558,17 @@ def has_alternative_cleanup_policy_contradiction(
     instructions: str,
 ) -> bool:
     alternate = re.compile(r"(?:备用|替代|其他|任意)")
-    execution = re.compile(r"(?:使用|执行|运行|调用|改用|允许)")
+    execution = re.compile(r"(?:使用|执行|运行|调用|改用|允许|接受)")
     for clause in operative_instruction_clauses(instructions):
-        if has_negative_context(clause):
-            continue
-        if (
-            "清理" in clause
-            and alternate.search(clause)
-            and execution.search(clause)
-        ):
-            return True
+        for segment in action_segments(clause):
+            if has_negative_context(segment):
+                continue
+            if (
+                "清理" in segment
+                and alternate.search(segment)
+                and execution.search(segment)
+            ):
+                return True
     return False
 
 
