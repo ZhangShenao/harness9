@@ -82,6 +82,41 @@ type Task struct {
 	UpdatedAt time.Time
 }
 
+// TaskAttempt records one Worker execution of a Task.
+type TaskAttempt struct {
+	ID        string
+	TaskID    string
+	Worker    string
+	Status    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Artifact is append-only Worker output associated with one execution attempt.
+type Artifact struct {
+	ID        string
+	MissionID string
+	TaskID    string
+	AttemptID string
+	Kind      string
+	Content   []byte
+	SHA256    string
+	CreatedAt time.Time
+}
+
+// Evidence is append-only verification output. Only a verifier should create it.
+type Evidence struct {
+	ID        string
+	MissionID string
+	TaskID    string
+	AttemptID string
+	Kind      string
+	Content   []byte
+	SHA256    string
+	Passed    bool
+	CreatedAt time.Time
+}
+
 // CreateMissionInput describes the minimum user intent needed to create a Mission.
 type CreateMissionInput struct {
 	Goal string
@@ -92,6 +127,25 @@ type CreateTaskInput struct {
 	MissionID string
 	Title     string
 	DependsOn []string
+}
+
+// CreateArtifactInput describes an immutable Worker artifact.
+type CreateArtifactInput struct {
+	MissionID string
+	TaskID    string
+	AttemptID string
+	Kind      string
+	Content   []byte
+}
+
+// CreateEvidenceInput describes an immutable verifier result.
+type CreateEvidenceInput struct {
+	MissionID string
+	TaskID    string
+	AttemptID string
+	Kind      string
+	Content   []byte
+	Passed    bool
 }
 
 func validTaskTransition(current, next TaskStatus) bool {

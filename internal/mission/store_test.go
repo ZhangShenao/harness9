@@ -66,6 +66,60 @@ func TestStoreRejectsDirectTaskSuccess(t *testing.T) {
 	}
 }
 
+func TestStoreEvidenceIsContentAddressedAndAppendOnly(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	mission, err := store.CreateMission(ctx, CreateMissionInput{Goal: "ship a feature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(ctx, CreateTaskInput{MissionID: mission.ID, Title: "verify feature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(ctx, task.ID, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := store.AddEvidence(ctx, CreateEvidenceInput{
+		MissionID: mission.ID,
+		TaskID:    task.ID,
+		AttemptID: attempt.ID,
+		Kind:      "go_test",
+		Content:   []byte("ok\tgithub.com/harness9/internal/mission"),
+		Passed:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.SHA256 == "" {
+		t.Fatal("evidence SHA256 is empty")
+	}
+	if evidence.AttemptID != attempt.ID {
+		t.Fatalf("attempt ID = %q, want %q", evidence.AttemptID, attempt.ID)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE evidence SET content = ? WHERE id = ?`, []byte("tampered"), evidence.ID); err == nil {
+		t.Fatal("expected immutable evidence update to fail")
+	}
+	if _, err := store.AddEvidence(ctx, CreateEvidenceInput{
+		MissionID: mission.ID,
+		TaskID:    task.ID,
+		AttemptID: attempt.ID,
+		Kind:      "go_test",
+		Content:   []byte("ok\tgithub.com/harness9/internal/mission"),
+		Passed:    true,
+	}); err != nil {
+		t.Fatalf("adding duplicate evidence: %v", err)
+	}
+	got, err := store.ListEvidence(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("evidence count = %d, want 1", len(got))
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "mission.db"))

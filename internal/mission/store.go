@@ -3,7 +3,9 @@ package mission
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -92,6 +94,21 @@ CREATE TABLE IF NOT EXISTS workspace_leases (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_leases_active_task
 ON workspace_leases(task_id) WHERE status = 'active';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_attempt_kind_digest
+ON evidence(attempt_id, kind, sha256);
+
+CREATE TRIGGER IF NOT EXISTS prevent_evidence_update
+BEFORE UPDATE ON evidence
+BEGIN
+    SELECT RAISE(ABORT, 'evidence is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_artifact_update
+BEFORE UPDATE ON artifacts
+BEGIN
+    SELECT RAISE(ABORT, 'artifact is immutable');
+END;
 `
 
 // Store is the SQLite-backed source of truth for Mission Control state.
@@ -218,6 +235,105 @@ func (s *Store) ListTasks(ctx context.Context, missionID string) ([]Task, error)
 	return tasks, nil
 }
 
+// StartAttempt records a Worker attempt for an existing Task.
+func (s *Store) StartAttempt(ctx context.Context, taskID, worker string) (TaskAttempt, error) {
+	if strings.TrimSpace(worker) == "" {
+		return TaskAttempt{}, fmt.Errorf("attempt worker is required")
+	}
+	task, err := s.GetTask(ctx, taskID)
+	if err != nil {
+		return TaskAttempt{}, err
+	}
+	now := time.Now().UTC()
+	attempt := TaskAttempt{
+		ID: newID(), TaskID: task.ID, Worker: strings.TrimSpace(worker), Status: "running", CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO task_attempts (id, task_id, worker, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		attempt.ID, attempt.TaskID, attempt.Worker, attempt.Status, unixMillis(now), unixMillis(now)); err != nil {
+		return TaskAttempt{}, fmt.Errorf("create task attempt: %w", err)
+	}
+	return attempt, nil
+}
+
+// AddArtifact records Worker output once and returns an existing matching artifact on retry.
+func (s *Store) AddArtifact(ctx context.Context, in CreateArtifactInput) (Artifact, error) {
+	if len(in.Content) == 0 {
+		return Artifact{}, fmt.Errorf("artifact content is required")
+	}
+	if strings.TrimSpace(in.Kind) == "" {
+		return Artifact{}, fmt.Errorf("artifact kind is required")
+	}
+	if err := s.validateAttempt(ctx, in.MissionID, in.TaskID, in.AttemptID); err != nil {
+		return Artifact{}, err
+	}
+	now := time.Now().UTC()
+	artifact := Artifact{ID: newID(), MissionID: in.MissionID, TaskID: in.TaskID, AttemptID: in.AttemptID, Kind: in.Kind, Content: append([]byte(nil), in.Content...), SHA256: digest(in.Content), CreatedAt: now}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO artifacts (id, mission_id, task_id, attempt_id, kind, content, sha256, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		artifact.ID, artifact.MissionID, artifact.TaskID, artifact.AttemptID, artifact.Kind, artifact.Content, artifact.SHA256, unixMillis(now)); err != nil {
+		return Artifact{}, fmt.Errorf("add artifact: %w", err)
+	}
+	return artifact, nil
+}
+
+// AddEvidence records verifier output once and returns a matching record on retry.
+func (s *Store) AddEvidence(ctx context.Context, in CreateEvidenceInput) (Evidence, error) {
+	if len(in.Content) == 0 {
+		return Evidence{}, fmt.Errorf("evidence content is required")
+	}
+	if strings.TrimSpace(in.Kind) == "" {
+		return Evidence{}, fmt.Errorf("evidence kind is required")
+	}
+	if err := s.validateAttempt(ctx, in.MissionID, in.TaskID, in.AttemptID); err != nil {
+		return Evidence{}, err
+	}
+	digestValue := digest(in.Content)
+	if evidence, ok, err := s.findEvidence(ctx, in.AttemptID, in.Kind, digestValue); err != nil {
+		return Evidence{}, err
+	} else if ok {
+		return evidence, nil
+	}
+	now := time.Now().UTC()
+	evidence := Evidence{ID: newID(), MissionID: in.MissionID, TaskID: in.TaskID, AttemptID: in.AttemptID, Kind: in.Kind, Content: append([]byte(nil), in.Content...), SHA256: digestValue, Passed: in.Passed, CreatedAt: now}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO evidence (id, mission_id, task_id, attempt_id, kind, content, sha256, passed, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		evidence.ID, evidence.MissionID, evidence.TaskID, evidence.AttemptID, evidence.Kind, evidence.Content, evidence.SHA256, evidence.Passed, unixMillis(now)); err != nil {
+		return Evidence{}, fmt.Errorf("add evidence: %w", err)
+	}
+	return evidence, nil
+}
+
+// ListEvidence returns a Task's verifier output in creation order.
+func (s *Store) ListEvidence(ctx context.Context, taskID string) ([]Evidence, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, mission_id, task_id, attempt_id, kind, content, sha256, passed, created_at
+		FROM evidence WHERE task_id = ? ORDER BY created_at, id`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("list evidence: %w", err)
+	}
+	defer rows.Close()
+	var evidence []Evidence
+	for rows.Next() {
+		var item Evidence
+		var passed int
+		var createdAt int64
+		if err := rows.Scan(&item.ID, &item.MissionID, &item.TaskID, &item.AttemptID, &item.Kind, &item.Content, &item.SHA256, &passed, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan evidence: %w", err)
+		}
+		item.Passed = passed != 0
+		item.CreatedAt = fromUnixMillis(createdAt)
+		evidence = append(evidence, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate evidence: %w", err)
+	}
+	return evidence, nil
+}
+
 // TransitionTask validates and applies one Task lifecycle transition.
 func (s *Store) TransitionTask(ctx context.Context, id string, next TaskStatus) (Task, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -308,6 +424,41 @@ func dependencyInMission(ctx context.Context, tx *sql.Tx, missionID, dependencyI
 	return nil
 }
 
+func (s *Store) validateAttempt(ctx context.Context, missionID, taskID, attemptID string) error {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM task_attempts attempt
+		JOIN tasks task ON task.id = attempt.task_id
+		WHERE attempt.id = ? AND attempt.task_id = ? AND task.mission_id = ?`,
+		attemptID, taskID, missionID).Scan(&count); err != nil {
+		return fmt.Errorf("validate task attempt: %w", err)
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) findEvidence(ctx context.Context, attemptID, kind, digestValue string) (Evidence, bool, error) {
+	var evidence Evidence
+	var passed int
+	var createdAt int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, mission_id, task_id, attempt_id, kind, content, sha256, passed, created_at
+		FROM evidence WHERE attempt_id = ? AND kind = ? AND sha256 = ?`, attemptID, kind, digestValue).
+		Scan(&evidence.ID, &evidence.MissionID, &evidence.TaskID, &evidence.AttemptID, &evidence.Kind, &evidence.Content, &evidence.SHA256, &passed, &createdAt)
+	if err == sql.ErrNoRows {
+		return Evidence{}, false, nil
+	}
+	if err != nil {
+		return Evidence{}, false, fmt.Errorf("find evidence: %w", err)
+	}
+	evidence.Passed = passed != 0
+	evidence.CreatedAt = fromUnixMillis(createdAt)
+	return evidence, true, nil
+}
+
 func queueReadyDependents(ctx context.Context, tx *sql.Tx, dependencyID string, now time.Time) error {
 	rows, err := tx.QueryContext(ctx, `SELECT task_id FROM task_dependencies WHERE dependency_id = ?`, dependencyID)
 	if err != nil {
@@ -358,6 +509,11 @@ func uniqueIDs(ids []string) []string {
 		result = append(result, id)
 	}
 	return result
+}
+
+func digest(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
 }
 
 func newID() string {
