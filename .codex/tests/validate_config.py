@@ -28,14 +28,25 @@ def load_toml(path: Path) -> dict:
         return {}
 
 
+def get_table(data: dict, key: str, label: str) -> dict:
+    value = data.get(key, {})
+    if not isinstance(value, dict):
+        errors.append(f"{label} must be a table")
+        return {}
+    return value
+
+
 if not CONFIG.is_file():
     errors.append(f"missing {CONFIG}")
 else:
     config = load_toml(CONFIG)
-    agents = config.get("agents", {})
+    agents = get_table(config, "agents", "config: agents")
     if agents.get("enabled") is not True:
         errors.append("config: agents.enabled must be true")
-    context7 = config.get("mcp_servers", {}).get("context7", {})
+    if agents.get("max_concurrent_threads_per_session") != 4:
+        errors.append("config: agents.max_concurrent_threads_per_session must be 4")
+    mcp_servers = get_table(config, "mcp_servers", "config: mcp_servers")
+    context7 = get_table(mcp_servers, "context7", "config: mcp_servers.context7")
     if context7.get("command") != "npx":
         errors.append("config: context7 command must be npx")
     if context7.get("args") != ["-y", "@upstash/context7-mcp"]:
@@ -98,7 +109,12 @@ for name in sorted(EXPECTED):
             if marker not in instructions:
                 errors.append(f"{name}: missing {marker}")
     if name in {"collector", "analyzer", "organizer"}:
-        roots = data.get("sandbox_workspace_write", {}).get("writable_roots", [])
+        workspace_write = get_table(
+            data,
+            "sandbox_workspace_write",
+            f"{name}: sandbox_workspace_write",
+        )
+        roots = workspace_write.get("writable_roots", [])
         if roots != [KNOWLEDGE_ROOT]:
             errors.append(f"{name}: writable_roots mismatch")
         if KNOWLEDGE_ROOT not in instructions:

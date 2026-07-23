@@ -1,25 +1,58 @@
 prefix_rule(
-    pattern = ["go", ["test", "build", "vet", "list"]],
+    pattern = ["go", ["test", "build", "vet"]],
+    decision = "prompt",
+    justification = "Go validation commands can accept output or executor flags, so review the full invocation",
+    match = [
+        "go test ./...",
+        "go test -exec /tmp/runner ./...",
+        "go build ./...",
+        "go build -o /tmp/harness9 ./...",
+        "go vet ./...",
+    ],
+    not_match = ["go list ./..."],
+)
+
+prefix_rule(
+    pattern = ["go", "list"],
     decision = "allow",
-    justification = "Allow harness9 Go validation commands",
-    match = ["go test ./...", "go build ./...", "go vet ./...", "go list ./..."],
+    justification = "Allow read-only harness9 Go package listing",
+    match = ["go list ./..."],
     not_match = ["go env -w GOPROXY=off"],
 )
 
 prefix_rule(
     pattern = [["gofmt", "goimports"]],
-    decision = "allow",
-    justification = "Allow Go source formatting",
-    match = ["gofmt -l .", "goimports -w internal/engine/agent_loop.go"],
+    decision = "prompt",
+    justification = "Formatting commands accept arbitrary paths and write flags, so review the full invocation",
+    match = [
+        "gofmt -l .",
+        "gofmt -w /tmp/example.go",
+        "goimports -w internal/engine/agent_loop.go",
+        "goimports -w /tmp/example.go",
+    ],
     not_match = ["go fmt ./..."],
 )
 
 prefix_rule(
-    pattern = ["git", ["status", "diff", "log", "show"]],
+    pattern = ["git", "status"],
     decision = "allow",
-    justification = "Allow read-only Git inspection",
-    match = ["git status --short", "git diff --cached", "git log -5 --oneline", "git show HEAD"],
+    justification = "Allow read-only Git status inspection",
+    match = ["git status --short"],
     not_match = ["git push origin feature"],
+)
+
+prefix_rule(
+    pattern = ["git", ["diff", "log", "show"]],
+    decision = "prompt",
+    justification = "Git inspection commands accept output-file flags, so review the full invocation",
+    match = [
+        "git diff --cached",
+        "git diff --output=/tmp/diff",
+        "git log -5 --oneline",
+        "git show HEAD",
+        "git show --output=/tmp/show HEAD",
+    ],
+    not_match = ["git status --short"],
 )
 
 prefix_rule(
@@ -79,11 +112,36 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["rm", ["-rf", "-fr"]],
+    pattern = [["rm", "/bin/rm"], ["-rf", "-fr", "-Rf", "-fR"]],
     decision = "forbidden",
     justification = "Use the guarded harness9 cleanup script for recursive deletion",
-    match = ["rm -rf docs", "rm -fr /tmp/example"],
+    match = ["rm -rf docs", "rm -fr /tmp/example", "/bin/rm -rf docs"],
     not_match = ["./.codex/scripts/cleanup-knowledge-day.sh 20260723"],
+)
+
+prefix_rule(
+    pattern = [["rm", "/bin/rm"], ["-r", "-R", "--recursive"]],
+    decision = "forbidden",
+    justification = "Use the guarded harness9 cleanup script for recursive deletion",
+    match = [
+        "rm -r -f docs",
+        "rm -R -f docs",
+        "rm --recursive --force docs",
+        "/bin/rm -r -f docs",
+    ],
+    not_match = ["rm -f docs"],
+)
+
+prefix_rule(
+    pattern = [["rm", "/bin/rm"], ["-f", "--force"], ["-r", "-R", "--recursive"]],
+    decision = "forbidden",
+    justification = "Use the guarded harness9 cleanup script for recursive deletion",
+    match = [
+        "rm -f -r docs",
+        "rm --force --recursive docs",
+        "/bin/rm -f -R docs",
+    ],
+    not_match = ["rm -f docs"],
 )
 
 prefix_rule(
