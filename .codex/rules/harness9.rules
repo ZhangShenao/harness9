@@ -14,9 +14,9 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["go", "list"],
-    decision = "allow",
-    justification = "Allow read-only harness9 Go package listing",
-    match = ["go list ./..."],
+    decision = "prompt",
+    justification = "Go list accepts executor flags, so review the full invocation",
+    match = ["go list ./...", "go list -toolexec=/tmp/runner ./..."],
     not_match = ["go env -w GOPROXY=off"],
 )
 
@@ -112,36 +112,20 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = [["rm", "/bin/rm"], ["-rf", "-fr", "-Rf", "-fR"]],
+    pattern = [["rm", "/bin/rm"]],
     decision = "forbidden",
-    justification = "Use the guarded harness9 cleanup script for recursive deletion",
-    match = ["rm -rf docs", "rm -fr /tmp/example", "/bin/rm -rf docs"],
-    not_match = ["./.codex/scripts/cleanup-knowledge-day.sh 20260723"],
-)
-
-prefix_rule(
-    pattern = [["rm", "/bin/rm"], ["-r", "-R", "--recursive"]],
-    decision = "forbidden",
-    justification = "Use the guarded harness9 cleanup script for recursive deletion",
+    justification = "Use non-destructive file handling or the guarded harness9 cleanup script",
     match = [
+        "rm file",
+        "/bin/rm file",
+        "rm -rf docs",
         "rm -r -f docs",
-        "rm -R -f docs",
-        "rm --recursive --force docs",
-        "/bin/rm -r -f docs",
+        "rm -v -rf docs",
+        "rm -i -r docs",
+        "rm --one-file-system --recursive docs",
+        "/bin/rm -rf docs",
     ],
-    not_match = ["rm -f docs"],
-)
-
-prefix_rule(
-    pattern = [["rm", "/bin/rm"], ["-f", "--force"], ["-r", "-R", "--recursive"]],
-    decision = "forbidden",
-    justification = "Use the guarded harness9 cleanup script for recursive deletion",
-    match = [
-        "rm -f -r docs",
-        "rm --force --recursive docs",
-        "/bin/rm -f -R docs",
-    ],
-    not_match = ["rm -f docs"],
+    not_match = ["./.codex/scripts/cleanup-knowledge-day.sh 20260723"],
 )
 
 prefix_rule(
