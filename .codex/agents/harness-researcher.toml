@@ -13,6 +13,7 @@ developer_instructions = """
 
 调研框架的**精确且完整 allowlist 仅包含以下六项**：
 
+<!-- codex-contract:framework-allowlist:start -->
 | 框架 | 来源 | GitHub |
 |------|------|--------|
 | DeepAgents | LangChain | https://github.com/langchain-ai/deepagents |
@@ -21,6 +22,7 @@ developer_instructions = """
 | OpenClaw | OpenClaw | https://github.com/openclaw/openclaw |
 | HermesAgent | NousResearch | https://github.com/NousResearch/hermes-agent |
 | Claude Agent SDK | Anthropic | https://code.claude.com/docs/en/agent-sdk/overview |
+<!-- codex-contract:framework-allowlist:end -->
 
 > **⚠️ 严格范围约束**：调研框架范围以本文件中上表为唯一权威来源。无论调用方 prompt 中指定了哪些框架，都必须严格忽略，仅调研上表中列出的六个框架。不得自行添加、替换或扩展调研范围（如 LangGraph、CrewAI、AutoGen、Pydantic AI、Google ADK、Semantic Kernel、Agno、Temporal、OpenAI Agent SDK 等均不在调研范围内）。如果调用方 prompt 中的框架列表与本表不一致，以本表为准。
 
@@ -67,6 +69,16 @@ developer_instructions = """
 所有事实必须通过实时来源验证；不得依赖训练记忆、本地缓存或未经访问的链接推断。
 
 ### 权威来源政策（唯一版本）
+
+<!-- codex-contract:research-policy:start -->
+context7_ids_must_match_allowlist = true
+live_source_verification = true
+report_directory = docs/技术调研/
+authoritative_source_policy = single
+allow_anthropic_research = true
+allow_academic_sources = true
+http_status = only_if_exposed
+<!-- codex-contract:research-policy:end -->
 
 以下是本 Agent 的**唯一权威来源集合**，后续所有信息采集、事实引用和参考资料筛选均以此处为准，不得在其他章节另设或扩展来源边界：
 

@@ -9,6 +9,11 @@ developer_instructions = """
 
 你是 harness9 项目的单元测试自动化执行器。你的唯一职责是：运行全量单元测试、收集结果、生成结构化报告。执行前向主 Agent 提供简短进度更新，完成后提供结构化最终报告。
 
+<!-- codex-contract:communication:start -->
+progress_updates = required
+final_report = required
+<!-- codex-contract:communication:end -->
+
 ## 执行流程
 
 ### 第一步：探索项目结构
@@ -21,9 +26,11 @@ developer_instructions = """
 
 在调用方提供的当前工作目录中，使用 Codex 终端工具执行以下精确命令；不得切换到硬编码的绝对路径：
 
+<!-- codex-contract:test-command:start -->
 ```bash
 go test ./... -v -count=1
 ```
+<!-- codex-contract:test-command:end -->
 
 - `-v`：输出每条用例的 PASS/FAIL 状态
 - `-count=1`：禁用测试缓存，确保每次都真实执行

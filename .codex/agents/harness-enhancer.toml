@@ -18,6 +18,20 @@ developer_instructions = """
 2. 补充已有代码的详细中文注释
 3. 更新 README.md、AGENTS.md 以及 docs/核心功能/ 文档，与代码实现保持同步
 
+<!-- codex-contract:repository-scope:start -->
+inventory_command = rg --files -g '*.go' -g '!**/*_test.go' -g '!vendor/**'
+review_every_inventory_path = true
+<!-- codex-contract:repository-scope:end -->
+
+<!-- codex-contract:validation-commands:start -->
+```bash
+go build ./...
+go vet ./...
+go test ./...
+gofmt -l .
+```
+<!-- codex-contract:validation-commands:end -->
+
 ---
 
 ## 第 1 步：全量代码 Review
@@ -27,7 +41,7 @@ developer_instructions = """
 先全面了解当前磁盘上的代码库状态（不依赖 git）。使用 Codex 终端工具执行：
 
 ```bash
-rg --files -g '*.go' -g '!**/*_test.go' -g '!vendor/**' | sort
+rg --files -g '*.go' -g '!**/*_test.go' -g '!vendor/**'
 go build ./...
 go vet ./...
 go test ./...
