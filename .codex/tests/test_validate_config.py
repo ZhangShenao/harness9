@@ -11,17 +11,22 @@ sys.path.insert(0, str(TEST_DIR))
 import validate_config
 
 
+KNOWLEDGE_ROOT = "/Users/zsa/Desktop/workspace/harness9/知识库日报"
+KNOWLEDGE_AGENTS = ("collector", "analyzer", "organizer")
+ENGINEERING_AGENTS = (
+    "harness-blog-writer",
+    "harness-enhancer",
+    "harness-researcher",
+    "test-runner",
+)
+
+
 class AgentContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         agent_dir = ROOT / ".codex" / "agents"
         cls.agent_toml = {}
-        for name in (
-            "harness-blog-writer",
-            "harness-enhancer",
-            "harness-researcher",
-            "test-runner",
-        ):
+        for name in ENGINEERING_AGENTS + KNOWLEDGE_AGENTS:
             cls.agent_toml[name] = (
                 agent_dir / f"{name}.toml"
             ).read_text(encoding="utf-8")
@@ -45,10 +50,268 @@ class AgentContractTest(unittest.TestCase):
             f"missing {marker!r} in errors: {errors}",
         )
 
+    def knowledge_data(self, name: str) -> dict:
+        return tomllib.loads(self.agent_toml[name])
+
     def test_current_engineering_agents_satisfy_contracts(self) -> None:
-        for name in self.agent_toml:
+        for name in ENGINEERING_AGENTS:
             with self.subTest(name=name):
                 self.assertEqual([], self.validate(name))
+
+    def test_current_knowledge_agents_exist_and_satisfy_contracts(self) -> None:
+        for name in KNOWLEDGE_AGENTS:
+            with self.subTest(name=name):
+                self.assertEqual([], self.validate(name))
+
+    def test_knowledge_agents_require_workspace_write_sandbox(self) -> None:
+        for name in KNOWLEDGE_AGENTS:
+            with self.subTest(name=name):
+                data = self.knowledge_data(name)
+                data["sandbox_mode"] = "read-only"
+                errors = validate_config.validate_agent_data(name, data)
+                self.assert_error(
+                    errors,
+                    "sandbox_mode must be workspace-write",
+                )
+
+    def test_knowledge_agents_require_exact_writable_root(self) -> None:
+        for name in KNOWLEDGE_AGENTS:
+            with self.subTest(name=name):
+                data = self.knowledge_data(name)
+                data["sandbox_workspace_write"]["writable_roots"] = [
+                    KNOWLEDGE_ROOT,
+                    "/tmp",
+                ]
+                errors = validate_config.validate_agent_data(name, data)
+                self.assert_error(errors, "writable_roots mismatch")
+
+    def test_knowledge_agents_forbid_shell_network_access(self) -> None:
+        for name in KNOWLEDGE_AGENTS:
+            with self.subTest(name=name):
+                data = self.knowledge_data(name)
+                data["sandbox_workspace_write"]["network_access"] = True
+                errors = validate_config.validate_agent_data(name, data)
+                self.assert_error(errors, "network_access must be false")
+
+    def test_knowledge_agents_must_inherit_parent_model(self) -> None:
+        for name in KNOWLEDGE_AGENTS:
+            with self.subTest(name=name):
+                data = self.knowledge_data(name)
+                data["model"] = "gpt-5.6"
+                errors = validate_config.validate_agent_data(name, data)
+                self.assert_error(errors, "must inherit the parent model")
+
+    def test_collector_requires_live_codex_web_research(self) -> None:
+        mutations = {
+            "missing web_search": lambda data: data.pop("web_search"),
+            "cached web_search": lambda data: data.__setitem__(
+                "web_search",
+                "cached",
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                data = self.knowledge_data("collector")
+                mutate(data)
+                errors = validate_config.validate_agent_data(
+                    "collector",
+                    data,
+                )
+                self.assert_error(errors, "web_search must be live")
+
+    def test_analyzer_requires_live_codex_web_research(self) -> None:
+        mutations = {
+            "missing web_search": lambda data: data.pop("web_search"),
+            "cached web_search": lambda data: data.__setitem__(
+                "web_search",
+                "cached",
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                data = self.knowledge_data("analyzer")
+                mutate(data)
+                errors = validate_config.validate_agent_data(
+                    "analyzer",
+                    data,
+                )
+                self.assert_error(errors, "web_search must be live")
+
+    def test_organizer_forbids_web_search_configuration(self) -> None:
+        data = self.knowledge_data("organizer")
+        data["web_search"] = "live"
+        errors = validate_config.validate_agent_data("organizer", data)
+        self.assert_error(errors, "web_search must be absent")
+
+    def test_collector_rejects_knowledge_policy_mutations(self) -> None:
+        mutations = {
+            "write outside raw": (
+                "write_scope = raw_only",
+                "write_scope = knowledge_root",
+            ),
+            "shell networking": (
+                "shell_networking = forbidden",
+                "shell_networking = allowed",
+            ),
+            "extra source": (
+                "source_allowlist = github_trending,hacker_news,"
+                "anthropic_engineering,langchain_blog",
+                "source_allowlist = github_trending,hacker_news,"
+                "anthropic_engineering,langchain_blog,reddit",
+            ),
+            "wrong GitHub threshold": (
+                "github_stars = >100",
+                "github_stars = >=100",
+            ),
+            "wrong blog window": (
+                "langchain_final_window_days = 7",
+                "langchain_final_window_days = 30",
+            ),
+            "missing schema field": (
+                "required_fields = title,url,source,popularity,summary,"
+                "collected_at",
+                "required_fields = title,url,source,popularity,summary",
+            ),
+            "allow fabrication": (
+                "no_fabrication = true",
+                "no_fabrication = false",
+            ),
+        }
+        for label, (old, new) in mutations.items():
+            with self.subTest(label=label):
+                data = self.knowledge_data("collector")
+                data["developer_instructions"] = data[
+                    "developer_instructions"
+                ].replace(old, new, 1)
+                errors = validate_config.validate_agent_data(
+                    "collector",
+                    data,
+                )
+                self.assert_error(errors, "knowledge policy mismatch")
+
+    def test_analyzer_rejects_knowledge_policy_mutations(self) -> None:
+        mutations = {
+            "write outside analysis": (
+                "write_scope = analysis_only",
+                "write_scope = knowledge_root",
+            ),
+            "unconditional fetch": (
+                "web_research = only_when_source_insufficient",
+                "web_research = unconditional",
+            ),
+            "weaken fetch condition": (
+                "fetch_condition = summary_under_20_chars_or_missing_"
+                "technical_detail",
+                "fetch_condition = optional",
+            ),
+            "drop collected_at preservation": (
+                "preserve_collected_at = exact",
+                "preserve_collected_at = optional",
+            ),
+            "change scoring range": (
+                "importance_score = integer_1_to_10",
+                "importance_score = integer_0_to_100",
+            ),
+            "drop output field": (
+                "required_added_fields = highlights,importance_score,"
+                "importance_label,suggested_tags,deep_summary,analyzed_at,"
+                "raw_files",
+                "required_added_fields = highlights,importance_score,"
+                "importance_label,suggested_tags,deep_summary,analyzed_at",
+            ),
+            "allow fabrication": (
+                "no_fabrication = true",
+                "no_fabrication = false",
+            ),
+        }
+        for label, (old, new) in mutations.items():
+            with self.subTest(label=label):
+                data = self.knowledge_data("analyzer")
+                data["developer_instructions"] = data[
+                    "developer_instructions"
+                ].replace(old, new, 1)
+                errors = validate_config.validate_agent_data(
+                    "analyzer",
+                    data,
+                )
+                self.assert_error(errors, "knowledge policy mismatch")
+
+    def test_organizer_rejects_knowledge_policy_mutations(self) -> None:
+        mutations = {
+            "write outside articles": (
+                "write_scope = articles_only",
+                "write_scope = knowledge_root",
+            ),
+            "weaken dedup": (
+                "dedup_key = normalized_title_or_source_url",
+                "dedup_key = normalized_title",
+            ),
+            "overwrite article": (
+                "existing_name = append_v2_v3_without_overwrite",
+                "existing_name = overwrite",
+            ),
+            "add frontmatter": (
+                "frontmatter = forbidden",
+                "frontmatter = required",
+            ),
+            "hard-code cleanup day": (
+                "cleanup_command = ./.codex/scripts/"
+                "cleanup-knowledge-day.sh YYYYMMDD",
+                "cleanup_command = ./.codex/scripts/"
+                "cleanup-knowledge-day.sh 20260723",
+            ),
+            "cleanup before article": (
+                "cleanup_order = final_article_exists_then_guarded_cleanup",
+                "cleanup_order = cleanup_then_write_article",
+            ),
+            "allow direct rm": (
+                "direct_rm = forbidden",
+                "direct_rm = allowed",
+            ),
+            "drop input field": (
+                "required_input_fields = title,url,source,popularity,"
+                "summary,collected_at,highlights,importance_score,"
+                "importance_label,suggested_tags,deep_summary,analyzed_at,"
+                "raw_files",
+                "required_input_fields = title,url,source,popularity,"
+                "summary,collected_at,highlights,importance_score,"
+                "importance_label,suggested_tags,deep_summary,analyzed_at",
+            ),
+        }
+        for label, (old, new) in mutations.items():
+            with self.subTest(label=label):
+                data = self.knowledge_data("organizer")
+                data["developer_instructions"] = data[
+                    "developer_instructions"
+                ].replace(old, new, 1)
+                errors = validate_config.validate_agent_data(
+                    "organizer",
+                    data,
+                )
+                self.assert_error(errors, "knowledge policy mismatch")
+
+    def test_organizer_rejects_direct_rm_shell_commands(self) -> None:
+        commands = (
+            f'rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
+            f'rm -- "{KNOWLEDGE_ROOT}/analysis/20260723/file.json"',
+            f'sudo rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"',
+            f'command rm -r "{KNOWLEDGE_ROOT}/analysis/20260723"',
+            (
+                "./.codex/scripts/cleanup-knowledge-day.sh 20260723"
+                f' && rm -rf "{KNOWLEDGE_ROOT}/raw/20260723"'
+            ),
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                data = self.knowledge_data("organizer")
+                data["developer_instructions"] += (
+                    f"\n```bash\n{command}\n```\n"
+                )
+                errors = validate_config.validate_agent_data(
+                    "organizer",
+                    data,
+                )
+                self.assert_error(errors, "direct rm command forbidden")
 
     def test_blog_writer_requires_every_image_contract_key(self) -> None:
         required = {

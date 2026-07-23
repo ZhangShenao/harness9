@@ -17,6 +17,89 @@ EXPECTED = {
     "organizer",
 }
 KNOWLEDGE_ROOT = "/Users/zsa/Desktop/workspace/harness9/知识库日报"
+KNOWLEDGE_POLICIES = {
+    "collector": {
+        "knowledge_root": KNOWLEDGE_ROOT,
+        "read_directory": "none",
+        "write_directory": f"{KNOWLEDGE_ROOT}/raw/{{YYYYMMDD}}/",
+        "write_scope": "raw_only",
+        "web_research": "codex_live_only",
+        "shell_networking": "forbidden",
+        "source_allowlist": (
+            "github_trending,hacker_news,anthropic_engineering,"
+            "langchain_blog"
+        ),
+        "github_stars": ">100",
+        "github_recent_days": "10",
+        "github_top": "10",
+        "hacker_news_scan": "30",
+        "anthropic_window_days": "7",
+        "langchain_rss_initial_window_days": "30",
+        "langchain_final_window_days": "7",
+        "required_fields": (
+            "title,url,source,popularity,summary,collected_at"
+        ),
+        "sort": "popularity_desc",
+        "no_fabrication": "true",
+    },
+    "analyzer": {
+        "knowledge_root": KNOWLEDGE_ROOT,
+        "read_directory": f"{KNOWLEDGE_ROOT}/raw/{{YYYYMMDD}}/",
+        "write_directory": f"{KNOWLEDGE_ROOT}/analysis/{{YYYYMMDD}}/",
+        "write_scope": "analysis_only",
+        "web_research": "only_when_source_insufficient",
+        "fetch_condition": (
+            "summary_under_20_chars_or_missing_technical_detail"
+        ),
+        "shell_networking": "forbidden",
+        "required_input_fields": (
+            "title,url,source,popularity,summary,collected_at"
+        ),
+        "required_added_fields": (
+            "highlights,importance_score,importance_label,suggested_tags,"
+            "deep_summary,analyzed_at,raw_files"
+        ),
+        "preserve_collected_at": "exact",
+        "importance_score": "integer_1_to_10",
+        "importance_labels": (
+            "9-10:⭐ 改变格局;7-8:🔧 直接有帮助;"
+            "5-6:📖 值得了解;1-4:👀 可略过"
+        ),
+        "highlights": "3-5",
+        "suggested_tags": "3-6",
+        "deep_summary_sentences": "3-5",
+        "sort": "importance_score_desc",
+        "no_fabrication": "true",
+    },
+    "organizer": {
+        "knowledge_root": KNOWLEDGE_ROOT,
+        "read_directory": f"{KNOWLEDGE_ROOT}/analysis/{{YYYYMMDD}}/",
+        "dedup_directory": f"{KNOWLEDGE_ROOT}/articles/",
+        "write_directory": f"{KNOWLEDGE_ROOT}/articles/",
+        "write_scope": "articles_only",
+        "web_research": "forbidden",
+        "shell_networking": "forbidden",
+        "required_input_fields": (
+            "title,url,source,popularity,summary,collected_at,highlights,"
+            "importance_score,importance_label,suggested_tags,deep_summary,"
+            "analyzed_at,raw_files"
+        ),
+        "dedup_key": "normalized_title_or_source_url",
+        "title_normalization": (
+            "lowercase_trim_collapse_spaces_strip_hn_prefixes"
+        ),
+        "sort": "topic_then_importance_score_desc",
+        "article_name": "{YYYYMMDD}-daily.md",
+        "existing_name": "append_v2_v3_without_overwrite",
+        "frontmatter": "forbidden",
+        "cleanup_command": (
+            "./.codex/scripts/cleanup-knowledge-day.sh YYYYMMDD"
+        ),
+        "cleanup_order": "final_article_exists_then_guarded_cleanup",
+        "direct_rm": "forbidden",
+        "no_fabrication": "true",
+    },
+}
 FRAMEWORK_ALLOWLIST = frozenset(
     {
         "deepagents",
@@ -188,6 +271,21 @@ def has_cd_shell_command(instructions: str) -> bool:
     return False
 
 
+def has_direct_rm_shell_command(instructions: str) -> bool:
+    for block in shell_blocks(instructions):
+        for line in block.splitlines():
+            command = line.strip()
+            if not command or command.startswith("#"):
+                continue
+            if re.search(
+                r"(?:^|[\s;&|])rm(?=\s|$)",
+                command,
+                re.IGNORECASE,
+            ):
+                return True
+    return False
+
+
 def validate_enhancer(instructions: str) -> list[str]:
     errors = []
     scope = contract_section(
@@ -349,6 +447,55 @@ def validate_blog_writer(instructions: str) -> list[str]:
     return errors
 
 
+def validate_knowledge_agent(
+    name: str,
+    data: dict,
+    instructions: str,
+) -> list[str]:
+    errors = []
+    if data.get("sandbox_mode") != "workspace-write":
+        errors.append(f"{name}: sandbox_mode must be workspace-write")
+
+    workspace_write = get_table(
+        data,
+        "sandbox_workspace_write",
+        f"{name}: sandbox_workspace_write",
+        errors,
+    )
+    if workspace_write.get("writable_roots") != [KNOWLEDGE_ROOT]:
+        errors.append(f"{name}: writable_roots mismatch")
+    if workspace_write.get("network_access") is not False:
+        errors.append(f"{name}: network_access must be false")
+
+    if name in {"collector", "analyzer"}:
+        if data.get("web_search") != "live":
+            errors.append(f"{name}: web_search must be live")
+    elif "web_search" in data:
+        errors.append("organizer: web_search must be absent")
+
+    policy = contract_section(
+        instructions,
+        "knowledge-policy",
+        name,
+        errors,
+    )
+    if policy is not None:
+        assignments = contract_assignments(
+            policy,
+            f"{name} knowledge-policy",
+            errors,
+        )
+        if (
+            assignments is not None
+            and assignments != KNOWLEDGE_POLICIES[name]
+        ):
+            errors.append(f"{name}: knowledge policy mismatch")
+
+    if name == "organizer" and has_direct_rm_shell_command(instructions):
+        errors.append("organizer: direct rm command forbidden")
+    return errors
+
+
 def validate_agent_data(name: str, data: dict) -> list[str]:
     errors = []
     for field in ("name", "description", "developer_instructions"):
@@ -390,26 +537,7 @@ def validate_agent_data(name: str, data: dict) -> list[str]:
             )
         errors.extend(validate_blog_writer(instructions))
     if name in {"collector", "analyzer", "organizer"}:
-        workspace_write = get_table(
-            data,
-            "sandbox_workspace_write",
-            f"{name}: sandbox_workspace_write",
-            errors,
-        )
-        roots = workspace_write.get("writable_roots", [])
-        if roots != [KNOWLEDGE_ROOT]:
-            errors.append(f"{name}: writable_roots mismatch")
-        if KNOWLEDGE_ROOT not in instructions:
-            errors.append(f"{name}: missing knowledge root")
-    if name == "collector" and "/raw/" not in instructions:
-        errors.append("collector: missing raw-only boundary")
-    if name == "analyzer" and "/analysis/" not in instructions:
-        errors.append("analyzer: missing analysis-only boundary")
-    if name == "organizer":
-        if "./.codex/scripts/cleanup-knowledge-day.sh" not in instructions:
-            errors.append("organizer: missing guarded cleanup command")
-        if "禁止直接执行 `rm -rf`" not in instructions:
-            errors.append("organizer: missing direct-delete prohibition")
+        errors.extend(validate_knowledge_agent(name, data, instructions))
     return errors
 
 
