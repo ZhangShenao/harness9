@@ -12,6 +12,8 @@ developer_instructions = """
 <!-- codex-contract:communication:start -->
 progress_updates = required
 final_report = required
+no_writes = true
+no_fixes = true
 <!-- codex-contract:communication:end -->
 
 ## 执行流程

@@ -128,6 +128,60 @@ class AgentContractTest(unittest.TestCase):
         )
         self.assert_error(errors, "test command mismatch")
 
+    def test_test_runner_requires_no_write_no_fix_contract(self) -> None:
+        mutations = {
+            "remove no_writes": lambda text: text.replace(
+                "no_writes = true\n",
+                "",
+            ),
+            "reverse no_writes": lambda text: text.replace(
+                "no_writes = true",
+                "no_writes = false",
+            ),
+            "remove no_fixes": lambda text: text.replace(
+                "no_fixes = true\n",
+                "",
+            ),
+            "reverse no_fixes": lambda text: text.replace(
+                "no_fixes = true",
+                "no_fixes = false",
+            ),
+        }
+        for label, transform in mutations.items():
+            with self.subTest(label=label):
+                errors = self.validate("test-runner", transform)
+                self.assert_error(errors, "communication contract mismatch")
+
+    def test_enhancer_requires_workspace_write_sandbox(self) -> None:
+        errors = self.validate(
+            "harness-enhancer",
+            lambda text: text.replace(
+                'sandbox_mode = "workspace-write"',
+                'sandbox_mode = "read-only"',
+            ),
+        )
+        self.assert_error(errors, "sandbox_mode must be workspace-write")
+
+    def test_researcher_requires_workspace_write_sandbox(self) -> None:
+        errors = self.validate(
+            "harness-researcher",
+            lambda text: text.replace(
+                'sandbox_mode = "workspace-write"',
+                'sandbox_mode = "read-only"',
+            ),
+        )
+        self.assert_error(errors, "sandbox_mode must be workspace-write")
+
+    def test_researcher_requires_live_web_search(self) -> None:
+        errors = self.validate(
+            "harness-researcher",
+            lambda text: text.replace(
+                'web_search = "live"',
+                'web_search = "cached"',
+            ),
+        )
+        self.assert_error(errors, "web_search must be live")
+
     def test_enhancer_rejects_non_exhaustive_scope_contract(self) -> None:
         errors = self.validate(
             "harness-enhancer",

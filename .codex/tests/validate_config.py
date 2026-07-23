@@ -262,6 +262,8 @@ def validate_test_runner(instructions: str) -> list[str]:
         expected_communication = {
             "progress_updates": "required",
             "final_report": "required",
+            "no_writes": "true",
+            "no_fixes": "true",
         }
         if contract_assignments(communication) != expected_communication:
             errors.append("test-runner: communication contract mismatch")
@@ -290,8 +292,18 @@ def validate_agent_data(name: str, data: dict) -> list[str]:
     if not isinstance(instructions, str):
         return errors
     if name == "harness-enhancer":
+        if data.get("sandbox_mode") != "workspace-write":
+            errors.append(
+                "harness-enhancer: sandbox_mode must be workspace-write"
+            )
         errors.extend(validate_enhancer(instructions))
     if name == "harness-researcher":
+        if data.get("sandbox_mode") != "workspace-write":
+            errors.append(
+                "harness-researcher: sandbox_mode must be workspace-write"
+            )
+        if data.get("web_search") != "live":
+            errors.append("harness-researcher: web_search must be live")
         errors.extend(validate_researcher(instructions))
     if name == "test-runner":
         if data.get("sandbox_mode") != "read-only":
