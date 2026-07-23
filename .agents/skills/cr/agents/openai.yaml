@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Working Tree"
+  short_description: "Review staged and unstaged changes for release risk"
+  default_prompt: "Use $cr to review all staged and unstaged changes without modifying files."
