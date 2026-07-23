@@ -155,8 +155,10 @@ FENCED_BLOCK = re.compile(
     flags=re.DOTALL,
 )
 INLINE_CODE = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
-EXECUTABLE_FENCE_LANGUAGES = frozenset(
-    {"", "bash", "sh", "shell", "zsh", "python", "python3", "py"}
+SHELL_FENCE_LANGUAGES = frozenset({"", "bash", "sh", "shell", "zsh"})
+PYTHON_FENCE_LANGUAGES = frozenset({"python", "python3", "py"})
+EXECUTABLE_FENCE_LANGUAGES = (
+    SHELL_FENCE_LANGUAGES | PYTHON_FENCE_LANGUAGES
 )
 NEGATION_MARKERS = (
     "禁止",
@@ -174,7 +176,7 @@ NEGATION_MARKERS = (
     "没有要求",
     "不接受",
 )
-ACTION_BOUNDARY = re.compile(r"[,，]|但是|然而|但")
+ACTION_BOUNDARY = re.compile(r"[,，;；]|但是|然而|但")
 
 
 def load_toml(path: Path, errors: list[str]) -> dict:
@@ -254,7 +256,7 @@ def shell_commands(text: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
-def executable_fenced_blocks(text: str) -> list[tuple[str, str]]:
+def executable_fenced_blocks(text: str) -> list[tuple[str, str, str]]:
     blocks = []
     for match in FENCED_BLOCK.finditer(text):
         language = match.group("language").strip().casefold()
@@ -264,7 +266,9 @@ def executable_fenced_blocks(text: str) -> list[tuple[str, str]]:
             preceding_line = (
                 preceding.rsplit("\n", 1)[-1] if preceding else ""
             )
-            blocks.append((match.group("body"), preceding_line))
+            blocks.append(
+                (language, match.group("body"), preceding_line)
+            )
     return blocks
 
 
@@ -297,6 +301,23 @@ def explicitly_prohibits_invocation(text: str) -> bool:
             r"(?:禁止|不得|不要|不能|不允许|切勿|严禁)"
             r".{0,24}(?:执行|运行|调用|使用)",
             text,
+        )
+    )
+
+
+def preceding_context_prohibits_guarded_cleanup(text: str) -> bool:
+    segments = action_segments(text)
+    if not segments:
+        return False
+    local = segments[-1]
+    if explicitly_prohibits_invocation(local):
+        return True
+    return bool(
+        re.search(
+            r"(?:禁止|不得|不要|不能|不允许|切勿|严禁)"
+            r".{0,16}(?:以下|下面|下列)"
+            r".{0,12}(?:命令|脚本)?",
+            local,
         )
     )
 
@@ -390,14 +411,24 @@ def validate_organizer_cleanup_instructions(
     errors = []
     guarded_cleanup_found = False
 
-    for block, preceding_line in executable_fenced_blocks(instructions):
+    for language, block, preceding_line in executable_fenced_blocks(
+        instructions
+    ):
         for line in block.splitlines():
             command = line.strip()
             if not command or command.startswith("#"):
                 continue
             normalized = normalize_cleanup_command(command)
-            if normalized == GUARDED_CLEANUP_COMMAND:
-                if explicitly_prohibits_invocation(preceding_line):
+            if language in SHELL_FENCE_LANGUAGES:
+                if normalized != GUARDED_CLEANUP_COMMAND:
+                    errors.append(
+                        "organizer: unsafe or alternative cleanup command "
+                        "forbidden"
+                    )
+                    break
+                if preceding_context_prohibits_guarded_cleanup(
+                    preceding_line
+                ):
                     errors.append(
                         "organizer: explicitly prohibits guarded cleanup "
                         "invocation"
@@ -405,10 +436,16 @@ def validate_organizer_cleanup_instructions(
                 else:
                     guarded_cleanup_found = True
                 continue
-            errors.append(
-                "organizer: unsafe or alternative cleanup command forbidden"
-            )
-            break
+
+            if (
+                normalized != GUARDED_CLEANUP_COMMAND
+                and looks_like_unsafe_or_alternative_cleanup(command)
+            ):
+                errors.append(
+                    "organizer: unsafe or alternative cleanup command "
+                    "forbidden"
+                )
+                break
 
     inline_text = text_without_fenced_blocks(instructions)
     for match in INLINE_CODE.finditer(inline_text):

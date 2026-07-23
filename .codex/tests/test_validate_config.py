@@ -628,6 +628,44 @@ class AgentContractTest(unittest.TestCase):
             "explicitly prohibits guarded cleanup invocation",
         )
 
+    def test_python_fence_cannot_satisfy_guarded_shell_cleanup(self) -> None:
+        exact = "./.codex/scripts/cleanup-knowledge-day.sh YYYYMMDD"
+        data = self.knowledge_data("organizer")
+        bash_fence = f"```bash\n{exact}\n```"
+        self.assertIn(bash_fence, data["developer_instructions"])
+        data["developer_instructions"] = data[
+            "developer_instructions"
+        ].replace(bash_fence, f"```python\n{exact}\n```", 1)
+        errors = validate_config.validate_agent_data("organizer", data)
+        self.assert_error(
+            errors,
+            "affirmative fenced guarded cleanup invocation missing",
+        )
+
+    def test_guarded_cleanup_preceding_context_is_action_local(self) -> None:
+        exact = "./.codex/scripts/cleanup-knowledge-day.sh YYYYMMDD"
+
+        data = self.knowledge_data("organizer")
+        data["developer_instructions"] += (
+            f"\n禁止以下命令：\n```bash\n{exact}\n```\n"
+        )
+        errors = validate_config.validate_agent_data("organizer", data)
+        self.assert_error(
+            errors,
+            "explicitly prohibits guarded cleanup invocation",
+        )
+
+        data = self.knowledge_data("organizer")
+        data["developer_instructions"] += (
+            "\n不要执行其他清理命令，"
+            "只运行下面的受保护脚本：\n"
+            f"```bash\n{exact}\n```\n"
+        )
+        self.assertEqual(
+            [],
+            validate_config.validate_agent_data("organizer", data),
+        )
+
     def test_analyzer_allows_local_non_network_collection(self) -> None:
         data = self.knowledge_data("analyzer")
         data["developer_instructions"] += (
