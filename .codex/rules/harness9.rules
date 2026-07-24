@@ -1,0 +1,194 @@
+prefix_rule(
+    pattern = [["/usr/bin/git", "/opt/homebrew/bin/git"]],
+    decision = "prompt",
+    justification = "Absolute Git executables can perform repository or remote writes, so review the full invocation",
+    match = [
+        "/usr/bin/git status --short",
+        "/usr/bin/git push origin feature",
+        "/usr/bin/git -c tag.gpgSign=false tag v1.2.3 HEAD",
+    ],
+    not_match = ["git status --short"],
+)
+
+prefix_rule(
+    pattern = [[
+        "/opt/homebrew/bin/gh",
+        "/opt/homebrew/Cellar/gh/2.92.0/bin/gh",
+        "/usr/bin/gh",
+    ]],
+    decision = "prompt",
+    justification = "Absolute GitHub CLI executables can perform external writes, so review the full invocation",
+    match = [
+        "/opt/homebrew/bin/gh pr view 42",
+        "/opt/homebrew/bin/gh pr create --draft --repo ZhangShenao/harness9",
+        "/opt/homebrew/Cellar/gh/2.92.0/bin/gh pr create --draft --repo ZhangShenao/harness9",
+    ],
+    not_match = ["gh pr view 42"],
+)
+
+prefix_rule(
+    pattern = ["git", "-c"],
+    decision = "prompt",
+    justification = "Per-invocation Git configuration can alter helpers, signing, and write behavior",
+    match = [
+        "git -c tag.gpgSign=false tag v1.2.3 HEAD",
+        "git -c credential.helper= -c credential.helper=/trusted/helper push https://github.com/ZhangShenao/harness9.git refs/tags/v1.2.3",
+    ],
+    not_match = ["git status --short"],
+)
+
+prefix_rule(
+    pattern = [[
+        "python3",
+        "/opt/anaconda3/bin/python3",
+        "/opt/anaconda3/bin/python3.13",
+        "/usr/bin/python3",
+    ], ["-", "-c"]],
+    decision = "prompt",
+    justification = "Python code wrappers can invoke Git or GitHub writes, so review the wrapper and full invocation",
+    match = [
+        "python3 - git push origin feature",
+        "python3 -c 'import subprocess; subprocess.run([\"git\", \"push\"])'",
+        "/opt/anaconda3/bin/python3 - gh pr create --draft",
+        "/opt/anaconda3/bin/python3.13 -c 'import subprocess; subprocess.run([\"gh\", \"pr\", \"create\"])'",
+    ],
+    not_match = ["python3 --version"],
+)
+
+prefix_rule(
+    pattern = ["go", ["test", "build", "vet"]],
+    decision = "prompt",
+    justification = "Go validation commands can accept output or executor flags, so review the full invocation",
+    match = [
+        "go test ./...",
+        "go test -exec /tmp/runner ./...",
+        "go build ./...",
+        "go build -o /tmp/harness9 ./...",
+        "go vet ./...",
+    ],
+    not_match = ["go list ./..."],
+)
+
+prefix_rule(
+    pattern = ["go", "list"],
+    decision = "prompt",
+    justification = "Go list accepts executor flags, so review the full invocation",
+    match = ["go list ./...", "go list -toolexec=/tmp/runner ./..."],
+    not_match = ["go env -w GOPROXY=off"],
+)
+
+prefix_rule(
+    pattern = [["gofmt", "goimports"]],
+    decision = "prompt",
+    justification = "Formatting commands accept arbitrary paths and write flags, so review the full invocation",
+    match = [
+        "gofmt -l .",
+        "gofmt -w /tmp/example.go",
+        "goimports -w internal/engine/agent_loop.go",
+        "goimports -w /tmp/example.go",
+    ],
+    not_match = ["go fmt ./..."],
+)
+
+prefix_rule(
+    pattern = ["git", "status"],
+    decision = "allow",
+    justification = "Allow read-only Git status inspection",
+    match = ["git status --short"],
+    not_match = ["git push origin feature"],
+)
+
+prefix_rule(
+    pattern = ["git", ["diff", "log", "show"]],
+    decision = "prompt",
+    justification = "Git inspection commands accept output-file flags, so review the full invocation",
+    match = [
+        "git diff --cached",
+        "git diff --output=/tmp/diff",
+        "git log -5 --oneline",
+        "git show HEAD",
+        "git show --output=/tmp/show HEAD",
+    ],
+    not_match = ["git status --short"],
+)
+
+prefix_rule(
+    pattern = ["git", "branch", "--show-current"],
+    decision = "allow",
+    justification = "Allow reading the current branch",
+    match = ["git branch --show-current"],
+    not_match = ["git branch new-feature"],
+)
+
+prefix_rule(
+    pattern = ["gh", "run", ["list", "view"]],
+    decision = "allow",
+    justification = "Allow read-only GitHub Actions inspection",
+    match = ["gh run list --limit 3", "gh run view 12345"],
+    not_match = ["gh run cancel 12345"],
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", "view"],
+    decision = "allow",
+    justification = "Allow read-only pull request inspection",
+    match = ["gh pr view", "gh pr view 42 --json title,url"],
+    not_match = ["gh pr create --draft"],
+)
+
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "prompt",
+    justification = "Remote Git writes require explicit review",
+    match = ["git push -u origin feature", "git push origin v1.2.3"],
+    not_match = ["git status --short"],
+)
+
+prefix_rule(
+    pattern = ["git", "tag"],
+    decision = "prompt",
+    justification = "Tag reads and writes stay reviewable because release tags trigger automation",
+    match = ["git tag --list", "git tag v1.2.3"],
+    not_match = ["git log -1"],
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", "create"],
+    decision = "prompt",
+    justification = "Creating a pull request is an external write",
+    match = ["gh pr create --draft --base master --title feature"],
+    not_match = ["gh pr view"],
+)
+
+prefix_rule(
+    pattern = ["gh", "release", "edit"],
+    decision = "prompt",
+    justification = "Editing a GitHub Release is an external write",
+    match = ["gh release edit v1.2.3 --notes-file /tmp/notes.md"],
+    not_match = ["gh release view v1.2.3"],
+)
+
+prefix_rule(
+    pattern = [["rm", "/bin/rm"]],
+    decision = "forbidden",
+    justification = "Use non-destructive file handling or the guarded harness9 cleanup script",
+    match = [
+        "rm file",
+        "/bin/rm file",
+        "rm -rf docs",
+        "rm -r -f docs",
+        "rm -v -rf docs",
+        "rm -i -r docs",
+        "rm --one-file-system --recursive docs",
+        "/bin/rm -rf docs",
+    ],
+    not_match = ["./.codex/scripts/cleanup-knowledge-day.sh 20260723"],
+)
+
+prefix_rule(
+    pattern = ["./.codex/scripts/cleanup-knowledge-day.sh"],
+    decision = "prompt",
+    justification = "The guarded script is worktree-owned and performs deletion, so review its current contents and invocation",
+    match = ["./.codex/scripts/cleanup-knowledge-day.sh 20260723"],
+    not_match = ["rm -rf /Users/zsa/Desktop/workspace/harness9/知识库日报/raw/20260723"],
+)
