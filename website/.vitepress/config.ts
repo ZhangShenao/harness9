@@ -115,6 +115,7 @@ export default defineConfig({
                 { text: 'Sub-Agent：harness9 如何让主代理把任务外包出去', link: '/zh/blog/sub-agent/' },
                 { text: 'Sandbox：把 Agent 的手脚关进一座悬浮孤岛', link: '/zh/blog/sandbox/' },
                 { text: 'Observability：给 Agent 装一台看清内部运转的望远镜', link: '/zh/blog/observability/' },
+                { text: 'Benchmark 不只测分数 — harness9 如何用轨迹驱动迭代', link: '/zh/blog/benchmark-driven-iteration/' },
               ],
             },
           ],
