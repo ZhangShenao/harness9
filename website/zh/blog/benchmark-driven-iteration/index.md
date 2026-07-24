@@ -3,7 +3,7 @@ title: "Benchmark 不只测分数 — harness9 如何用轨迹驱动迭代"
 date: 2026-07-24
 tags: [harness9, agent, golang, benchmark, swe-bench, terminal-bench]
 summary: "harness9 把 SWE-bench 与 Terminal-Bench 的每次运行变成可审计工程输入：保留轨迹、补丁、环境和 verifier 证据，定位问题归属，再把结论落实为验证关卡、环境自举、超时和恢复策略。"
-cover: ./images/cover.png
+cover: /blog/benchmark-driven-iteration/images/cover.png
 ---
 
 # Benchmark 不只测分数 — harness9 如何用轨迹驱动迭代
@@ -42,7 +42,7 @@ harness9 是一款 Local-First、轻量级、功能完备、生产可用的通�
 
 harness9 把 benchmark 看成工程反馈回路。任务进入 `AgentEngine`、工具和 Sandbox；运行留下补丁或终端状态；verifier 给出外部判决；轨迹分析再把结论映射回 Prompt、依赖自举、超时与重试策略。
 
-![SWE-bench 与 Terminal-Bench 共同驱动 harness9 迭代的闭环](./images/benchmark-feedback-loop-01.png)
+![SWE-bench 与 Terminal-Bench 共同驱动 harness9 迭代的闭环](/blog/benchmark-driven-iteration/images/benchmark-feedback-loop-01.png)
 
 > 🎨 **图片最终 Prompt**（已用于内置 image_gen）
 >
@@ -71,7 +71,7 @@ TestPatch string `json:"test_patch"`
 
 Terminal-Bench 则要求 Agent 在真实终端任务中交付最终状态。Harbor 负责启动任务环境、调用适配器和运行 verifier；reward 记录在 trial 的 `verifier/reward.txt`。它不以 Git patch 作为唯一产物，环境与命令执行本身就是任务的一部分。
 
-![SWE-bench 的输入、隔离执行、隐藏测试与官方判分边界](./images/swebench-execution-pipeline-02.png)
+![SWE-bench 的输入、隔离执行、隐藏测试与官方判分边界](/blog/benchmark-driven-iteration/images/swebench-execution-pipeline-02.png)
 
 > 🎨 **图片最终 Prompt**（已用于内置 image_gen）
 >
@@ -118,7 +118,7 @@ if !ranTest && ctx.Err() == nil {
 
 这不是无限循环。它只触发一次，仍受实例超时和 `MaxTurns` 约束。`looksLikeTestRun` 还只对 bash 的 `command` 字段做启发式判断，避免把 `grep pytest` 误当作验证。
 
-![验证关卡如何在未执行测试时只续跑一次](./images/verification-gate-state-flow-03.png)
+![验证关卡如何在未执行测试时只续跑一次](/blog/benchmark-driven-iteration/images/verification-gate-state-flow-03.png)
 
 > 🎨 **图片最终 Prompt**（已用于内置 image_gen）
 >
@@ -152,7 +152,7 @@ await self.exec_as_agent(
 
 `install()` 还主动安装 `ca-certificates`。这来自轨迹复核：部分官方镜像没有系统 CA 信任链，静态 Go 二进制访问 HTTPS 会确定性失败；把它当作网络抖动来重试没有意义。
 
-![Harbor 如何通过 Harness9Agent 调度二进制、日志与 reward](./images/terminal-bench-harbor-adapter-05.png)
+![Harbor 如何通过 Harness9Agent 调度二进制、日志与 reward](/blog/benchmark-driven-iteration/images/terminal-bench-harbor-adapter-05.png)
 
 > 🎨 **图片最终 Prompt**（已用于内置 image_gen）
 >
@@ -170,7 +170,7 @@ await self.exec_as_agent(
 
 轨迹不是调试日志的副产品。`agent/harness9.log` 给出每轮 LLM 输出、工具调用和耗时；SWE-bench 的 `git diff` 或 Terminal-Bench 的最终环境给出实际行为；`verifier/ctrf.json`、`test-stdout.txt` 与 `reward.txt` 给出外部判决。三者必须一起读。
 
-![从执行轨迹、补丁和 verifier 证据推导下一轮改动](./images/trajectory-analysis-loop-04.png)
+![从执行轨迹、补丁和 verifier 证据推导下一轮改动](/blog/benchmark-driven-iteration/images/trajectory-analysis-loop-04.png)
 
 > 🎨 **图片最终 Prompt**（已用于内置 image_gen）
 >
@@ -194,7 +194,7 @@ M1 是 v1.0.0 的 production-ready Agent Harness 基线：ReAct engine、Provide
 
 M2 是“本地 Agent OS”的**路线图**，不是已交付能力，也不是 benchmark 得分的外推。它要解决的是多 Agent runtime、角色与权限、任务图与调度、worktree-session-sandbox 生命周期、可恢复状态、冲突感知的文件所有权、分层记忆及 provenance、benchmark/regression dashboard 与操作面板。
 
-![M1 已交付基线与 M2 本地 Agent OS 路线图的边界](./images/m1-m2-roadmap-06.png)
+![M1 已交付基线与 M2 本地 Agent OS 路线图的边界](/blog/benchmark-driven-iteration/images/m1-m2-roadmap-06.png)
 
 > 🎨 **图片最终 Prompt**（已用于内置 image_gen）
 >
@@ -216,7 +216,7 @@ M2 的前提不是先堆一个调度器，而是继续保留 M1 已建立的可�
 
 ## 封面图
 
-![M1 已交付基线与 M2 本地 Agent OS 路线图的边界](./images/cover.png)
+![M1 已交付基线与 M2 本地 Agent OS 路线图的边界](/blog/benchmark-driven-iteration/images/cover.png)
 
 > 🎨 **封面图最终 Prompt**（横版，适配文章头图 / 社交分享卡片）
 >
