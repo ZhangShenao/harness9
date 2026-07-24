@@ -72,6 +72,7 @@ export default defineConfig({
                 { text: 'Sub-Agent: How harness9 Lets the Main Agent Delegate Work', link: '/blog/sub-agent/' },
                 { text: "Sandbox: Locking the Agent's Hands and Feet on a Floating Island", link: '/blog/sandbox/' },
                 { text: 'Observability: Giving the Agent a Telescope Into Its Own Machinery', link: '/blog/observability/' },
+                { text: 'Benchmarking Beyond Scores: How harness9 Iterates from Execution Traces', link: '/blog/benchmark-driven-iteration/' },
               ],
             },
           ],

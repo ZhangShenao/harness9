@@ -12,6 +12,7 @@ In-depth technical writing from the harness9 core team, focused on architecture 
 
 | Article | Date | Tags |
 |------|------|------|
+| [Benchmarking Beyond Scores: How harness9 Iterates from Execution Traces](/blog/benchmark-driven-iteration/) | 2026-07-24 | `harness9` `agent` `golang` `benchmark` `swe-bench` `terminal-bench` |
 | [Observability: Giving the Agent a Telescope Into Its Own Machinery](/blog/observability/) | 2026-07-20 | `harness9` `agent` `golang` `observability` `opentelemetry` `langfuse` |
 | [Sandbox: Locking the Agent's Hands and Feet on a Floating Island](/blog/sandbox/) | 2026-07-13 | `harness9` `agent` `golang` `sandbox` `docker` `isolation` |
 | [Sub-Agent: How harness9 Lets the Main Agent Delegate Work](/blog/sub-agent/) | 2026-07-06 | `harness9` `agent` `golang` `SubAgent` `task-delegation` |
