@@ -12,6 +12,7 @@ harness9 核心团队的技术深度文章，聚焦架构决策、工程实现�
 
 | 文章 | 日期 | 标签 |
 |------|------|------|
+| [Benchmark 不只测分数 — harness9 如何用轨迹驱动迭代](/zh/blog/benchmark-driven-iteration/) | 2026-07-24 | `harness9` `agent` `golang` `benchmark` `swe-bench` `terminal-bench` |
 | [Observability：给 Agent 装一台看清内部运转的望远镜](/zh/blog/observability/) | 2026-07-20 | `harness9` `agent` `golang` `observability` `opentelemetry` `langfuse` |
 | [Sandbox：把 Agent 的手脚关进一座悬浮孤岛](/zh/blog/sandbox/) | 2026-07-13 | `harness9` `agent` `golang` `sandbox` `docker` `isolation` |
 | [SubAgent：harness9 如何让主代理把任务外包出去](/zh/blog/sub-agent/) | 2026-07-06 | `harness9` `agent` `golang` `SubAgent` `task-delegation` |
