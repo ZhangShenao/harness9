@@ -530,6 +530,7 @@ func (t *XxxTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 
 ### 5.7 Git 工作流
 
+- **隔离开发（强制）**：每次准备修改项目文件前，必须基于当前任务新建独立的 Git worktree 和对应分支；所有代码、文档、配置及测试修改均在该 worktree 内完成，禁止直接在主工作目录修改。
 - 主分支：`master`
 - 功能分支命名：`feature/<描述>`、`fix/<描述>`、`refactor/<描述>`
 - Commit 消息：中文描述，简洁明确，聚焦"为什么"而非"做了什么"
