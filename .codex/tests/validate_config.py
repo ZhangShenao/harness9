@@ -227,14 +227,21 @@ def contract_assignments(
 ) -> dict[str, str] | None:
     assignments = {}
     for line in section.splitlines():
-        key, separator, value = line.partition("=")
-        if not separator:
+        stripped = line.strip()
+        if not stripped:
             continue
-        key = key.strip()
+        match = re.fullmatch(
+            r"([A-Za-z][A-Za-z0-9_]*)[ \t]*=[ \t]*(\S(?:.*\S)?)",
+            stripped,
+        )
+        if match is None:
+            errors.append(f"{label}: malformed contract assignment")
+            return None
+        key, value = match.groups()
         if key in assignments:
             errors.append(f"{label}: duplicate contract assignment {key}")
             return None
-        assignments[key] = value.strip()
+        assignments[key] = value
     return assignments
 
 
@@ -253,6 +260,35 @@ def shell_commands(text: str) -> tuple[str, ...]:
             command = line.strip()
             if command and not command.startswith("#"):
                 commands.append(command)
+    return tuple(commands)
+
+
+def contract_shell_commands(
+    section: str,
+    label: str,
+    errors: list[str],
+) -> tuple[str, ...] | None:
+    match = re.fullmatch(
+        r"```(?:bash|sh|shell)[ \t]*\n(?P<body>.*?)\n```",
+        section.strip(),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match is None:
+        errors.append(f"{label}: malformed shell command contract")
+        return None
+
+    commands = []
+    for line in match.group("body").splitlines():
+        command = line.strip()
+        if not command:
+            continue
+        if command.startswith("#"):
+            errors.append(f"{label}: malformed shell command contract")
+            return None
+        commands.append(command)
+    if not commands:
+        errors.append(f"{label}: malformed shell command contract")
+        return None
     return tuple(commands)
 
 
@@ -496,10 +532,9 @@ def text_outside_contract(text: str, contract: str) -> str:
 
 
 def operative_instruction_clauses(instructions: str) -> list[str]:
-    operative = text_outside_contract(instructions, "knowledge-policy")
     return [
         clause.strip()
-        for clause in re.split(r"[\n。！？；]+", operative)
+        for clause in re.split(r"[\n。！？；]+", instructions)
         if clause.strip()
     ]
 
@@ -614,20 +649,42 @@ def normalize_framework_name(value: str) -> str:
     return " ".join(without_markup.split()).casefold()
 
 
-def framework_rows(section: str) -> list[str]:
+def framework_rows(
+    section: str,
+    label: str,
+    errors: list[str],
+) -> list[str] | None:
+    lines = [line.strip() for line in section.splitlines() if line.strip()]
+    if len(lines) < 3:
+        errors.append(f"{label}: malformed framework table")
+        return None
+
     frameworks = []
-    for line in section.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("|") or not stripped.endswith("|"):
+    for index, line in enumerate(lines):
+        if not line.startswith("|") or not line.endswith("|"):
+            errors.append(f"{label}: malformed framework table")
+            return None
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) != 3 or any(not cell for cell in cells):
+            errors.append(f"{label}: malformed framework table")
+            return None
+        if index == 0:
+            if cells != ["框架", "来源", "GitHub"]:
+                errors.append(f"{label}: malformed framework table")
+                return None
             continue
-        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-        if not cells:
+        if index == 1:
+            if any(
+                re.fullmatch(r":?-{3,}:?", cell) is None
+                for cell in cells
+            ):
+                errors.append(f"{label}: malformed framework table")
+                return None
             continue
         framework = normalize_framework_name(cells[0])
-        if framework == "框架" or not framework:
-            continue
-        if set(framework) <= {"-", ":"}:
-            continue
+        if not framework:
+            errors.append(f"{label}: malformed framework table")
+            return None
         frameworks.append(framework)
     return frameworks
 
@@ -684,11 +741,17 @@ def validate_enhancer(instructions: str) -> list[str]:
         "harness-enhancer",
         errors,
     )
-    if (
-        validation is not None
-        and shell_commands(validation) != ENHANCER_VALIDATION_COMMANDS
-    ):
-        errors.append("harness-enhancer: validation commands mismatch")
+    if validation is not None:
+        validation_commands = contract_shell_commands(
+            validation,
+            "harness-enhancer validation-commands",
+            errors,
+        )
+        if (
+            validation_commands is not None
+            and validation_commands != ENHANCER_VALIDATION_COMMANDS
+        ):
+            errors.append("harness-enhancer: validation commands mismatch")
 
     for block in shell_blocks(instructions):
         if re.search(r"go test ./\.\.\.[^\n]*\|", block):
@@ -708,10 +771,17 @@ def validate_researcher(instructions: str) -> list[str]:
         errors,
     )
     if allowlist is not None:
-        frameworks = framework_rows(allowlist)
+        frameworks = framework_rows(
+            allowlist,
+            "harness-researcher framework-allowlist",
+            errors,
+        )
         if (
-            len(frameworks) != len(FRAMEWORK_ALLOWLIST)
-            or frozenset(frameworks) != FRAMEWORK_ALLOWLIST
+            frameworks is not None
+            and (
+                len(frameworks) != len(FRAMEWORK_ALLOWLIST)
+                or frozenset(frameworks) != FRAMEWORK_ALLOWLIST
+            )
         ):
             errors.append("harness-researcher: framework allowlist mismatch")
 
@@ -752,11 +822,17 @@ def validate_test_runner(instructions: str) -> list[str]:
         "test-runner",
         errors,
     )
-    if (
-        command_section is not None
-        and shell_commands(command_section) != (TEST_RUNNER_COMMAND,)
-    ):
-        errors.append("test-runner: test command mismatch")
+    if command_section is not None:
+        test_commands = contract_shell_commands(
+            command_section,
+            "test-runner test-command",
+            errors,
+        )
+        if (
+            test_commands is not None
+            and test_commands != (TEST_RUNNER_COMMAND,)
+        ):
+            errors.append("test-runner: test command mismatch")
 
     communication = contract_section(
         instructions,

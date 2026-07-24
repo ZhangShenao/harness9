@@ -768,6 +768,81 @@ class AgentContractTest(unittest.TestCase):
                 )
                 self.assert_error(errors, "duplicate contract assignment")
 
+    def test_assignment_contracts_reject_nonassignments(self) -> None:
+        mutations = {
+            "prose": "contract policy is authoritative",
+            "comment": "# contract policy",
+            "malformed": "not_an_assignment",
+        }
+        marker = "<!-- codex-contract:image-generation:end -->"
+        for label, line in mutations.items():
+            with self.subTest(label=label):
+                errors = self.validate(
+                    "harness-blog-writer",
+                    lambda text, addition=f"{line}\n": text.replace(
+                        marker,
+                        addition + marker,
+                        1,
+                    ),
+                )
+                self.assert_error(
+                    errors,
+                    "malformed contract assignment",
+                )
+
+    def test_contradictory_prose_inside_contract_is_not_hidden(self) -> None:
+        marker = "<!-- codex-contract:knowledge-policy:end -->"
+        contradiction = (
+            "将结果写入 "
+            f"`{KNOWLEDGE_ROOT}/analysis/{{YYYYMMDD}}/collector.json`。\n"
+        )
+        errors = self.validate(
+            "collector",
+            lambda text: text.replace(
+                marker,
+                contradiction + marker,
+                1,
+            ),
+        )
+        self.assert_error(errors, "malformed contract assignment")
+        self.assert_error(
+            errors,
+            "operative write boundary contradiction",
+        )
+
+    def test_supported_contract_grammars_reject_extra_prose(self) -> None:
+        mutations = {
+            "framework table": (
+                "harness-researcher",
+                "<!-- codex-contract:framework-allowlist:end -->",
+                "extra prose\n",
+                "malformed framework table",
+            ),
+            "validation shell": (
+                "harness-enhancer",
+                "<!-- codex-contract:validation-commands:start -->",
+                "extra prose\n",
+                "malformed shell command contract",
+            ),
+            "test command shell": (
+                "test-runner",
+                "<!-- codex-contract:test-command:end -->",
+                "extra prose\n",
+                "malformed shell command contract",
+            ),
+        }
+        for label, (name, marker, addition, expected) in mutations.items():
+            with self.subTest(label=label):
+                errors = self.validate(
+                    name,
+                    lambda text, m=marker, a=addition, current=label: (
+                        text.replace(m, m + "\n" + a, 1)
+                        if current == "validation shell"
+                        else text.replace(m, a + m, 1)
+                    ),
+                )
+                self.assert_error(errors, expected)
+
     def test_blog_writer_requires_workspace_write_sandbox(self) -> None:
         errors = self.validate(
             "harness-blog-writer",

@@ -51,13 +51,63 @@ Create one local commit containing only the intended, reviewed changes. Treat re
 5. Record the exact candidate commit before final review:
 
    ```bash
+   AUDIT_DIR=
+   cleanup_audit() {
+     [ -n "$AUDIT_DIR" ] || return 0
+     if ! python3 - "$AUDIT_DIR" <<'PY'
+   import os
+   import stat
+   import sys
+
+   audit_dir = sys.argv[1]
+   descriptor = os.open(
+       audit_dir,
+       os.O_RDONLY
+       | getattr(os, "O_DIRECTORY", 0)
+       | getattr(os, "O_NOFOLLOW", 0),
+   )
+   for name in ("expected-paths", "current-paths", "actual-paths"):
+       try:
+           metadata = os.stat(
+               name,
+               dir_fd=descriptor,
+               follow_symlinks=False,
+           )
+       except FileNotFoundError:
+           continue
+       if not stat.S_ISREG(metadata.st_mode):
+           raise SystemExit("unexpected audit artifact type")
+       os.unlink(name, dir_fd=descriptor)
+   os.close(descriptor)
+   os.rmdir(audit_dir)
+   PY
+     then
+       return 1
+     fi
+     test ! -e "$AUDIT_DIR" || return 1
+     AUDIT_DIR=
+   }
+   trap cleanup_audit EXIT
+   trap 'exit 129' HUP
+   trap 'exit 130' INT
+   trap 'exit 143' TERM
+   previous_umask=$(umask)
+   umask 077
    AUDIT_DIR=$(mktemp -d)
+   umask "$previous_umask"
+   chmod 700 "$AUDIT_DIR"
+   test "$(stat -f '%Lp' "$AUDIT_DIR" 2>/dev/null || stat -c '%a' "$AUDIT_DIR")" = 700
    BASE_HEAD=$(git rev-parse HEAD)
    EXPECTED_TREE=$(git write-tree)
    git diff --cached --name-only -z --no-renames > "$AUDIT_DIR/expected-paths"
    ```
 
-   Keep the path list NUL-delimited. Stop if `HEAD` cannot be resolved.
+   Run this lifecycle in one persistent private shell session so the registered
+   trap remains active throughout review and commit verification. Keep the path
+   list NUL-delimited. Stop if `HEAD` cannot be resolved. On success, refusal,
+   error, cancellation, and every stop path, run `cleanup_audit`, require its
+   absence check to pass, and only then return to the user. The `EXIT` and
+   signal traps are mandatory backstops, not substitutes for explicit cleanup.
 
 6. Invoke `$cr` yourself now, even if the user supplies a review or an earlier current-task report exists. Require it to review the final staged snapshot. Stop on any Critical finding.
 
@@ -92,6 +142,8 @@ Create one local commit containing only the intended, reviewed changes. Treat re
    cmp "$AUDIT_DIR/expected-paths" "$AUDIT_DIR/actual-paths"
    git show --name-status --format='%H%n%P%n%T%n%s' --no-renames "$NEW_HEAD"
    git status --short
+   cleanup_audit || exit 1
+   trap - EXIT HUP INT TERM
    ```
 
    Report success only if parent, tree, and exact committed path set all match. State the commit hash, subject, parent, tree, committed paths, and remaining working-tree changes.

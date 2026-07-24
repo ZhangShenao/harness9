@@ -1,4 +1,49 @@
 prefix_rule(
+    pattern = [["/usr/bin/git", "/opt/homebrew/bin/git"]],
+    decision = "prompt",
+    justification = "Absolute Git executables can perform repository or remote writes, so review the full invocation",
+    match = [
+        "/usr/bin/git status --short",
+        "/usr/bin/git push origin feature",
+        "/usr/bin/git -c tag.gpgSign=false tag v1.2.3 HEAD",
+    ],
+    not_match = ["git status --short"],
+)
+
+prefix_rule(
+    pattern = [["/opt/homebrew/bin/gh", "/usr/bin/gh"]],
+    decision = "prompt",
+    justification = "Absolute GitHub CLI executables can perform external writes, so review the full invocation",
+    match = [
+        "/opt/homebrew/bin/gh pr view 42",
+        "/opt/homebrew/bin/gh pr create --draft --repo ZhangShenao/harness9",
+    ],
+    not_match = ["gh pr view 42"],
+)
+
+prefix_rule(
+    pattern = ["git", "-c"],
+    decision = "prompt",
+    justification = "Per-invocation Git configuration can alter helpers, signing, and write behavior",
+    match = [
+        "git -c tag.gpgSign=false tag v1.2.3 HEAD",
+        "git -c credential.helper= -c credential.helper=/trusted/helper push https://github.com/ZhangShenao/harness9.git refs/tags/v1.2.3",
+    ],
+    not_match = ["git status --short"],
+)
+
+prefix_rule(
+    pattern = [["python3", "/opt/anaconda3/bin/python3", "/usr/bin/python3"], "-"],
+    decision = "prompt",
+    justification = "Python stdin wrappers can invoke Git or GitHub writes, so review the wrapper and full invocation",
+    match = [
+        "python3 - git push origin feature",
+        "/opt/anaconda3/bin/python3 - gh pr create --draft",
+    ],
+    not_match = ["python3 --version"],
+)
+
+prefix_rule(
     pattern = ["go", ["test", "build", "vet"]],
     decision = "prompt",
     justification = "Go validation commands can accept output or executor flags, so review the full invocation",
@@ -130,8 +175,8 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["./.codex/scripts/cleanup-knowledge-day.sh"],
-    decision = "allow",
-    justification = "The guarded script validates the date, root, article, and exact targets",
+    decision = "prompt",
+    justification = "The guarded script is worktree-owned and performs deletion, so review its current contents and invocation",
     match = ["./.codex/scripts/cleanup-knowledge-day.sh 20260723"],
     not_match = ["rm -rf /Users/zsa/Desktop/workspace/harness9/知识库日报/raw/20260723"],
 )
