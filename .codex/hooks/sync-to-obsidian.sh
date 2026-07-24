@@ -121,20 +121,26 @@ def write_all(file_descriptor, data):
 
 def atomic_copy(project_root, vault_root, relative, target_components):
     source_components = relative.split("/")
-    source_parent = open_parent(
-        project_root,
-        source_components[:-1],
-        False,
-    )
+    try:
+        source_parent = open_parent(
+            project_root,
+            source_components[:-1],
+            False,
+        )
+    except FileNotFoundError:
+        return
     source = None
     target_parent = None
     temporary_name = None
     try:
-        source = os.open(
-            source_components[-1],
-            os.O_RDONLY | NOFOLLOW,
-            dir_fd=source_parent,
-        )
+        try:
+            source = os.open(
+                source_components[-1],
+                os.O_RDONLY | NOFOLLOW,
+                dir_fd=source_parent,
+            )
+        except FileNotFoundError:
+            return
         if not stat.S_ISREG(os.fstat(source).st_mode):
             raise ValueError("source is not a regular file")
 

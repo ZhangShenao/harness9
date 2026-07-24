@@ -27,7 +27,8 @@ printf '%s' "$payload" | \
 	HARNESS9_HOOK_TESTING=1 \
 	HARNESS9_PROJECT_ROOT="$PROJECT" \
 	HARNESS9_OBSIDIAN_VAULT="$VAULT" \
-	bash .codex/hooks/sync-to-obsidian.sh
+	bash .codex/hooks/sync-to-obsidian.sh \
+	2>"$ROOT/delete.stderr"
 
 test -f "$VAULT/核心功能/agent-loop.md"
 test -f "$VAULT/技术博客/agent-loop.md"
@@ -35,6 +36,7 @@ test "$(cat "$VAULT/added.md")" = "# Added"
 test "$(cat "$VAULT/updated.md")" = "# Updated"
 test "$(cat "$VAULT/moved.md")" = "# Moved"
 test "$(cat "$VAULT/deleted.md")" = "# Retained"
+test ! -s "$ROOT/delete.stderr"
 
 absolute_payload=$(printf '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"%s"}}' "$PROJECT/docs/absolute.md")
 printf '%s' "$absolute_payload" |
