@@ -17,6 +17,9 @@ printf '# Updated\n' > "$PROJECT/docs/updated.md"
 printf '# Moved\n' > "$PROJECT/docs/moved.md"
 printf '# Article\n' > "$PROJECT/knowledge/articles/20260724-daily.md"
 printf '# Retained\n' > "$VAULT/deleted.md"
+printf '# Absolute\n' > "$PROJECT/docs/absolute.md"
+printf '# Edit alias\n' > "$PROJECT/docs/edit-alias.md"
+printf '# Unrelated\n' > "$PROJECT/README.md"
 
 payload=$(printf '{"hook_event_name":"PostToolUse","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\\n*** Add File: docs/added.md\\n*** Update File: docs/updated.md\\n*** Move to: docs/moved.md\\n*** Delete File: docs/deleted.md\\n*** Update File: docs/核心功能/agent-loop.md\\n*** Update File: website/zh/blog/agent-loop/index.md\\n*** End Patch"}}')
 printf '%s' "$payload" | \
@@ -33,6 +36,41 @@ test "$(cat "$VAULT/updated.md")" = "# Updated"
 test "$(cat "$VAULT/moved.md")" = "# Moved"
 test "$(cat "$VAULT/deleted.md")" = "# Retained"
 
+absolute_payload=$(printf '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"%s"}}' "$PROJECT/docs/absolute.md")
+printf '%s' "$absolute_payload" |
+	HARNESS9_HOOK_TESTING=1 \
+	HARNESS9_PROJECT_ROOT="$PROJECT" \
+	HARNESS9_OBSIDIAN_VAULT="$VAULT" \
+	bash .codex/hooks/sync-to-obsidian.sh
+test "$(cat "$VAULT/absolute.md")" = "# Absolute"
+
+edit_payload=$(printf '{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"docs/edit-alias.md"}}')
+printf '%s' "$edit_payload" |
+	HARNESS9_HOOK_TESTING=1 \
+	HARNESS9_PROJECT_ROOT="$PROJECT" \
+	HARNESS9_OBSIDIAN_VAULT="$VAULT" \
+	bash .codex/hooks/sync-to-obsidian.sh
+test "$(cat "$VAULT/edit-alias.md")" = "# Edit alias"
+
+unrelated_payload=$(printf '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"README.md"}}')
+printf '%s' "$unrelated_payload" |
+	HARNESS9_HOOK_TESTING=1 \
+	HARNESS9_PROJECT_ROOT="$PROJECT" \
+	HARNESS9_OBSIDIAN_VAULT="$VAULT" \
+	bash .codex/hooks/sync-to-obsidian.sh \
+	2>"$ROOT/unrelated.stderr"
+test ! -e "$VAULT/README.md"
+test ! -s "$ROOT/unrelated.stderr"
+
+irrelevant_payload=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"docs/absolute.md"}}')
+printf '%s' "$irrelevant_payload" |
+	HARNESS9_HOOK_TESTING=1 \
+	HARNESS9_PROJECT_ROOT="$PROJECT" \
+	HARNESS9_OBSIDIAN_VAULT="$VAULT" \
+	bash .codex/hooks/sync-to-obsidian.sh \
+	2>"$ROOT/irrelevant.stderr"
+test ! -s "$ROOT/irrelevant.stderr"
+
 file_payload=$(printf '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"knowledge/articles/20260724-daily.md"}}')
 printf '%s' "$file_payload" |
 	HARNESS9_HOOK_TESTING=1 \
@@ -45,8 +83,10 @@ printf 'not-json' |
 	HARNESS9_HOOK_TESTING=1 \
 	HARNESS9_PROJECT_ROOT="$PROJECT" \
 	HARNESS9_OBSIDIAN_VAULT="$VAULT" \
-	bash .codex/hooks/sync-to-obsidian.sh
+	bash .codex/hooks/sync-to-obsidian.sh \
+	2>"$ROOT/malformed.stderr"
 test ! -e "$VAULT/unexpected"
+test ! -s "$ROOT/malformed.stderr"
 
 printf '# Override symlink\n' > "$PROJECT/docs/override-symlink.md"
 ln -s "$PROJECT" "$ROOT/project-link"
@@ -109,9 +149,13 @@ printf '%s' "$final_link_payload" |
 	HARNESS9_HOOK_TESTING=1 \
 	HARNESS9_PROJECT_ROOT="$PROJECT" \
 	HARNESS9_OBSIDIAN_VAULT="$VAULT" \
-	bash .codex/hooks/sync-to-obsidian.sh
+	bash .codex/hooks/sync-to-obsidian.sh \
+	2>"$ROOT/copy-error.stderr"
 test -L "$VAULT/final-link.md"
 test "$(cat "$ROOT/outside-target.md")" = "# Outside target"
+grep -Fx '[obsidian-sync] unable to sync selected Markdown path' "$ROOT/copy-error.stderr"
+! grep -F "$PROJECT" "$ROOT/copy-error.stderr"
+! grep -F "$VAULT" "$ROOT/copy-error.stderr"
 
 printf '# Escape\n' > "$ROOT/escape.md"
 escape_payload=$(printf '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"docs/../../escape.md"}}')

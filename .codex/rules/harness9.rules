@@ -11,12 +11,17 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = [["/opt/homebrew/bin/gh", "/usr/bin/gh"]],
+    pattern = [[
+        "/opt/homebrew/bin/gh",
+        "/opt/homebrew/Cellar/gh/2.92.0/bin/gh",
+        "/usr/bin/gh",
+    ]],
     decision = "prompt",
     justification = "Absolute GitHub CLI executables can perform external writes, so review the full invocation",
     match = [
         "/opt/homebrew/bin/gh pr view 42",
         "/opt/homebrew/bin/gh pr create --draft --repo ZhangShenao/harness9",
+        "/opt/homebrew/Cellar/gh/2.92.0/bin/gh pr create --draft --repo ZhangShenao/harness9",
     ],
     not_match = ["gh pr view 42"],
 )
@@ -33,12 +38,19 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = [["python3", "/opt/anaconda3/bin/python3", "/usr/bin/python3"], "-"],
+    pattern = [[
+        "python3",
+        "/opt/anaconda3/bin/python3",
+        "/opt/anaconda3/bin/python3.13",
+        "/usr/bin/python3",
+    ], ["-", "-c"]],
     decision = "prompt",
-    justification = "Python stdin wrappers can invoke Git or GitHub writes, so review the wrapper and full invocation",
+    justification = "Python code wrappers can invoke Git or GitHub writes, so review the wrapper and full invocation",
     match = [
         "python3 - git push origin feature",
+        "python3 -c 'import subprocess; subprocess.run([\"git\", \"push\"])'",
         "/opt/anaconda3/bin/python3 - gh pr create --draft",
+        "/opt/anaconda3/bin/python3.13 -c 'import subprocess; subprocess.run([\"gh\", \"pr\", \"create\"])'",
     ],
     not_match = ["python3 --version"],
 )

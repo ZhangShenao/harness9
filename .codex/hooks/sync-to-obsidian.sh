@@ -279,6 +279,6 @@ except Exception:
 	"${HARNESS9_HOOK_TESTING:-}" \
 	"${HARNESS9_PROJECT_ROOT:-}" \
 	"${HARNESS9_OBSIDIAN_VAULT:-}" \
-	2>/dev/null || true
+	|| true
 
 exit 0
