@@ -54,44 +54,16 @@ error. Freeze successful values as `PINNED_FETCH_URL` and
 
 ### Sanitized Git environment and transport gate
 
-Run this complete gate before every Git/GitHub network operation and before
-every local or external write. Recompute and compare its frozen digest; any
-change stops the workflow.
+Run this complete gate before every Git/GitHub network operation, every local/external write, and every executable use; any identity/digest change stops.
 
-1. Reject every inherited environment variable whose name starts with `GIT_`.
-   Also reject upper/lowercase `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
-   `NO_PROXY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `CURL_CA_BUNDLE`,
-   `REQUESTS_CA_BUNDLE`, and any `GH_HOST`, `GH_REPO`, `GH_CONFIG_DIR`,
-   `GH_ENTERPRISE_TOKEN`, or transport/debug override.
-2. Build child processes from an allowlist containing only required `PATH`,
-   `HOME`, `XDG_CONFIG_HOME`, locale, and validated temporary-directory values.
-   Add only the agent-controlled constants `GIT_TERMINAL_PROMPT=0`,
-   `GCM_INTERACTIVE=Never`, and `GH_PROMPT_DISABLED=1`. Never forward the
-   rejected environment, askpass variables, or arbitrary caller variables.
-3. In a non-echoing parser, inspect all Git config scopes—system, global,
-   local, worktree, and command—with origin/scope metadata.
-   Reject any `url.*.insteadOf` or `pushInsteadOf`; `http.*proxy`,
-   `remote.*proxy*`, `http.*extraHeader`, `http.*cookie*`,
-   `http.*sslVerify=false`, `http.*sslCAInfo`, `http.*sslCert`,
-   `http.*sslKey`, `http.*followRedirects` other than `false`,
-   `core.sshCommand`, `ssh.variant`, `protocol.*.allow`,
-   `remote.*.uploadpack`, `remote.*.receivepack`, or equivalent scoped key.
-   Reject command-line/config injection and any unreadable or ambiguous scope.
-4. Inspect every effective `credential.helper` value only inside that parser.
-   Require exactly one explicitly user-approved helper expressed as one
-   non-empty allowlisted executable token: no leading `!`/`-`, whitespace,
-   arguments, shell metacharacters, inline shell, URL, or control characters.
-   Never print the value; present only a constant description and its SHA-256
-   fingerprint for approval. Freeze the approval and helper digest. Never
-   change, add, erase, or test credentials.
-5. Require the sole fetch and push URLs to remain the exact canonical HTTPS
-   value and freeze a digest of the complete sanitized environment,
-   configuration decision, helper decision, and destinations.
+1. Obtain explicit absolute candidates for `git`, `gh`, and the approved credential helper without using inherited `PATH`. Resolve every symlink hop to an absolute realpath with non-executing OS file APIs; reject loops, missing/racing hops, relative paths, or ambiguity. For each final file and every traversed directory require trusted ownership (root or current user as applicable), no group/world write, and a regular executable final file. Freeze realpath, device/inode, mode/UID, and SHA-256 as `GIT_REALPATH`/`GIT_ID`, `GH_REALPATH`/`GH_ID`, and `HELPER_REALPATH`/`HELPER_ID`. Reopen without following symlinks and revalidate metadata/digest immediately before every use.
+2. Reject every inherited `GIT_*`; upper/lowercase `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`; `SSL_CERT_FILE`, `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`; and `GH_HOST`, `GH_REPO`, `GH_CONFIG_DIR`, `GH_ENTERPRISE_TOKEN`, askpass, or transport/debug overrides.
+3. Build a minimal child environment containing only validated `HOME`, `XDG_CONFIG_HOME`, locale, and temporary-directory values plus agent constants `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=Never`, and `GH_PROMPT_DISABLED=1`. Do not include `PATH` or arbitrary caller variables.
+4. In a non-echoing parser inspect all Git config scopes—system, global, local, worktree, command—with origin metadata. Reject `url.*.insteadOf`/`pushInsteadOf`; `http.*proxy`, `remote.*proxy*`, `http.*extraHeader`/`cookie*`, `http.*sslVerify=false`, `http.*sslCAInfo`/`sslCert`/`sslKey`, redirect overrides, `core.sshCommand`, `ssh.variant`, `protocol.*.allow`, `remote.*.uploadpack`/`receivepack`, command/config injection, and unreadable/ambiguous scope.
+5. Inspect effective `credential.helper` only in that parser. Reject `!` shell helpers, relative/bare tokens, arguments, whitespace, metacharacters, URLs, or control characters. Require exactly one user-approved absolute helper candidate, validate it as `HELPER_REALPATH` above, never print the value, and present only a constant description plus digest for approval. Never change/test credentials.
+6. Require the sole fetch/push URL to remain canonical HTTPS and freeze a digest of executable identities, minimal environment, config/helper decisions, and destinations.
 
-Run Git network calls only through the sanitized child environment, with the
-validated HTTPS URL as its own argv element and URL-bearing output captured.
-Run GitHub calls in the sanitized child environment with explicit
-`--hostname github.com` where supported and `--repo "$PINNED_REPO"`.
+Construct every command as a static argv array: absolute `GIT_REALPATH` or `GH_REALPATH` at argv[0], fixed options, then each validated value as its own element; never shell or search `PATH`. For each Git credential-bearing network argv, clear configured helpers then set only the validated absolute helper path with fixed `-c credential.helper=` and `-c credential.helper=$HELPER_REALPATH` elements. Capture URL-bearing output. Use explicit `--hostname github.com` where supported and `--repo "$PINNED_REPO"`.
 
 Pass validated values as separate quoted arguments. Never interpolate untrusted
 data into shell source, a command name, a refspec before validation, a URL, or
@@ -257,9 +229,12 @@ format/template, duplicate expansion, extra expected output, or config drift.
 
 Create a session-specific temporary directory outside the repository with mode
 `0700`, using a securely randomized name under a validated system temporary
-directory. Create one notes file exclusively with mode `0600`; reject symlinks,
-pre-existing paths, unsafe ownership, or a path inside the worktree. Freeze its
-absolute path as `NOTES_FILE`.
+directory. Reject symlink components and freeze its absolute realpath,
+device/inode, owner, and mode as `SESSION_DIR`/`SESSION_DIR_ID`. Freeze a strict
+basename as `NOTES_RELATIVE_PATH`; derive exactly
+`NOTES_FILE=SESSION_DIR/NOTES_RELATIVE_PATH` and create it exclusively as a
+regular file with mode `0600`. Reject pre-existing paths, links, unsafe
+ownership, hard-link ambiguity, traversal, or a path inside the worktree.
 
 Write content through a file API that receives path and content separately, not
 a shell heredoc or generated command. Escape commit-derived Markdown and use
@@ -314,12 +289,14 @@ For a first release, omit the compare link and summarize core capabilities.
 Review the final file for accuracy, secrets, raw HTML, unsafe links,
 placeholders, and AI attribution. Freeze its SHA-256 digest as `NOTES_SHA256`.
 
-Create `RECOVERY_STATE` beside the notes with exclusive mode `0600`, safe
-ownership, and atomic updates. Store no URLs, credentials, or commit text.
-Preserve immutable `VERSION`, `CONFIRMATION_CONSUMED`, `RELEASE_OID`,
-`PREV_TAG`/`PREV_OID`, ordered-range digest, `NOTES_SHA256`, workflow
-database ID/path/blob digest, GoReleaser blob digest, and
-`EXPECTED_ASSETS`. Track only monotonic phase, `LOCAL_TAG_CREATED`,
+Create `RECOVERY_STATE` under the same `0700` session directory with a frozen
+strict relative basename, exclusively as a regular `0600` file with safe owner,
+no symlinks or hard-link ambiguity, and atomic updates. Store no URLs,
+credentials, or commit text. Preserve immutable `SESSION_DIR_ID`,
+`NOTES_RELATIVE_PATH`, `VERSION`, `CONFIRMATION_CONSUMED`, `RELEASE_OID`,
+`PREV_TAG`/`PREV_OID`, ordered-range digest, `NOTES_SHA256`, workflow database
+ID/path/blob digest, GoReleaser blob digest, and `EXPECTED_ASSETS`. Track only
+monotonic phase, `LOCAL_TAG_CREATED`, `LOCAL_TAG_ROLLBACK_APPROVED`,
 `BASELINE_RUN_IDS`, and later `RUN_ID`. Any immutable-field change invalidates
 recovery.
 
@@ -350,6 +327,8 @@ Rollback deletion is a separate approval-gated action. Offer it only when
 `LOCAL_TAG_CREATED=true`, the local ref still has object type `commit` at
 `RELEASE_OID`, and the remote exact tag is absent. Never delete on OID evidence
 alone, after a failed create, or when the remote result is present/uncertain.
+Only after an approved deletion succeeds, atomically record
+`LOCAL_TAG_ROLLBACK_APPROVED=true` and phase `local_tag_rolled_back`.
 
 ### 8. Recheck and push only the tag
 
@@ -368,11 +347,12 @@ to the pinned URL:
 
 ```text
 git push PINNED_PUSH_URL \
-  refs/tags/VERSION:refs/tags/VERSION
+  RELEASE_OID:refs/tags/VERSION
 ```
 
-Capture/redact all output. Never push `master`, another branch, another tag, or
-the mutable remote name `origin`.
+The immutable `RELEASE_OID` is the push source; never use the mutable local tag
+ref as the source. Capture/redact all output. Never push `master`, another
+branch, another tag, or the mutable remote name `origin`.
 
 If the push fails, query the exact remote tag again. If absent, retain the
 notes and offer to remove only the local tag created by this run after the
@@ -464,18 +444,34 @@ On any failure after note creation, retain `NOTES_FILE` and `RECOVERY_STATE`
 and report their paths plus the failed phase without printing contents.
 
 Resume only from a new explicit `$release-cli` invocation naming the exact
-recovery-state path. Validate regular-file type, owner, mode `0600`, safe
-containment, schema, and every immutable field. Run the complete sanitized
-transport/repository/workflow gates, but restore `VERSION`, `RELEASE_OID`,
-range, note digest, workflow identity, and asset set only from the record.
-Never recompute or replace `RELEASE_OID` from current `HEAD`, `master`, or
-`origin/master`; current master may have advanced.
+recovery-state path. Open every component without following symlinks and
+require the state and notes to be distinct regular `0600` files owned by the
+current user in the same `0700` session directory whose realpath identity
+equals `SESSION_DIR_ID`. Re-derive the notes path only from the recorded strict
+`NOTES_RELATIVE_PATH`; reject links, traversal, hard-link ambiguity, alternate
+paths, or identity drift. Validate schema and every immutable field. Run the
+complete sanitized transport/repository/workflow gates, but restore `VERSION`,
+`RELEASE_OID`, range, note digest, workflow identity, and asset set only from
+the record. Never recompute or replace `RELEASE_OID` from current `HEAD`,
+`master`, or `origin/master`; current master may have advanced.
 
 Apply this state machine:
 
 1. If the exact remote tag is absent, continue only from a recorded pre-push
-   phase and only when clean synchronized master still equals the original
-   `RELEASE_OID`; otherwise stop. Never infer a new release OID.
+   phase and when clean synchronized master still equals the original
+   `RELEASE_OID`; otherwise stop. Apply these exact local transitions:
+   - `LOCAL_TAG_CREATED=false` plus local tag absent may create it after every
+     fresh gate and approval.
+   - `LOCAL_TAG_CREATED=true` plus one local lightweight commit tag at
+     `RELEASE_OID` may reuse that tag only as local ownership/state evidence.
+   - `LOCAL_TAG_CREATED=true` plus local tag absent may recreate it only when
+     `LOCAL_TAG_ROLLBACK_APPROVED=true` and the approved rollback is recorded,
+     again after every fresh gate and approval.
+   - Any mismatched, annotated, unowned, or unexpected local ref is a hard stop.
+     `LOCAL_TAG_CREATED=false` plus a present local tag is racing/unowned: hard
+     stop and never delete it. A failed/racing create whose marker stayed false
+     never authorizes deletion.
+   Never infer a new release OID.
 2. If the remote tag has any mismatched OID or is not exactly one unpeeled
    lightweight ref with no peeled record, stop without tag mutation.
 3. If the remote tag exactly matches recorded `VERSION`/`RELEASE_OID`, skip
