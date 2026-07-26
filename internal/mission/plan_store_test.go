@@ -2,9 +2,14 @@ package mission
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"path/filepath"
+	"sync"
 	"testing"
+
+	sqlite "modernc.org/sqlite"
 )
 
 func TestDraftCanBeEditedButApprovedVersionCannot(t *testing.T) {
@@ -371,6 +376,160 @@ func TestPendingChangeRequestRetainsCompleteProposedGraph(t *testing.T) {
 	if got.ProposedPlan.Tasks[0].Title != "Migration docs" ||
 		got.ProposedPlan.Tasks[2].Dependencies[0] != "spec" {
 		t.Fatalf("proposed graph was not retained: %+v", got.ProposedPlan.Tasks)
+	}
+}
+
+func TestPlanMutationsReturnCachedResultWhenCommitCancelsContext(t *testing.T) {
+	t.Run("create draft", func(t *testing.T) {
+		store, cancelOnCommit := newCommitCancelStore(t)
+		mission, err := store.CreateMission(
+			context.Background(),
+			CreateMissionInput{Goal: "create plan"},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancelOnCommit(cancel)
+
+		plan, err := store.CreateDraftPlan(ctx, mission.ID, samplePlanInput(), "coordinator")
+		if err != nil {
+			t.Fatalf("CreateDraftPlan returned an error after durable commit: %v", err)
+		}
+		if ctx.Err() != context.Canceled || plan.Version != 1 {
+			t.Fatalf("CreateDraftPlan result = %+v, context error = %v", plan, ctx.Err())
+		}
+	})
+
+	t.Run("update draft", func(t *testing.T) {
+		store, cancelOnCommit := newCommitCancelStore(t)
+		mission, err := store.CreateMission(
+			context.Background(),
+			CreateMissionInput{Goal: "update plan"},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		draft, err := store.CreateDraftPlan(
+			context.Background(),
+			mission.ID,
+			samplePlanInput(),
+			"coordinator",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancelOnCommit(cancel)
+
+		plan, err := store.UpdateDraftPlan(
+			ctx,
+			mission.ID,
+			draft.Version,
+			revisedPlanInput(),
+			"user:zsa",
+		)
+		if err != nil {
+			t.Fatalf("UpdateDraftPlan returned an error after durable commit: %v", err)
+		}
+		if ctx.Err() != context.Canceled || len(plan.Tasks) != 3 {
+			t.Fatalf("UpdateDraftPlan result = %+v, context error = %v", plan, ctx.Err())
+		}
+	})
+
+	t.Run("create change request", func(t *testing.T) {
+		store, cancelOnCommit := newCommitCancelStore(t)
+		mission, err := store.CreateMission(
+			context.Background(),
+			CreateMissionInput{Goal: "request plan change"},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		draft, err := store.CreateDraftPlan(
+			context.Background(),
+			mission.ID,
+			samplePlanInput(),
+			"coordinator",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := markPlanApprovedForTest(
+			context.Background(),
+			store,
+			mission.ID,
+			draft.Version,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(
+			`UPDATE missions SET status = ? WHERE id = ?`,
+			MissionRunning,
+			mission.ID,
+		); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancelOnCommit(cancel)
+
+		request, err := store.CreatePlanChangeRequest(
+			ctx,
+			mission.ID,
+			draft.Version,
+			revisedPlanInput(),
+			"missing migration docs",
+			"coordinator",
+		)
+		if err != nil {
+			t.Fatalf("CreatePlanChangeRequest returned an error after durable commit: %v", err)
+		}
+		if ctx.Err() != context.Canceled || request.Status != ChangeRequestPending {
+			t.Fatalf("CreatePlanChangeRequest result = %+v, context error = %v", request, ctx.Err())
+		}
+	})
+}
+
+func newCommitCancelStore(t *testing.T) (*Store, func(context.CancelFunc)) {
+	t.Helper()
+	var (
+		cancelMu sync.Mutex
+		cancel   context.CancelFunc
+	)
+	driver := &sqlite.Driver{}
+	driver.RegisterConnectionHook(func(conn sqlite.ExecQuerierContext, _ string) error {
+		hooker, ok := conn.(sqlite.HookRegisterer)
+		if !ok {
+			return errors.New("sqlite connection does not support commit hooks")
+		}
+		hooker.RegisterCommitHook(func() int32 {
+			cancelMu.Lock()
+			cancelFunc := cancel
+			cancel = nil
+			cancelMu.Unlock()
+			if cancelFunc != nil {
+				cancelFunc()
+			}
+			return 0
+		})
+		return nil
+	})
+	driverName := "sqlite-plan-commit-cancel-" + newID()
+	sql.Register(driverName, driver)
+	db, err := sql.Open(driverName, filepath.Join(t.TempDir(), "mission.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, func(cancelFunc context.CancelFunc) {
+		cancelMu.Lock()
+		defer cancelMu.Unlock()
+		cancel = cancelFunc
 	}
 }
 

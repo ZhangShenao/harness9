@@ -111,10 +111,14 @@ func (s *Store) CreateDraftPlan(
 	); err != nil {
 		return nil, err
 	}
+	plan, err := getPlanFromQuerier(ctx, tx, missionID, version)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit draft plan: %w", err)
 	}
-	return s.GetPlan(ctx, missionID, version)
+	return plan, nil
 }
 
 // UpdateDraftPlan atomically replaces the graph of an unapproved Plan version.
@@ -235,10 +239,14 @@ func (s *Store) UpdateDraftPlan(
 	); err != nil {
 		return nil, err
 	}
+	plan, err := getPlanFromQuerier(ctx, tx, missionID, version)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit draft plan update: %w", err)
 	}
-	return s.GetPlan(ctx, missionID, version)
+	return plan, nil
 }
 
 // GetPlan returns one Plan version and a detached copy of its persisted graph.
@@ -411,14 +419,26 @@ func (s *Store) CreatePlanChangeRequest(
 	}); err != nil {
 		return nil, err
 	}
+	request, err := getPlanChangeRequestFromQuerier(ctx, tx, requestID)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit plan change request: %w", err)
 	}
-	return s.GetPlanChangeRequest(ctx, requestID)
+	return request, nil
 }
 
 // GetPlanChangeRequest returns one immutable Plan change proposal by ID.
 func (s *Store) GetPlanChangeRequest(ctx context.Context, id string) (*PlanChangeRequest, error) {
+	return getPlanChangeRequestFromQuerier(ctx, s.db, id)
+}
+
+func getPlanChangeRequestFromQuerier(
+	ctx context.Context,
+	queryer planQuerier,
+	id string,
+) (*PlanChangeRequest, error) {
 	var (
 		request      PlanChangeRequest
 		impactedJSON string
@@ -427,7 +447,7 @@ func (s *Store) GetPlanChangeRequest(ctx context.Context, id string) (*PlanChang
 		updatedAt    int64
 		resolvedAt   sql.NullInt64
 	)
-	err := s.db.QueryRowContext(ctx, `
+	err := queryer.QueryRowContext(ctx, `
 		SELECT id, mission_id, trigger_attempt_id, reason,
 		       impacted_task_ids_json, permission_change, budget_change,
 		       proposed_plan_json, status, resolution_reason,
