@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -185,6 +186,10 @@ ON workspace_leases(task_id, status);
 
 CREATE INDEX IF NOT EXISTS idx_mission_events_mission_id
 ON mission_events(mission_id, id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_active_lease_per_task
+ON workspace_leases(task_id)
+WHERE status IN ('active', 'releasing');
 `
 
 var schemaMigrations = []struct {
@@ -204,6 +209,8 @@ var schemaMigrations = []struct {
 	{table: "tasks", column: "budget_cents", definition: "INTEGER NOT NULL DEFAULT 0"},
 	{table: "tasks", column: "acceptance_json", definition: "TEXT NOT NULL DEFAULT '{}'"},
 	{table: "task_attempts", column: "lease_id", definition: "TEXT"},
+	{table: "workspace_leases", column: "branch", definition: "TEXT NOT NULL DEFAULT ''"},
+	{table: "workspace_leases", column: "sandbox_id", definition: "TEXT NOT NULL DEFAULT ''"},
 	{table: "evidence", column: "verifier_attempt_id", definition: "TEXT"},
 }
 
@@ -466,22 +473,109 @@ func (s *Store) ListTasks(ctx context.Context, missionID string) ([]Task, error)
 
 // StartAttempt records a Worker attempt for an existing Task.
 func (s *Store) StartAttempt(ctx context.Context, taskID, worker string) (TaskAttempt, error) {
-	if strings.TrimSpace(worker) == "" {
+	taskID = strings.TrimSpace(taskID)
+	worker = strings.TrimSpace(worker)
+	if taskID == "" {
+		return TaskAttempt{}, fmt.Errorf("attempt task ID is required")
+	}
+	if worker == "" {
 		return TaskAttempt{}, fmt.Errorf("attempt worker is required")
 	}
-	task, err := s.GetTask(ctx, taskID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return TaskAttempt{}, fmt.Errorf("begin task attempt: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	task, err := scanTask(tx.QueryRowContext(ctx, `
+		SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract,
+		       status, created_at, updated_at
+		FROM tasks WHERE id = ?`, taskID))
 	if err != nil {
 		return TaskAttempt{}, err
 	}
-	now := s.currentTime()
-	attempt := TaskAttempt{
-		ID: newID(), TaskID: task.ID, Worker: strings.TrimSpace(worker), Status: "running", CreatedAt: now, UpdatedAt: now,
+	if task.Status != TaskQueued && task.Status != TaskLeased && task.Status != TaskRunning {
+		return TaskAttempt{}, fmt.Errorf(
+			"%w: task %s cannot start an attempt from %s",
+			ErrInvalidTransition,
+			taskID,
+			task.Status,
+		)
 	}
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO task_attempts (id, task_id, worker, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		attempt.ID, attempt.TaskID, attempt.Worker, attempt.Status, unixMillis(now), unixMillis(now)); err != nil {
+	now := s.currentTime()
+	var leaseID string
+	var expiresAt int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, expires_at
+		FROM workspace_leases
+		WHERE task_id = ? AND status IN ('active', 'releasing')
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1`, taskID,
+	).Scan(&leaseID, &expiresAt)
+	switch {
+	case err == nil && expiresAt <= unixMillis(now):
+		return TaskAttempt{}, fmt.Errorf("%w: task %s lease is expired", ErrConflict, taskID)
+	case err == sql.ErrNoRows && task.Status != TaskQueued:
+		return TaskAttempt{}, fmt.Errorf("%w: task %s has no active lease", ErrConflict, taskID)
+	case err != nil && err != sql.ErrNoRows:
+		return TaskAttempt{}, fmt.Errorf("read task lease: %w", err)
+	}
+	if task.Status == TaskLeased {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE tasks
+			SET status = ?, updated_at = ?
+			WHERE id = ? AND status = ?`,
+			TaskRunning,
+			unixMillis(now),
+			taskID,
+			TaskLeased,
+		); err != nil {
+			return TaskAttempt{}, fmt.Errorf("mark task running: %w", err)
+		}
+	}
+	attempt := TaskAttempt{
+		ID:        newID(),
+		TaskID:    task.ID,
+		LeaseID:   leaseID,
+		Worker:    worker,
+		Status:    AttemptRunning,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO task_attempts (
+			id, task_id, lease_id, worker, status, created_at, updated_at
+		) VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?)`,
+		attempt.ID,
+		attempt.TaskID,
+		attempt.LeaseID,
+		attempt.Worker,
+		attempt.Status,
+		unixMillis(now),
+		unixMillis(now),
+	); err != nil {
 		return TaskAttempt{}, fmt.Errorf("create task attempt: %w", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"worker":   attempt.Worker,
+		"lease_id": attempt.LeaseID,
+		"status":   attempt.Status,
+	})
+	if err != nil {
+		return TaskAttempt{}, fmt.Errorf("marshal attempt.started event: %w", err)
+	}
+	if err := insertEvent(ctx, tx, Event{
+		ID:        newID(),
+		MissionID: task.MissionID,
+		TaskID:    task.ID,
+		AttemptID: attempt.ID,
+		Type:      "attempt.started",
+		Payload:   payload,
+		CreatedAt: now,
+	}); err != nil {
+		return TaskAttempt{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return TaskAttempt{}, fmt.Errorf("commit task attempt: %w", err)
 	}
 	return attempt, nil
 }
@@ -494,16 +588,55 @@ func (s *Store) AddArtifact(ctx context.Context, in CreateArtifactInput) (Artifa
 	if strings.TrimSpace(in.Kind) == "" {
 		return Artifact{}, fmt.Errorf("artifact kind is required")
 	}
-	if err := s.validateAttempt(ctx, in.MissionID, in.TaskID, in.AttemptID); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Artifact{}, fmt.Errorf("begin artifact transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := validateAttemptWith(ctx, tx, in.MissionID, in.TaskID, in.AttemptID); err != nil {
 		return Artifact{}, err
 	}
+	digestValue := digest(in.Content)
+	if artifact, ok, err := findArtifactWith(
+		ctx,
+		tx,
+		in.AttemptID,
+		in.Kind,
+		digestValue,
+	); err != nil {
+		return Artifact{}, err
+	} else if ok {
+		return artifact, nil
+	}
 	now := s.currentTime()
-	artifact := Artifact{ID: newID(), MissionID: in.MissionID, TaskID: in.TaskID, AttemptID: in.AttemptID, Kind: in.Kind, Content: append([]byte(nil), in.Content...), SHA256: digest(in.Content), CreatedAt: now}
-	if _, err := s.db.ExecContext(ctx, `
+	artifact := Artifact{ID: newID(), MissionID: in.MissionID, TaskID: in.TaskID, AttemptID: in.AttemptID, Kind: in.Kind, Content: append([]byte(nil), in.Content...), SHA256: digestValue, CreatedAt: now}
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO artifacts (id, mission_id, task_id, attempt_id, kind, content, sha256, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		artifact.ID, artifact.MissionID, artifact.TaskID, artifact.AttemptID, artifact.Kind, artifact.Content, artifact.SHA256, unixMillis(now)); err != nil {
 		return Artifact{}, fmt.Errorf("add artifact: %w", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"artifact_id": artifact.ID,
+		"kind":        artifact.Kind,
+		"sha256":      artifact.SHA256,
+	})
+	if err != nil {
+		return Artifact{}, fmt.Errorf("marshal artifact.created event: %w", err)
+	}
+	if err := insertEvent(ctx, tx, Event{
+		ID:        newID(),
+		MissionID: artifact.MissionID,
+		TaskID:    artifact.TaskID,
+		AttemptID: artifact.AttemptID,
+		Type:      "artifact.created",
+		Payload:   payload,
+		CreatedAt: now,
+	}); err != nil {
+		return Artifact{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Artifact{}, fmt.Errorf("commit artifact: %w", err)
 	}
 	return artifact, nil
 }
@@ -516,22 +649,81 @@ func (s *Store) AddEvidence(ctx context.Context, in CreateEvidenceInput) (Eviden
 	if strings.TrimSpace(in.Kind) == "" {
 		return Evidence{}, fmt.Errorf("evidence kind is required")
 	}
-	if err := s.validateAttempt(ctx, in.MissionID, in.TaskID, in.AttemptID); err != nil {
+	in.VerifierAttemptID = strings.TrimSpace(in.VerifierAttemptID)
+	if in.VerifierAttemptID != "" && in.VerifierAttemptID == in.AttemptID {
+		return Evidence{}, fmt.Errorf(
+			"%w: evidence producer and verifier attempts must differ",
+			ErrConflict,
+		)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Evidence{}, fmt.Errorf("begin evidence transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := validateAttemptWith(ctx, tx, in.MissionID, in.TaskID, in.AttemptID); err != nil {
 		return Evidence{}, err
 	}
+	if in.VerifierAttemptID != "" {
+		if err := validateAttemptWith(
+			ctx,
+			tx,
+			in.MissionID,
+			in.TaskID,
+			in.VerifierAttemptID,
+		); err != nil {
+			return Evidence{}, fmt.Errorf("validate verifier attempt: %w", err)
+		}
+	}
 	digestValue := digest(in.Content)
-	if evidence, ok, err := s.findEvidence(ctx, in.AttemptID, in.Kind, digestValue); err != nil {
+	if evidence, ok, err := findEvidenceWith(ctx, tx, in.AttemptID, in.Kind, digestValue); err != nil {
 		return Evidence{}, err
 	} else if ok {
 		return evidence, nil
 	}
 	now := s.currentTime()
-	evidence := Evidence{ID: newID(), MissionID: in.MissionID, TaskID: in.TaskID, AttemptID: in.AttemptID, Kind: in.Kind, Content: append([]byte(nil), in.Content...), SHA256: digestValue, Passed: in.Passed, CreatedAt: now}
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO evidence (id, mission_id, task_id, attempt_id, kind, content, sha256, passed, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		evidence.ID, evidence.MissionID, evidence.TaskID, evidence.AttemptID, evidence.Kind, evidence.Content, evidence.SHA256, evidence.Passed, unixMillis(now)); err != nil {
+	evidence := Evidence{ID: newID(), MissionID: in.MissionID, TaskID: in.TaskID, AttemptID: in.AttemptID, VerifierAttemptID: in.VerifierAttemptID, Kind: in.Kind, Content: append([]byte(nil), in.Content...), SHA256: digestValue, Passed: in.Passed, CreatedAt: now}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO evidence (
+			id, mission_id, task_id, attempt_id, verifier_attempt_id,
+			kind, content, sha256, passed, created_at
+		) VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?)`,
+		evidence.ID,
+		evidence.MissionID,
+		evidence.TaskID,
+		evidence.AttemptID,
+		evidence.VerifierAttemptID,
+		evidence.Kind,
+		evidence.Content,
+		evidence.SHA256,
+		evidence.Passed,
+		unixMillis(now),
+	); err != nil {
 		return Evidence{}, fmt.Errorf("add evidence: %w", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"evidence_id":         evidence.ID,
+		"verifier_attempt_id": evidence.VerifierAttemptID,
+		"kind":                evidence.Kind,
+		"sha256":              evidence.SHA256,
+		"passed":              evidence.Passed,
+	})
+	if err != nil {
+		return Evidence{}, fmt.Errorf("marshal evidence.created event: %w", err)
+	}
+	if err := insertEvent(ctx, tx, Event{
+		ID:        newID(),
+		MissionID: evidence.MissionID,
+		TaskID:    evidence.TaskID,
+		AttemptID: evidence.AttemptID,
+		Type:      "evidence.created",
+		Payload:   payload,
+		CreatedAt: now,
+	}); err != nil {
+		return Evidence{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Evidence{}, fmt.Errorf("commit evidence: %w", err)
 	}
 	return evidence, nil
 }
@@ -539,7 +731,8 @@ func (s *Store) AddEvidence(ctx context.Context, in CreateEvidenceInput) (Eviden
 // ListEvidence returns a Task's verifier output in creation order.
 func (s *Store) ListEvidence(ctx context.Context, taskID string) ([]Evidence, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, mission_id, task_id, attempt_id, kind, content, sha256, passed, created_at
+		SELECT id, mission_id, task_id, attempt_id,
+		       COALESCE(verifier_attempt_id, ''), kind, content, sha256, passed, created_at
 		FROM evidence WHERE task_id = ? ORDER BY created_at, id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list evidence: %w", err)
@@ -550,7 +743,18 @@ func (s *Store) ListEvidence(ctx context.Context, taskID string) ([]Evidence, er
 		var item Evidence
 		var passed int
 		var createdAt int64
-		if err := rows.Scan(&item.ID, &item.MissionID, &item.TaskID, &item.AttemptID, &item.Kind, &item.Content, &item.SHA256, &passed, &createdAt); err != nil {
+		if err := rows.Scan(
+			&item.ID,
+			&item.MissionID,
+			&item.TaskID,
+			&item.AttemptID,
+			&item.VerifierAttemptID,
+			&item.Kind,
+			&item.Content,
+			&item.SHA256,
+			&passed,
+			&createdAt,
+		); err != nil {
 			return nil, fmt.Errorf("scan evidence: %w", err)
 		}
 		item.Passed = passed != 0
@@ -689,9 +893,13 @@ func dependencyInMission(ctx context.Context, tx *sql.Tx, missionID, dependencyI
 	return nil
 }
 
-func (s *Store) validateAttempt(ctx context.Context, missionID, taskID, attemptID string) error {
+type queryRower interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func validateAttemptWith(ctx context.Context, q queryRower, missionID, taskID, attemptID string) error {
 	var count int
-	if err := s.db.QueryRowContext(ctx, `
+	if err := q.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM task_attempts attempt
 		JOIN tasks task ON task.id = attempt.task_id
@@ -705,14 +913,26 @@ func (s *Store) validateAttempt(ctx context.Context, missionID, taskID, attemptI
 	return nil
 }
 
-func (s *Store) findEvidence(ctx context.Context, attemptID, kind, digestValue string) (Evidence, bool, error) {
+func findEvidenceWith(ctx context.Context, q queryRower, attemptID, kind, digestValue string) (Evidence, bool, error) {
 	var evidence Evidence
 	var passed int
 	var createdAt int64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, mission_id, task_id, attempt_id, kind, content, sha256, passed, created_at
+	err := q.QueryRowContext(ctx, `
+		SELECT id, mission_id, task_id, attempt_id,
+		       COALESCE(verifier_attempt_id, ''), kind, content, sha256, passed, created_at
 		FROM evidence WHERE attempt_id = ? AND kind = ? AND sha256 = ?`, attemptID, kind, digestValue).
-		Scan(&evidence.ID, &evidence.MissionID, &evidence.TaskID, &evidence.AttemptID, &evidence.Kind, &evidence.Content, &evidence.SHA256, &passed, &createdAt)
+		Scan(
+			&evidence.ID,
+			&evidence.MissionID,
+			&evidence.TaskID,
+			&evidence.AttemptID,
+			&evidence.VerifierAttemptID,
+			&evidence.Kind,
+			&evidence.Content,
+			&evidence.SHA256,
+			&passed,
+			&createdAt,
+		)
 	if err == sql.ErrNoRows {
 		return Evidence{}, false, nil
 	}
@@ -722,6 +942,42 @@ func (s *Store) findEvidence(ctx context.Context, attemptID, kind, digestValue s
 	evidence.Passed = passed != 0
 	evidence.CreatedAt = fromUnixMillis(createdAt)
 	return evidence, true, nil
+}
+
+func findArtifactWith(
+	ctx context.Context,
+	q queryRower,
+	attemptID string,
+	kind string,
+	digestValue string,
+) (Artifact, bool, error) {
+	var artifact Artifact
+	var createdAt int64
+	err := q.QueryRowContext(ctx, `
+		SELECT id, mission_id, task_id, attempt_id, kind, content, sha256, created_at
+		FROM artifacts
+		WHERE attempt_id = ? AND kind = ? AND sha256 = ?`,
+		attemptID,
+		kind,
+		digestValue,
+	).Scan(
+		&artifact.ID,
+		&artifact.MissionID,
+		&artifact.TaskID,
+		&artifact.AttemptID,
+		&artifact.Kind,
+		&artifact.Content,
+		&artifact.SHA256,
+		&createdAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Artifact{}, false, nil
+	}
+	if err != nil {
+		return Artifact{}, false, fmt.Errorf("find artifact: %w", err)
+	}
+	artifact.CreatedAt = fromUnixMillis(createdAt)
+	return artifact, true, nil
 }
 
 func queueReadyDependents(ctx context.Context, tx *sql.Tx, dependencyID string, now time.Time) error {

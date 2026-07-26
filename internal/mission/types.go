@@ -345,6 +345,7 @@ type Task struct {
 type TaskAttempt struct {
 	ID        string
 	TaskID    string
+	LeaseID   string
 	Worker    string
 	Status    AttemptStatus
 	CreatedAt time.Time
@@ -419,15 +420,16 @@ type Artifact struct {
 
 // Evidence is append-only verification output. Only a verifier should create it.
 type Evidence struct {
-	ID        string
-	MissionID string
-	TaskID    string
-	AttemptID string
-	Kind      string
-	Content   []byte
-	SHA256    string
-	Passed    bool
-	CreatedAt time.Time
+	ID                string
+	MissionID         string
+	TaskID            string
+	AttemptID         string
+	VerifierAttemptID string
+	Kind              string
+	Content           []byte
+	SHA256            string
+	Passed            bool
+	CreatedAt         time.Time
 }
 
 // CreateMissionInput describes the minimum user intent needed to create a Mission.
@@ -506,12 +508,13 @@ type CreateArtifactInput struct {
 
 // CreateEvidenceInput describes an immutable verifier result.
 type CreateEvidenceInput struct {
-	MissionID string
-	TaskID    string
-	AttemptID string
-	Kind      string
-	Content   []byte
-	Passed    bool
+	MissionID         string
+	TaskID            string
+	AttemptID         string
+	VerifierAttemptID string
+	Kind              string
+	Content           []byte
+	Passed            bool
 }
 
 func validTaskTransition(current, next TaskStatus) bool {
