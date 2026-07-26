@@ -1,36 +1,86 @@
 package mission
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestMissionStatusCanTransition(t *testing.T) {
-	tests := []struct {
-		name string
-		from MissionStatus
-		to   MissionStatus
-		want bool
-	}{
-		{name: "draft to planning", from: MissionDraft, to: MissionPlanning, want: true},
-		{name: "draft to cancelled", from: MissionDraft, to: MissionCancelled, want: true},
-		{name: "planning to awaiting approval", from: MissionPlanning, to: MissionAwaitingPlanApproval, want: true},
-		{name: "planning to cancelled", from: MissionPlanning, to: MissionCancelled, want: true},
-		{name: "awaiting approval to ready", from: MissionAwaitingPlanApproval, to: MissionReady, want: true},
-		{name: "awaiting approval back to planning", from: MissionAwaitingPlanApproval, to: MissionPlanning, want: true},
-		{name: "awaiting approval to cancelled", from: MissionAwaitingPlanApproval, to: MissionCancelled, want: true},
-		{name: "ready to running", from: MissionReady, to: MissionRunning, want: true},
-		{name: "ready to cancelled", from: MissionReady, to: MissionCancelled, want: true},
-		{name: "running to verifying", from: MissionRunning, to: MissionVerifying, want: true},
-		{name: "running to needs attention", from: MissionRunning, to: MissionNeedsAttention, want: true},
-		{name: "running to failed", from: MissionRunning, to: MissionFailed, want: true},
-		{name: "running to cancelled", from: MissionRunning, to: MissionCancelled, want: true},
-		{name: "verifying to succeeded", from: MissionVerifying, to: MissionSucceeded, want: true},
-		{name: "verifying to failed", from: MissionVerifying, to: MissionFailed, want: true},
-		{name: "verifying to needs attention", from: MissionVerifying, to: MissionNeedsAttention, want: true},
-		{name: "draft cannot run", from: MissionDraft, to: MissionRunning, want: false},
-		{name: "terminal cannot run", from: MissionSucceeded, to: MissionRunning, want: false},
-		{name: "unknown cannot transition", from: MissionStatus("unknown"), to: MissionPlanning, want: false},
+	statuses := []MissionStatus{MissionDraft, MissionPlanning, MissionAwaitingPlanApproval, MissionReady, MissionRunning, MissionVerifying, MissionSucceeded, MissionFailed, MissionNeedsAttention, MissionCancelled}
+	allowed := map[MissionStatus]map[MissionStatus]bool{
+		MissionDraft:                {MissionPlanning: true, MissionCancelled: true},
+		MissionPlanning:             {MissionAwaitingPlanApproval: true, MissionCancelled: true},
+		MissionAwaitingPlanApproval: {MissionReady: true, MissionPlanning: true, MissionCancelled: true},
+		MissionReady:                {MissionRunning: true, MissionCancelled: true},
+		MissionRunning:              {MissionVerifying: true, MissionNeedsAttention: true, MissionFailed: true, MissionCancelled: true},
+		MissionVerifying:            {MissionSucceeded: true, MissionFailed: true, MissionNeedsAttention: true},
 	}
+	for _, test := range transitionCases(statuses, allowed) {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.from.CanTransitionTo(test.to); got != test.want {
+				t.Fatalf("CanTransitionTo(%q, %q) = %t, want %t", test.from, test.to, got, test.want)
+			}
+		})
+	}
+	if MissionStatus("unknown").CanTransitionTo(MissionPlanning) {
+		t.Fatal("unknown mission status must not transition")
+	}
+}
 
-	for _, test := range tests {
+func TestPlanStatusCanTransition(t *testing.T) {
+	statuses := []PlanStatus{PlanDraft, PlanAwaitingApproval, PlanApproved, PlanRejected, PlanSuperseded}
+	allowed := map[PlanStatus]map[PlanStatus]bool{
+		PlanDraft:            {PlanAwaitingApproval: true},
+		PlanAwaitingApproval: {PlanApproved: true, PlanDraft: true, PlanRejected: true},
+		PlanApproved:         {PlanSuperseded: true},
+	}
+	for _, test := range transitionCases(statuses, allowed) {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.from.CanTransitionTo(test.to); got != test.want {
+				t.Fatalf("CanTransitionTo(%q, %q) = %t, want %t", test.from, test.to, got, test.want)
+			}
+		})
+	}
+}
+
+func TestTaskStatusCanTransition(t *testing.T) {
+	statuses := []TaskStatus{TaskBlocked, TaskQueued, TaskLeased, TaskRunning, TaskVerifying, TaskSucceeded, TaskFailed, TaskAwaitingInput, TaskIndeterminate}
+	allowed := map[TaskStatus]map[TaskStatus]bool{
+		TaskBlocked:   {TaskQueued: true},
+		TaskQueued:    {TaskLeased: true, TaskFailed: true, TaskAwaitingInput: true},
+		TaskLeased:    {TaskRunning: true, TaskQueued: true, TaskIndeterminate: true, TaskFailed: true},
+		TaskRunning:   {TaskVerifying: true, TaskFailed: true, TaskAwaitingInput: true, TaskIndeterminate: true},
+		TaskVerifying: {TaskSucceeded: true, TaskFailed: true, TaskAwaitingInput: true},
+	}
+	for _, test := range transitionCases(statuses, allowed) {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.from.CanTransitionTo(test.to); got != test.want {
+				t.Fatalf("CanTransitionTo(%q, %q) = %t, want %t", test.from, test.to, got, test.want)
+			}
+		})
+	}
+}
+
+func TestAttemptStatusCanTransition(t *testing.T) {
+	statuses := []AttemptStatus{AttemptRunning, AttemptSucceeded, AttemptFailed, AttemptIndeterminate, AttemptCancelled}
+	allowed := map[AttemptStatus]map[AttemptStatus]bool{
+		AttemptRunning: {AttemptSucceeded: true, AttemptFailed: true, AttemptIndeterminate: true, AttemptCancelled: true},
+	}
+	for _, test := range transitionCases(statuses, allowed) {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.from.CanTransitionTo(test.to); got != test.want {
+				t.Fatalf("CanTransitionTo(%q, %q) = %t, want %t", test.from, test.to, got, test.want)
+			}
+		})
+	}
+}
+
+func TestChangeRequestStatusCanTransition(t *testing.T) {
+	statuses := []ChangeRequestStatus{ChangeRequestPending, ChangeRequestApproved, ChangeRequestRejected, ChangeRequestCancelled}
+	allowed := map[ChangeRequestStatus]map[ChangeRequestStatus]bool{
+		ChangeRequestPending: {ChangeRequestApproved: true, ChangeRequestRejected: true, ChangeRequestCancelled: true},
+	}
+	for _, test := range transitionCases(statuses, allowed) {
 		t.Run(test.name, func(t *testing.T) {
 			if got := test.from.CanTransitionTo(test.to); got != test.want {
 				t.Fatalf("CanTransitionTo(%q, %q) = %t, want %t", test.from, test.to, got, test.want)
@@ -76,4 +126,21 @@ func TestValidateTaskInputs(t *testing.T) {
 			}
 		})
 	}
+}
+
+type transitionCase[S comparable] struct {
+	name string
+	from S
+	to   S
+	want bool
+}
+
+func transitionCases[S ~string](statuses []S, allowed map[S]map[S]bool) []transitionCase[S] {
+	cases := make([]transitionCase[S], 0, len(statuses)*len(statuses))
+	for _, from := range statuses {
+		for _, to := range statuses {
+			cases = append(cases, transitionCase[S]{name: fmt.Sprintf("%s_to_%s", from, to), from: from, to: to, want: allowed[from][to]})
+		}
+	}
+	return cases
 }
