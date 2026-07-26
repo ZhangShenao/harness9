@@ -190,6 +190,18 @@ ON mission_events(mission_id, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_active_lease_per_task
 ON workspace_leases(task_id)
 WHERE status IN ('active', 'releasing');
+
+CREATE TRIGGER IF NOT EXISTS prevent_mission_event_update
+BEFORE UPDATE ON mission_events
+BEGIN
+    SELECT RAISE(ABORT, 'mission event is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_mission_event_delete
+BEFORE DELETE ON mission_events
+BEGIN
+    SELECT RAISE(ABORT, 'mission event is immutable');
+END;
 `
 
 var schemaMigrations = []struct {
@@ -472,6 +484,8 @@ func (s *Store) ListTasks(ctx context.Context, missionID string) ([]Task, error)
 }
 
 // StartAttempt records a Worker attempt for an existing Task.
+// Compatibility covers this method signature and named composite literals of
+// returned records; positional composite literals are not a supported contract.
 func (s *Store) StartAttempt(ctx context.Context, taskID, worker string) (TaskAttempt, error) {
 	taskID = strings.TrimSpace(taskID)
 	worker = strings.TrimSpace(worker)
@@ -581,6 +595,7 @@ func (s *Store) StartAttempt(ctx context.Context, taskID, worker string) (TaskAt
 }
 
 // AddArtifact records Worker output once and returns an existing matching artifact on retry.
+// Compatibility covers this signature and named CreateArtifactInput literals.
 func (s *Store) AddArtifact(ctx context.Context, in CreateArtifactInput) (Artifact, error) {
 	if len(in.Content) == 0 {
 		return Artifact{}, fmt.Errorf("artifact content is required")
@@ -642,6 +657,8 @@ func (s *Store) AddArtifact(ctx context.Context, in CreateArtifactInput) (Artifa
 }
 
 // AddEvidence records verifier output once and returns a matching record on retry.
+// Compatibility covers this signature and named CreateEvidenceInput literals;
+// optional metadata fields may be appended without supporting positional literals.
 func (s *Store) AddEvidence(ctx context.Context, in CreateEvidenceInput) (Evidence, error) {
 	if len(in.Content) == 0 {
 		return Evidence{}, fmt.Errorf("evidence content is required")

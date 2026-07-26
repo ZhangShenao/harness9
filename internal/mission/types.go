@@ -342,6 +342,8 @@ type Task struct {
 }
 
 // TaskAttempt records one Worker execution of a Task.
+// Callers should use named composite literals because optional execution
+// metadata may be appended while existing exported fields remain available.
 type TaskAttempt struct {
 	ID        string
 	TaskID    string
@@ -419,6 +421,8 @@ type Artifact struct {
 }
 
 // Evidence is append-only verification output. Only a verifier should create it.
+// Callers should use named composite literals because optional verifier metadata
+// may be appended while existing exported fields remain available.
 type Evidence struct {
 	ID                string
 	MissionID         string
@@ -498,6 +502,7 @@ type CreateEventInput struct {
 }
 
 // CreateArtifactInput describes an immutable Worker artifact.
+// Named composite literals are the supported source-compatibility contract.
 type CreateArtifactInput struct {
 	MissionID string
 	TaskID    string
@@ -507,6 +512,8 @@ type CreateArtifactInput struct {
 }
 
 // CreateEvidenceInput describes an immutable verifier result.
+// Named composite literals remain compatible when optional metadata is added;
+// positional composite literals are not part of the compatibility contract.
 type CreateEvidenceInput struct {
 	MissionID         string
 	TaskID            string

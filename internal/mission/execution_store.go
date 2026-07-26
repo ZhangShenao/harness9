@@ -447,11 +447,8 @@ func (s *Store) MarkInterruptedAttemptsIndeterminate(ctx context.Context) (int, 
 		FROM task_attempts attempt
 		JOIN tasks task ON task.id = attempt.task_id
 		WHERE attempt.status = ?
-		  AND task.status IN (?, ?)
 		ORDER BY attempt.created_at, attempt.id`,
 		AttemptRunning,
-		TaskLeased,
-		TaskRunning,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("list interrupted attempts: %w", err)
@@ -494,12 +491,10 @@ func (s *Store) MarkInterruptedAttemptsIndeterminate(ctx context.Context) (int, 
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE tasks
 			SET status = ?, updated_at = ?
-			WHERE id = ? AND status IN (?, ?)`,
+			WHERE id = ?`,
 			TaskIndeterminate,
 			unixMillis(now),
 			attempt.taskID,
-			TaskLeased,
-			TaskRunning,
 		); err != nil {
 			return 0, fmt.Errorf("mark interrupted task indeterminate: %w", err)
 		}
@@ -513,8 +508,9 @@ func (s *Store) MarkInterruptedAttemptsIndeterminate(ctx context.Context) (int, 
 			return 0, fmt.Errorf("expire interrupted task leases: %w", err)
 		}
 		payload, err := json.Marshal(map[string]any{
-			"reason": "runtime_restart",
-			"status": AttemptIndeterminate,
+			"reason":      "runtime_restart",
+			"status":      AttemptIndeterminate,
+			"task_status": TaskIndeterminate,
 		})
 		if err != nil {
 			return 0, fmt.Errorf("marshal attempt.indeterminate event: %w", err)

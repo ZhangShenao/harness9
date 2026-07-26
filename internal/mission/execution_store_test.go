@@ -79,6 +79,85 @@ func TestMarkInterruptedAttemptsIndeterminate(t *testing.T) {
 	}
 }
 
+func TestRecoveryMarksLegacyQueuedAttemptAndTaskIndeterminate(t *testing.T) {
+	store, task := newReadyTask(t)
+	attempt, err := store.StartAttempt(
+		context.Background(),
+		task.ID,
+		"legacy-worker",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Status != TaskQueued {
+		t.Fatalf("legacy Task status = %s, want %s", before.Status, TaskQueued)
+	}
+
+	count, err := store.MarkInterruptedAttemptsIndeterminate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("recovered Attempt count = %d, want 1", count)
+	}
+	gotAttempt, err := store.GetAttempt(context.Background(), attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAttempt.Status != AttemptIndeterminate {
+		t.Fatalf("legacy Attempt status = %s, want %s", gotAttempt.Status, AttemptIndeterminate)
+	}
+	gotTask, err := store.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTask.Status != TaskIndeterminate {
+		t.Fatalf("legacy Task status = %s, want %s", gotTask.Status, TaskIndeterminate)
+	}
+}
+
+func TestNewStoreMigratesMissionEventsToAppendOnly(t *testing.T) {
+	db := openSharedMemoryDB(t)
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mission, err := store.CreateMission(
+		context.Background(),
+		CreateMissionInput{Goal: "preserve audit events"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		DROP TRIGGER IF EXISTS prevent_mission_event_update;
+		DROP TRIGGER IF EXISTS prevent_mission_event_delete;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(db); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.ExecContext(context.Background(), `
+		UPDATE mission_events
+		SET type = 'tampered'
+		WHERE mission_id = ?`, mission.ID,
+	); err == nil {
+		t.Fatal("mission Event update must be rejected after migration")
+	}
+	if _, err := db.ExecContext(context.Background(), `
+		DELETE FROM mission_events
+		WHERE mission_id = ?`, mission.ID,
+	); err == nil {
+		t.Fatal("mission Event delete must be rejected after migration")
+	}
+}
+
 func TestTransitionAttemptRejectsTerminalTransition(t *testing.T) {
 	store, attempt := newRunningAttempt(t)
 
