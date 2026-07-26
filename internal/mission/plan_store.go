@@ -298,9 +298,43 @@ func (s *Store) ListPlanVersions(ctx context.Context, missionID string) ([]PlanV
 	return plans, nil
 }
 
-// CreatePlanChangeRequest persists an immutable execution-time Plan proposal.
-func (s *Store) CreatePlanChangeRequest(
+// createPlanChangeRequest persists an immutable execution-time Plan proposal.
+// CommandService is the only public mutation entry point; this wrapper remains
+// package-private for repository-level tests and internal composition.
+func (s *Store) createPlanChangeRequest(
 	ctx context.Context,
+	missionID string,
+	baseVersion int,
+	proposed PlanInput,
+	reason string,
+	actor string,
+) (*PlanChangeRequest, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin plan change request: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	request, err := s.createPlanChangeRequestTx(
+		ctx,
+		tx,
+		missionID,
+		baseVersion,
+		proposed,
+		reason,
+		actor,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit plan change request: %w", err)
+	}
+	return request, nil
+}
+
+func (s *Store) createPlanChangeRequestTx(
+	ctx context.Context,
+	tx *sql.Tx,
 	missionID string,
 	baseVersion int,
 	proposed PlanInput,
@@ -334,11 +368,6 @@ func (s *Store) CreatePlanChangeRequest(
 		return nil, fmt.Errorf("marshal proposed plan: %w", err)
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin plan change request: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
 	mission, err := scanMission(tx.QueryRowContext(ctx, `
 		SELECT id, goal, acceptance_contract, budget_cents, policy_json,
 		       current_plan_version, status, created_at, updated_at
@@ -423,9 +452,6 @@ func (s *Store) CreatePlanChangeRequest(
 	if err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit plan change request: %w", err)
-	}
 	return request, nil
 }
 
@@ -504,6 +530,7 @@ func (s *Store) approvePlanTx(
 	missionID string,
 	version int,
 	actor string,
+	reason string,
 ) (*PlanVersion, error) {
 	ctx := context.Background()
 	mission, err := scanMission(tx.QueryRowContext(ctx, `
@@ -601,7 +628,16 @@ func (s *Store) approvePlanTx(
 	); err != nil {
 		return nil, fmt.Errorf("activate approved plan: %w", err)
 	}
-	if err := insertPlanEvent(ctx, tx, missionID, "plan.approved", actor, version, now); err != nil {
+	if err := insertPlanEventWithReason(
+		ctx,
+		tx,
+		missionID,
+		"plan.approved",
+		actor,
+		reason,
+		version,
+		now,
+	); err != nil {
 		return nil, err
 	}
 	return getPlanFromQuerier(ctx, tx, missionID, version)
@@ -843,6 +879,33 @@ func insertPlanEvent(
 ) error {
 	payload, err := json.Marshal(map[string]any{
 		"actor":   actor,
+		"version": version,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal %s event: %w", eventType, err)
+	}
+	return insertEvent(ctx, tx, Event{
+		ID:        newID(),
+		MissionID: missionID,
+		Type:      eventType,
+		Payload:   payload,
+		CreatedAt: now,
+	})
+}
+
+func insertPlanEventWithReason(
+	ctx context.Context,
+	tx *sql.Tx,
+	missionID string,
+	eventType string,
+	actor string,
+	reason string,
+	version int,
+	now time.Time,
+) error {
+	payload, err := json.Marshal(map[string]any{
+		"actor":   actor,
+		"reason":  reason,
 		"version": version,
 	})
 	if err != nil {

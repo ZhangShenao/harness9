@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -49,14 +50,30 @@ func TestApprovePlanIsIdempotentAndQueuesRootTasks(t *testing.T) {
 	if got := countEventsOfType(events, "plan.approved"); got != 1 {
 		t.Fatalf("plan.approved Event count = %d, want 1", got)
 	}
+	for _, event := range events {
+		if event.Type != "plan.approved" {
+			continue
+		}
+		var payload struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Reason != "计划已审阅" {
+			t.Fatalf("plan.approved Event reason = %q", payload.Reason)
+		}
+	}
 }
 
 func TestResolveApprovedChangeCreatesNewVersion(t *testing.T) {
 	svc, store, mission, request := newPendingChangeService(t)
+	providedPlan := planInputFromRequest(request)
 
 	cmd := ResolvePlanChangeCommand{
 		MissionID:       mission.ID,
 		ChangeRequestID: request.ID,
+		Plan:            providedPlan,
 		Approve:         true,
 		Actor:           "user:zsa",
 		Reason:          "补齐文档",
@@ -182,6 +199,7 @@ func TestResolveRejectedChangeIsIdempotentAndKeepsBaseVersion(t *testing.T) {
 	cmd := ResolvePlanChangeCommand{
 		MissionID:       mission.ID,
 		ChangeRequestID: request.ID,
+		Plan:            planInputFromRequest(request),
 		Approve:         false,
 		Actor:           "user:zsa",
 		Reason:          "暂不扩展范围",
@@ -357,6 +375,7 @@ func TestCommandStatusGatesRejectIllegalMissionStates(t *testing.T) {
 					ResolvePlanChangeCommand{
 						MissionID:       mission.ID,
 						ChangeRequestID: request.ID,
+						Plan:            planInputFromRequest(request),
 						Approve:         true,
 						Actor:           "user:zsa",
 						Reason:          "resolve",
@@ -466,6 +485,7 @@ func TestCommandIdempotencyIsScopedByCommandName(t *testing.T) {
 		ResolvePlanChangeCommand{
 			MissionID:       mission.ID,
 			ChangeRequestID: request.ID,
+			Plan:            planInputFromRequest(request),
 			Approve:         false,
 			Actor:           "user:zsa",
 			Reason:          "reject original",
@@ -553,7 +573,7 @@ func newPendingChangeService(
 ) (*CommandService, *Store, Mission, *PlanChangeRequest) {
 	t.Helper()
 	store, mission := newApprovedRunningMission(t)
-	request, err := store.CreatePlanChangeRequest(
+	request, err := store.createPlanChangeRequest(
 		context.Background(),
 		mission.ID,
 		mission.CurrentPlanVersion,
@@ -565,6 +585,82 @@ func newPendingChangeService(
 		t.Fatal(err)
 	}
 	return NewCommandService(store), store, mission, request
+}
+
+func TestResolvePlanChangeRejectsMismatchedPlan(t *testing.T) {
+	svc, store, mission, request := newPendingChangeService(t)
+
+	_, err := svc.ResolvePlanChange(context.Background(), ResolvePlanChangeCommand{
+		MissionID:       mission.ID,
+		ChangeRequestID: request.ID,
+		Plan:            samplePlanInput(),
+		Approve:         true,
+		Actor:           "user:zsa",
+		Reason:          "approve unexpected graph",
+		IdempotencyKey:  "mismatched-plan",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("ResolvePlanChange error = %v, want ErrConflict", err)
+	}
+	resolved, err := store.GetPlanChangeRequest(context.Background(), request.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Status != ChangeRequestPending {
+		t.Fatalf("Change Request status = %s, want %s", resolved.Status, ChangeRequestPending)
+	}
+	versions, err := store.ListPlanVersions(context.Background(), mission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("Plan version count = %d, want 1", len(versions))
+	}
+}
+
+func TestConcurrentDuplicateApprovePlanReturnsStoredResult(t *testing.T) {
+	svc, store, mission, draft := newDraftMissionService(t)
+	cmd := ApprovePlanCommand{
+		MissionID:      mission.ID,
+		Version:        draft.Version,
+		Actor:          "user:zsa",
+		Reason:         "concurrent approval",
+		IdempotencyKey: "concurrent-approve",
+	}
+
+	start := make(chan struct{})
+	results := make([]*PlanVersion, 2)
+	errs := make([]error, 2)
+	var group sync.WaitGroup
+	for index := range results {
+		group.Add(1)
+		go func(index int) {
+			defer group.Done()
+			<-start
+			results[index], errs[index] = svc.ApprovePlan(context.Background(), cmd)
+		}(index)
+	}
+	close(start)
+	group.Wait()
+	for index, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent result %d error = %v", index, err)
+		}
+	}
+	if results[0].ID != results[1].ID {
+		t.Fatalf("concurrent result IDs = %q, %q", results[0].ID, results[1].ID)
+	}
+	events, err := store.ListEvents(context.Background(), mission.ID, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countEventsOfType(events, "plan.approved"); got != 1 {
+		t.Fatalf("plan.approved Event count = %d, want 1", got)
+	}
+}
+
+func planInputFromRequest(request *PlanChangeRequest) PlanInput {
+	return PlanInput{Tasks: cloneTaskInputs(request.ProposedPlan.Tasks)}
 }
 
 func countEventsOfType(events []Event, eventType string) int {

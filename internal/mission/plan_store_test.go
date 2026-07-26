@@ -39,7 +39,7 @@ func TestCreatePlanChangeRequestKeepsCurrentVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request, err := store.CreatePlanChangeRequest(
+	request, err := store.createPlanChangeRequest(
 		ctx,
 		mission.ID,
 		before.CurrentPlanVersion,
@@ -349,7 +349,7 @@ func TestPendingChangeRequestRetainsCompleteProposedGraph(t *testing.T) {
 	ctx := context.Background()
 	proposal := revisedPlanInput()
 
-	created, err := store.CreatePlanChangeRequest(
+	created, err := store.createPlanChangeRequest(
 		ctx,
 		mission.ID,
 		mission.CurrentPlanVersion,
@@ -473,7 +473,7 @@ func TestPlanMutationsReturnCachedResultWhenCommitCancelsContext(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancelOnCommit(cancel)
 
-		request, err := store.CreatePlanChangeRequest(
+		request, err := store.createPlanChangeRequest(
 			ctx,
 			mission.ID,
 			draft.Version,
@@ -482,10 +482,10 @@ func TestPlanMutationsReturnCachedResultWhenCommitCancelsContext(t *testing.T) {
 			"coordinator",
 		)
 		if err != nil {
-			t.Fatalf("CreatePlanChangeRequest returned an error after durable commit: %v", err)
+			t.Fatalf("createPlanChangeRequest returned an error after durable commit: %v", err)
 		}
 		if ctx.Err() != context.Canceled || request.Status != ChangeRequestPending {
-			t.Fatalf("CreatePlanChangeRequest result = %+v, context error = %v", request, ctx.Err())
+			t.Fatalf("createPlanChangeRequest result = %+v, context error = %v", request, ctx.Err())
 		}
 	})
 }
@@ -574,7 +574,7 @@ func markPlanApprovedForTest(ctx context.Context, store *Store, missionID string
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := store.approvePlanTx(tx, missionID, version, "user:zsa"); err != nil {
+	if _, err := store.approvePlanTx(tx, missionID, version, "user:zsa", ""); err != nil {
 		return err
 	}
 	return tx.Commit()

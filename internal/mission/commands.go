@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -51,6 +52,7 @@ type SubmitPlanChangeCommand struct {
 type ResolvePlanChangeCommand struct {
 	MissionID       string
 	ChangeRequestID string
+	Plan            PlanInput
 	Approve         bool
 	Actor           string
 	Reason          string
@@ -94,6 +96,7 @@ func (c *CommandService) ApprovePlan(
 				strings.TrimSpace(cmd.MissionID),
 				cmd.Version,
 				cmd.Actor,
+				cmd.Reason,
 			)
 			if err != nil {
 				return nil, err
@@ -223,6 +226,53 @@ func (c *CommandService) withIdempotency(
 	}
 	storageKey := name + "\x1f" + key
 
+	for attempt := 0; attempt < 5; attempt++ {
+		result, err := c.withIdempotencyAttempt(
+			ctx,
+			missionID,
+			name,
+			storageKey,
+			actor,
+			reason,
+			apply,
+		)
+		if err == nil {
+			return result, nil
+		}
+		if !isSQLiteContention(err) {
+			return nil, err
+		}
+		stored, found, readErr := c.readStoredCommandResult(
+			ctx,
+			missionID,
+			name,
+			storageKey,
+		)
+		if readErr == nil && found {
+			return stored, nil
+		}
+		if readErr != nil && !isSQLiteContention(readErr) {
+			return nil, readErr
+		}
+		if attempt == 4 {
+			return nil, fmt.Errorf("%s command contention: %w", name, err)
+		}
+		if err := waitForCommandRetry(ctx, attempt); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("%s command retry budget exhausted", name)
+}
+
+func (c *CommandService) withIdempotencyAttempt(
+	ctx context.Context,
+	missionID string,
+	name string,
+	storageKey string,
+	actor string,
+	reason string,
+	apply func(*sql.Tx) (json.RawMessage, error),
+) (json.RawMessage, error) {
 	tx, err := c.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin %s command: %w", name, err)
@@ -271,105 +321,67 @@ func (c *CommandService) withIdempotency(
 	return append(json.RawMessage(nil), result...), nil
 }
 
+func (c *CommandService) readStoredCommandResult(
+	ctx context.Context,
+	missionID string,
+	name string,
+	storageKey string,
+) (json.RawMessage, bool, error) {
+	var stored json.RawMessage
+	err := c.store.db.QueryRowContext(ctx, `
+		SELECT payload
+		FROM mission_commands
+		WHERE mission_id = ? AND type = ? AND idempotency_key = ?`,
+		missionID,
+		name,
+		storageKey,
+	).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read committed %s command result: %w", name, err)
+	}
+	return append(json.RawMessage(nil), stored...), true, nil
+}
+
+func isSQLiteContention(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "database is locked") ||
+		strings.Contains(message, "database is busy") ||
+		strings.Contains(message, "sqlite_busy") ||
+		strings.Contains(message, "unique constraint failed: mission_commands")
+}
+
+func waitForCommandRetry(ctx context.Context, attempt int) error {
+	delay := time.Duration(attempt+1) * 5 * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func (c *CommandService) submitPlanChangeTx(
 	ctx context.Context,
 	tx *sql.Tx,
 	cmd SubmitPlanChangeCommand,
 ) (json.RawMessage, error) {
-	missionID := strings.TrimSpace(cmd.MissionID)
-	actor := strings.TrimSpace(cmd.Actor)
-	reason := strings.TrimSpace(cmd.Reason)
-	if cmd.BaseVersion <= 0 {
-		return nil, fmt.Errorf("plan change base version must be positive")
-	}
-	if actor == "" {
-		return nil, fmt.Errorf("plan change actor is required")
-	}
-	if reason == "" {
-		return nil, fmt.Errorf("plan change reason is required")
-	}
-	input, err := normalizePlanInput(cmd.ProposedPlan)
-	if err != nil {
-		return nil, err
-	}
-	proposalJSON, err := json.Marshal(changeProposal{
-		BaseVersion: cmd.BaseVersion,
-		Plan:        input,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal proposed plan: %w", err)
-	}
-	mission, err := scanMission(tx.QueryRowContext(ctx, `
-		SELECT id, goal, acceptance_contract, budget_cents, policy_json,
-		       current_plan_version, status, created_at, updated_at
-		FROM missions WHERE id = ?`,
-		missionID,
-	))
-	if err != nil {
-		return nil, wrapMissionNotFound(missionID, err)
-	}
-	if mission.Status != MissionRunning && mission.Status != MissionVerifying {
-		return nil, fmt.Errorf(
-			"%w: mission %s cannot request a plan change from %s",
-			ErrInvalidTransition,
-			missionID,
-			mission.Status,
-		)
-	}
-	if mission.CurrentPlanVersion != cmd.BaseVersion {
-		return nil, fmt.Errorf(
-			"%w: plan change base version %d does not match current version %d",
-			ErrConflict,
-			cmd.BaseVersion,
-			mission.CurrentPlanVersion,
-		)
-	}
-	basePlan, err := getPlanFromQuerier(ctx, tx, missionID, cmd.BaseVersion)
-	if err != nil {
-		return nil, err
-	}
-	if basePlan.Status != PlanApproved {
-		return nil, fmt.Errorf(
-			"%w: base plan %s/%d is not approved",
-			ErrConflict,
-			missionID,
-			cmd.BaseVersion,
-		)
-	}
-
-	now := c.store.currentTime()
-	requestID := newID()
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO mission_change_requests (
-			id, mission_id, reason, impacted_task_ids_json,
-			proposed_plan_json, status, created_at, updated_at
-		) VALUES (?, ?, ?, '[]', ?, ?, ?, ?)`,
-		requestID,
-		missionID,
-		reason,
-		string(proposalJSON),
-		ChangeRequestPending,
-		unixMillis(now),
-		unixMillis(now),
-	); err != nil {
-		return nil, fmt.Errorf("insert plan change request: %w", err)
-	}
-	if err := insertCommandEvent(
+	request, err := c.store.createPlanChangeRequestTx(
 		ctx,
 		tx,
-		missionID,
-		"plan_change.requested",
-		actor,
-		reason,
-		map[string]any{
-			"base_version": cmd.BaseVersion,
-			"request_id":   requestID,
-		},
-		now,
-	); err != nil {
-		return nil, err
-	}
-	request, err := getPlanChangeRequestFromQuerier(ctx, tx, requestID)
+		cmd.MissionID,
+		cmd.BaseVersion,
+		cmd.ProposedPlan,
+		cmd.Reason,
+		cmd.Actor,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -413,6 +425,23 @@ func (c *CommandService) resolvePlanChangeTx(
 			ErrConflict,
 			requestID,
 			request.Status,
+		)
+	}
+	input, err := normalizePlanInput(cmd.Plan)
+	if err != nil {
+		return nil, err
+	}
+	requestedInput, err := normalizePlanInput(PlanInput{
+		Tasks: request.ProposedPlan.Tasks,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("normalize stored plan change request: %w", err)
+	}
+	if !reflect.DeepEqual(input.Tasks, requestedInput.Tasks) {
+		return nil, fmt.Errorf(
+			"%w: supplied plan does not match plan change request %s",
+			ErrConflict,
+			requestID,
 		)
 	}
 	mission, err := scanMission(tx.QueryRowContext(ctx, `
@@ -482,12 +511,6 @@ func (c *CommandService) resolvePlanChangeTx(
 		return marshalCommandResult(base)
 	}
 
-	input, err := normalizePlanInput(PlanInput{
-		Tasks: request.ProposedPlan.Tasks,
-	})
-	if err != nil {
-		return nil, err
-	}
 	tasksJSON, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("marshal approved plan graph: %w", err)
