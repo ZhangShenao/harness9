@@ -443,7 +443,7 @@ func (s *Store) MarkInterruptedAttemptsIndeterminate(ctx context.Context) (int, 
 	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT attempt.id, attempt.task_id, task.mission_id
+		SELECT attempt.id, attempt.task_id, task.mission_id, task.status
 		FROM task_attempts attempt
 		JOIN tasks task ON task.id = attempt.task_id
 		WHERE attempt.status = ?
@@ -454,14 +454,20 @@ func (s *Store) MarkInterruptedAttemptsIndeterminate(ctx context.Context) (int, 
 		return 0, fmt.Errorf("list interrupted attempts: %w", err)
 	}
 	type interruptedAttempt struct {
-		id        string
-		taskID    string
-		missionID string
+		id         string
+		taskID     string
+		missionID  string
+		taskStatus TaskStatus
 	}
 	var attempts []interruptedAttempt
 	for rows.Next() {
 		var attempt interruptedAttempt
-		if err := rows.Scan(&attempt.id, &attempt.taskID, &attempt.missionID); err != nil {
+		if err := rows.Scan(
+			&attempt.id,
+			&attempt.taskID,
+			&attempt.missionID,
+			&attempt.taskStatus,
+		); err != nil {
 			_ = rows.Close()
 			return 0, fmt.Errorf("scan interrupted attempt: %w", err)
 		}
@@ -491,12 +497,20 @@ func (s *Store) MarkInterruptedAttemptsIndeterminate(ctx context.Context) (int, 
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE tasks
 			SET status = ?, updated_at = ?
-			WHERE id = ?`,
+			WHERE id = ? AND status IN (?, ?, ?)`,
 			TaskIndeterminate,
 			unixMillis(now),
 			attempt.taskID,
+			TaskQueued,
+			TaskLeased,
+			TaskRunning,
 		); err != nil {
 			return 0, fmt.Errorf("mark interrupted task indeterminate: %w", err)
+		}
+		recoveredTaskStatus := attempt.taskStatus
+		switch attempt.taskStatus {
+		case TaskQueued, TaskLeased, TaskRunning:
+			recoveredTaskStatus = TaskIndeterminate
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE workspace_leases
@@ -510,7 +524,7 @@ func (s *Store) MarkInterruptedAttemptsIndeterminate(ctx context.Context) (int, 
 		payload, err := json.Marshal(map[string]any{
 			"reason":      "runtime_restart",
 			"status":      AttemptIndeterminate,
-			"task_status": TaskIndeterminate,
+			"task_status": recoveredTaskStatus,
 		})
 		if err != nil {
 			return 0, fmt.Errorf("marshal attempt.indeterminate event: %w", err)

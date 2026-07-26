@@ -120,6 +120,46 @@ func TestRecoveryMarksLegacyQueuedAttemptAndTaskIndeterminate(t *testing.T) {
 	}
 }
 
+func TestRecoveryPreservesTerminalTaskWithAnomalousRunningAttempt(t *testing.T) {
+	store, attempt := newRunningAttempt(t)
+	if _, err := store.TransitionTask(
+		context.Background(),
+		attempt.TaskID,
+		TaskVerifying,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionTask(
+		context.Background(),
+		attempt.TaskID,
+		TaskSucceeded,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := store.MarkInterruptedAttemptsIndeterminate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("recovered Attempt count = %d, want 1", count)
+	}
+	gotAttempt, err := store.GetAttempt(context.Background(), attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAttempt.Status != AttemptIndeterminate {
+		t.Fatalf("anomalous Attempt status = %s, want %s", gotAttempt.Status, AttemptIndeterminate)
+	}
+	gotTask, err := store.GetTask(context.Background(), attempt.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTask.Status != TaskSucceeded {
+		t.Fatalf("terminal Task status = %s, want %s", gotTask.Status, TaskSucceeded)
+	}
+}
+
 func TestNewStoreMigratesMissionEventsToAppendOnly(t *testing.T) {
 	db := openSharedMemoryDB(t)
 	store, err := NewStore(db)
