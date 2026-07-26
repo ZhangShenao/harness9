@@ -173,6 +173,10 @@ ON missions(status, updated_at DESC, id);
 CREATE INDEX IF NOT EXISTS idx_tasks_mission_plan_status
 ON tasks(mission_id, plan_version, status);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_mission_plan_client
+ON tasks(mission_id, plan_version, client_id)
+WHERE client_id IS NOT NULL AND client_id != '';
+
 CREATE INDEX IF NOT EXISTS idx_task_attempts_task_status
 ON task_attempts(task_id, status);
 
@@ -193,6 +197,8 @@ var schemaMigrations = []struct {
 	{table: "missions", column: "budget_cents", definition: "INTEGER NOT NULL DEFAULT 0"},
 	{table: "missions", column: "policy_json", definition: "TEXT NOT NULL DEFAULT '{}'"},
 	{table: "tasks", column: "plan_version", definition: "INTEGER NOT NULL DEFAULT 0"},
+	{table: "tasks", column: "client_id", definition: "TEXT"},
+	{table: "tasks", column: "position", definition: "INTEGER NOT NULL DEFAULT 0"},
 	{table: "tasks", column: "contract", definition: "TEXT NOT NULL DEFAULT ''"},
 	{table: "tasks", column: "tool_scope_json", definition: "TEXT NOT NULL DEFAULT '{}'"},
 	{table: "tasks", column: "budget_cents", definition: "INTEGER NOT NULL DEFAULT 0"},
@@ -416,7 +422,9 @@ func (s *Store) CreateTask(ctx context.Context, in CreateTaskInput) (Task, error
 // GetTask reads a Task and its dependency IDs.
 func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
 	task, err := scanTask(s.db.QueryRowContext(ctx,
-		`SELECT id, mission_id, title, status, created_at, updated_at FROM tasks WHERE id = ?`, id))
+		`SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract,
+		        status, created_at, updated_at
+		 FROM tasks WHERE id = ?`, id))
 	if err != nil {
 		return Task{}, err
 	}
@@ -431,7 +439,9 @@ func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
 // ListTasks returns a Mission's Tasks in creation order.
 func (s *Store) ListTasks(ctx context.Context, missionID string) ([]Task, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, mission_id, title, status, created_at, updated_at FROM tasks WHERE mission_id = ? ORDER BY created_at, id`, missionID)
+		`SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract,
+		        status, created_at, updated_at
+		 FROM tasks WHERE mission_id = ? ORDER BY created_at, id`, missionID)
 	if err != nil {
 		return nil, fmt.Errorf("list mission tasks: %w", err)
 	}
@@ -561,7 +571,9 @@ func (s *Store) TransitionTask(ctx context.Context, id string, next TaskStatus) 
 	}
 	defer func() { _ = tx.Rollback() }()
 	current, err := scanTask(tx.QueryRowContext(ctx,
-		`SELECT id, mission_id, title, status, created_at, updated_at FROM tasks WHERE id = ?`, id))
+		`SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract,
+		        status, created_at, updated_at
+		 FROM tasks WHERE id = ?`, id))
 	if err != nil {
 		return Task{}, err
 	}
@@ -614,7 +626,17 @@ func scanMission(row rowScanner) (Mission, error) {
 func scanTask(row rowScanner) (Task, error) {
 	var task Task
 	var createdAt, updatedAt int64
-	if err := row.Scan(&task.ID, &task.MissionID, &task.Title, &task.Status, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(
+		&task.ID,
+		&task.MissionID,
+		&task.Title,
+		&task.ClientID,
+		&task.Position,
+		&task.Contract,
+		&task.Status,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
 		if err == sql.ErrNoRows {
 			return Task{}, ErrNotFound
 		}

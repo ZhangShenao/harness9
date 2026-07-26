@@ -333,6 +333,7 @@ type Task struct {
 	MissionID string
 	Title     string
 	ClientID  string
+	Position  int
 	Contract  string
 	Status    TaskStatus
 	DependsOn []string
@@ -390,6 +391,7 @@ type Event struct {
 type PlanChangeRequest struct {
 	ID               string
 	MissionID        string
+	BaseVersion      int
 	TriggerAttemptID string
 	Reason           string
 	ImpactedTaskIDs  []string
@@ -446,9 +448,15 @@ type CreateTaskInput struct {
 // TaskInput describes a Task in a client-addressable proposed Plan graph.
 type TaskInput struct {
 	ClientID     string
+	Position     int
 	Title        string
 	Contract     string
 	Dependencies []string
+}
+
+// PlanInput describes a complete client-addressable Task graph.
+type PlanInput struct {
+	Tasks []TaskInput
 }
 
 // CreatePlanVersionInput describes a proposed immutable Plan snapshot.
@@ -460,6 +468,7 @@ type CreatePlanVersionInput struct {
 // CreatePlanChangeRequestInput describes an execution-time proposal that needs approval.
 type CreatePlanChangeRequestInput struct {
 	MissionID        string
+	BaseVersion      int
 	TriggerAttemptID string
 	Reason           string
 	ImpactedTaskIDs  []string
