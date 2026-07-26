@@ -316,11 +316,15 @@ func (s ChangeRequestStatus) Value() (driver.Value, error) { return string(s), n
 
 // Mission is the durable unit of long-running user intent.
 type Mission struct {
-	ID        string
-	Goal      string
-	Status    MissionStatus
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                 string
+	Goal               string
+	AcceptanceContract string
+	BudgetCents        int64
+	PolicyJSON         string
+	CurrentPlanVersion int
+	Status             MissionStatus
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // Task is a dependency-aware unit of work within one Mission.
@@ -426,7 +430,10 @@ type Evidence struct {
 
 // CreateMissionInput describes the minimum user intent needed to create a Mission.
 type CreateMissionInput struct {
-	Goal string
+	Goal               string
+	AcceptanceContract string
+	BudgetCents        int64
+	PolicyJSON         string
 }
 
 // CreateTaskInput describes a unit of work and its prerequisite Task IDs.
