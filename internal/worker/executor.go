@@ -2,10 +2,13 @@ package worker
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/memory"
+	"github.com/harness9/internal/permission"
 	"github.com/harness9/internal/provider"
 	"github.com/harness9/internal/sandbox"
 	"github.com/harness9/internal/subagent"
@@ -27,7 +30,14 @@ type RunnerExecutorConfig struct {
 	// package deliberately does not construct any default hooks itself —
 	// choosing which hooks (if any) to install is left to whoever builds a
 	// RunnerExecutorConfig.
-	SharedHooks        []hooks.ToolHook
+	SharedHooks []hooks.ToolHook
+	// SettingsPath points at a permission.Hook settings file. Left empty
+	// (the common case), Execute generates a throwaway one that pre-approves
+	// exactly this Attempt's own baseTools, since permission.Rules.Evaluate
+	// asks for anything unmatched by default and an unattended Attempt can
+	// never answer that ask itself — see writeUnattendedPermissionSettings.
+	// Set explicitly only when a caller needs finer-grained control (e.g.
+	// denying a specific tool outright) than the all-tools-allowed default.
 	SettingsPath       string
 	DefaultMaxTurns    int
 	ToolTimeout        time.Duration
@@ -64,10 +74,21 @@ func (e *RunnerExecutor) Execute(ctx context.Context, workDir, prompt string) (s
 		tools.NewWebFetchTool(),
 		tools.NewWebSearchTool(),
 	}
+
+	settingsPath := e.cfg.SettingsPath
+	if settingsPath == "" {
+		generatedPath, err := writeUnattendedPermissionSettings(baseTools)
+		if err != nil {
+			return subagent.SubAgentResult{}, fmt.Errorf("write default permission settings: %w", err)
+		}
+		defer os.Remove(generatedPath)
+		settingsPath = generatedPath
+	}
+
 	runner := subagent.NewRunner(subagent.RunnerConfig{
 		BaseTools:          baseTools,
 		SharedHooks:        e.cfg.SharedHooks,
-		SettingsPath:       e.cfg.SettingsPath,
+		SettingsPath:       settingsPath,
 		WorkDir:            workDir,
 		DefaultMaxTurns:    e.cfg.DefaultMaxTurns,
 		ToolTimeout:        e.cfg.ToolTimeout,
@@ -78,4 +99,40 @@ func (e *RunnerExecutor) Execute(ctx context.Context, workDir, prompt string) (s
 		SandboxMgr:         e.cfg.SandboxMgr,
 	})
 	return runner.Run(ctx, ImplementationContract, prompt, true)
+}
+
+// writeUnattendedPermissionSettings writes a permission settings file that
+// pre-approves exactly the tool categories baseTools grants, then returns
+// its path. Worker Attempts run unattended (Execute always passes
+// background=true to Runner.Run), and permission.Rules.Evaluate's default
+// for anything not explicitly allowed is HookActionAsk — sensible for an
+// interactive human session where the TUI can show an approval dialog, but
+// fatal for a background Attempt: Runner.Run auto-denies every
+// EventApprovalRequired when there is no human present to answer it, so
+// without an explicit allowlist an unattended Worker Attempt could never
+// execute a single bash or read_file call. DangerHook (installed via
+// SharedHooks) still runs after this pre-approval and still gets a real
+// Ask-then-auto-deny for genuinely dangerous command patterns — this only
+// removes the redundant baseline approval step for tool categories the Task
+// Contract already grants; it does not bypass danger-pattern screening.
+func writeUnattendedPermissionSettings(baseTools []tools.BaseTool) (string, error) {
+	names := make([]string, 0, len(baseTools))
+	for _, t := range baseTools {
+		names = append(names, t.Name())
+	}
+	rules := permission.NewRules()
+	rules.AddRule(permission.RuleAllow, names)
+
+	f, err := os.CreateTemp("", "harness9-worker-settings-*.json")
+	if err != nil {
+		return "", fmt.Errorf("create temp settings file: %w", err)
+	}
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("close temp settings file: %w", err)
+	}
+	if err := permission.SaveRules(path, rules); err != nil {
+		return "", fmt.Errorf("save settings: %w", err)
+	}
+	return path, nil
 }

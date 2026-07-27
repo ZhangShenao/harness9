@@ -115,3 +115,54 @@ func TestRunnerExecutorThreadsSharedHooks(t *testing.T) {
 		t.Fatalf("observed tool Observation = %q, want it to contain the SharedHooks deny reason (denied-by-test-hook)", observedObservation)
 	}
 }
+
+// TestRunnerExecutorAllowsUnattendedToolCallsWithoutSettingsPath proves that
+// leaving RunnerExecutorConfig.SettingsPath empty no longer leaves every
+// tool call unusable: permission.Rules.Evaluate's default (HookActionAsk for
+// anything not explicitly allowed) combined with Runner.Run's
+// background=true auto-deny meant an unattended Worker Attempt could never
+// execute a single bash or read_file call before writeUnattendedPermissionSettings
+// existed — TestRunnerExecutorThreadsSharedHooks only ever exercised the
+// permission-hook path by manually supplying a permissive settings file,
+// masking the gap for any real caller that leaves SettingsPath unset.
+func TestRunnerExecutorAllowsUnattendedToolCallsWithoutSettingsPath(t *testing.T) {
+	repoRoot := newTestRepo(t)
+	turn := 0
+	var observedObservation string
+	mockLLM := providertest.NewMockWithCallback(func(msgs []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		turn++
+		if turn == 1 {
+			return schema.Message{
+				Role:      schema.RoleAssistant,
+				Content:   "invoking bash",
+				ToolCalls: []schema.ToolCall{{ID: "call_1", Name: "bash", Arguments: []byte(`{"command": "echo hi"}`)}},
+			}
+		}
+		observedObservation = msgs[len(msgs)-1].Content
+		return schema.Message{Role: schema.RoleAssistant, Content: "TASK_RESULT: SUCCESS\nCOMMIT: deadbeef"}
+	})
+
+	executor := NewRunnerExecutor(RunnerExecutorConfig{
+		ProviderFor: func(model string) (provider.LLMProvider, int, error) {
+			return mockLLM, 100000, nil
+		},
+		CompactorFor:       func(provider.LLMProvider, int) memory.Compactor { return nil },
+		DefaultMaxTurns:    5,
+		ToolTimeout:        10 * time.Second,
+		MaxConcurrentTools: 1,
+		BaseCtx:            context.Background(),
+		// SettingsPath deliberately left empty — this is exactly what a
+		// caller that never learned about permission.Hook's default gets.
+	})
+
+	result, err := executor.Execute(context.Background(), repoRoot, "say hello")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(observedObservation, "被用户拒绝") || strings.Contains(observedObservation, "denied") {
+		t.Fatalf("observed tool Observation = %q, want the bash call to actually run, not be denied", observedObservation)
+	}
+	if !strings.Contains(result.FinalText, "TASK_RESULT: SUCCESS") {
+		t.Fatalf("FinalText = %q, want it to reach TASK_RESULT: SUCCESS", result.FinalText)
+	}
+}
