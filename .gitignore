@@ -38,6 +38,7 @@ website/zh/docs/
 website/package-lock.json
 
 /swebench
+/mission-e2e
 
 logs/
 
