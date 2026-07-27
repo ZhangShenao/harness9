@@ -35,6 +35,13 @@ type Adapter struct {
 	workerName string
 }
 
+// var _ interface{ Dispatch(...) error } = (*Adapter)(nil) structurally checks
+// that Adapter has the method shape scheduler.Dispatcher requires, without
+// importing internal/scheduler and creating a needless dependency.
+var _ interface {
+	Dispatch(ctx context.Context, task mission.Task) error
+} = (*Adapter)(nil)
+
 // NewAdapter creates an Adapter. repoRoot is the harness9 repository root new
 // worktrees are created relative to.
 func NewAdapter(store *mission.Store, repoRoot string, executor Executor, baseCtx context.Context) *Adapter {
