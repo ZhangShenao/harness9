@@ -12,7 +12,8 @@ import (
 func (s *Store) ListSchedulableTasks(ctx context.Context) ([]Task, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT tasks.id, tasks.mission_id, tasks.title, COALESCE(tasks.client_id, ''),
-		       tasks.position, tasks.contract, tasks.status, tasks.created_at, tasks.updated_at
+		       tasks.position, tasks.contract, tasks.contract_kind, tasks.status,
+		       tasks.created_at, tasks.updated_at
 		FROM tasks
 		JOIN missions ON missions.id = tasks.mission_id
 		WHERE tasks.status = ?

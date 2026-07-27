@@ -710,8 +710,8 @@ func insertPlanGraphTx(
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO tasks (
 				id, mission_id, title, status, plan_version,
-				client_id, position, contract, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				client_id, position, contract, contract_kind, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			taskID,
 			missionID,
 			task.Title,
@@ -720,6 +720,7 @@ func insertPlanGraphTx(
 			task.ClientID,
 			task.Position,
 			task.Contract,
+			task.ContractKind,
 			unixMillis(now),
 			unixMillis(now),
 		); err != nil {
@@ -753,7 +754,7 @@ func scanPlanGraph(
 	version int,
 ) ([]TaskInput, error) {
 	rows, err := queryer.QueryContext(ctx, `
-		SELECT id, client_id, position, title, contract
+		SELECT id, client_id, position, title, contract, contract_kind
 		FROM tasks
 		WHERE mission_id = ? AND plan_version = ?
 		ORDER BY position ASC, id ASC`,
@@ -776,6 +777,7 @@ func scanPlanGraph(
 			&task.input.Position,
 			&task.input.Title,
 			&task.input.Contract,
+			&task.input.ContractKind,
 		); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan plan task: %w", err)
@@ -833,10 +835,14 @@ func normalizePlanInput(input PlanInput) (PlanInput, error) {
 			return PlanInput{}, fmt.Errorf("task %q position cannot be negative", task.ClientID)
 		}
 		normalized.Tasks[index] = TaskInput{
-			ClientID: strings.TrimSpace(task.ClientID),
-			Position: task.Position,
-			Title:    strings.TrimSpace(task.Title),
-			Contract: strings.TrimSpace(task.Contract),
+			ClientID:     strings.TrimSpace(task.ClientID),
+			Position:     task.Position,
+			Title:        strings.TrimSpace(task.Title),
+			Contract:     strings.TrimSpace(task.Contract),
+			ContractKind: strings.TrimSpace(task.ContractKind),
+		}
+		if normalized.Tasks[index].ContractKind == "" {
+			normalized.Tasks[index].ContractKind = ContractImplementation
 		}
 		normalized.Tasks[index].Dependencies = make([]string, len(task.Dependencies))
 		seenDependencies := make(map[string]struct{}, len(task.Dependencies))

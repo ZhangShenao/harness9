@@ -594,3 +594,29 @@ func revisedPlanInput() PlanInput {
 		{ClientID: "code", Position: 2, Title: "Implement safely", Contract: "tests pass", Dependencies: []string{"spec", "docs"}},
 	}}
 }
+
+func TestNormalizePlanInputDefaultsContractKindToImplementation(t *testing.T) {
+	store, mission := newStoreWithMission(t)
+	plan, err := store.CreateDraftPlan(context.Background(), mission.ID, PlanInput{Tasks: []TaskInput{
+		{ClientID: "a", Position: 1, Title: "A", Contract: "do A"},
+	}}, "coordinator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Tasks[0].ContractKind != ContractImplementation {
+		t.Fatalf("ContractKind = %q, want %q", plan.Tasks[0].ContractKind, ContractImplementation)
+	}
+}
+
+func TestCreateDraftPlanPersistsExplicitContractKind(t *testing.T) {
+	store, mission := newStoreWithMission(t)
+	plan, err := store.CreateDraftPlan(context.Background(), mission.ID, PlanInput{Tasks: []TaskInput{
+		{ClientID: "a", Position: 1, Title: "A", Contract: "do A", ContractKind: ContractVerification},
+	}}, "coordinator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Tasks[0].ContractKind != ContractVerification {
+		t.Fatalf("ContractKind = %q, want %q", plan.Tasks[0].ContractKind, ContractVerification)
+	}
+}

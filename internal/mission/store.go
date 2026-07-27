@@ -220,6 +220,7 @@ var schemaMigrations = []struct {
 	{table: "tasks", column: "tool_scope_json", definition: "TEXT NOT NULL DEFAULT '{}'"},
 	{table: "tasks", column: "budget_cents", definition: "INTEGER NOT NULL DEFAULT 0"},
 	{table: "tasks", column: "acceptance_json", definition: "TEXT NOT NULL DEFAULT '{}'"},
+	{table: "tasks", column: "contract_kind", definition: "TEXT NOT NULL DEFAULT ''"},
 	{table: "task_attempts", column: "lease_id", definition: "TEXT"},
 	{table: "workspace_leases", column: "branch", definition: "TEXT NOT NULL DEFAULT ''"},
 	{table: "workspace_leases", column: "sandbox_id", definition: "TEXT NOT NULL DEFAULT ''"},
@@ -441,7 +442,7 @@ func (s *Store) CreateTask(ctx context.Context, in CreateTaskInput) (Task, error
 // GetTask reads a Task and its dependency IDs.
 func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
 	task, err := scanTask(s.db.QueryRowContext(ctx,
-		`SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract,
+		`SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract, contract_kind,
 		        status, created_at, updated_at
 		 FROM tasks WHERE id = ?`, id))
 	if err != nil {
@@ -458,7 +459,7 @@ func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
 // ListTasks returns a Mission's Tasks in creation order.
 func (s *Store) ListTasks(ctx context.Context, missionID string) ([]Task, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract,
+		`SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract, contract_kind,
 		        status, created_at, updated_at
 		 FROM tasks WHERE mission_id = ? ORDER BY created_at, id`, missionID)
 	if err != nil {
@@ -501,7 +502,7 @@ func (s *Store) StartAttempt(ctx context.Context, taskID, worker string) (TaskAt
 	}
 	defer func() { _ = tx.Rollback() }()
 	task, err := scanTask(tx.QueryRowContext(ctx, `
-		SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract,
+		SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract, contract_kind,
 		       status, created_at, updated_at
 		FROM tasks WHERE id = ?`, taskID))
 	if err != nil {
@@ -792,7 +793,7 @@ func (s *Store) TransitionTask(ctx context.Context, id string, next TaskStatus) 
 	}
 	defer func() { _ = tx.Rollback() }()
 	current, err := scanTask(tx.QueryRowContext(ctx,
-		`SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract,
+		`SELECT id, mission_id, title, COALESCE(client_id, ''), position, contract, contract_kind,
 		        status, created_at, updated_at
 		 FROM tasks WHERE id = ?`, id))
 	if err != nil {
@@ -805,7 +806,7 @@ func (s *Store) TransitionTask(ctx context.Context, id string, next TaskStatus) 
 	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`, next, unixMillis(now), id); err != nil {
 		return Task{}, fmt.Errorf("update task status: %w", err)
 	}
-	if next == TaskSucceeded {
+	if next == TaskSucceeded || next == TaskVerifying {
 		if err := queueReadyDependents(ctx, tx, id, now); err != nil {
 			return Task{}, err
 		}
@@ -854,6 +855,7 @@ func scanTask(row rowScanner) (Task, error) {
 		&task.ClientID,
 		&task.Position,
 		&task.Contract,
+		&task.ContractKind,
 		&task.Status,
 		&createdAt,
 		&updatedAt,
@@ -1020,7 +1022,11 @@ func queueReadyDependents(ctx context.Context, tx *sql.Tx, dependencyID string, 
 			SELECT COUNT(*)
 			FROM task_dependencies d
 			JOIN tasks dependency ON dependency.id = d.dependency_id
-			WHERE d.task_id = ? AND dependency.status != ?`, taskID, TaskSucceeded).Scan(&unmet); err != nil {
+			JOIN tasks dependent ON dependent.id = d.task_id
+			WHERE d.task_id = ?
+			  AND dependency.status != ?
+			  AND NOT (dependent.contract_kind = ? AND dependency.status = ?)`,
+			taskID, TaskSucceeded, ContractVerification, TaskVerifying).Scan(&unmet); err != nil {
 			return fmt.Errorf("check unmet dependencies: %w", err)
 		}
 		if unmet == 0 {

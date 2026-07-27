@@ -327,18 +327,28 @@ type Mission struct {
 	UpdatedAt          time.Time
 }
 
+// ContractKind values classify what behavior a Task's Worker should perform.
+// An empty ContractKind is treated as ContractImplementation everywhere it is
+// read (ValidateTaskInputs accepts it; normalizePlanInput defaults it).
+const (
+	ContractImplementation = "implementation"
+	ContractVerification   = "verification"
+	ContractIntegration    = "integration"
+)
+
 // Task is a dependency-aware unit of work within one Mission.
 type Task struct {
-	ID        string
-	MissionID string
-	Title     string
-	ClientID  string
-	Position  int
-	Contract  string
-	Status    TaskStatus
-	DependsOn []string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           string
+	MissionID    string
+	Title        string
+	ClientID     string
+	Position     int
+	Contract     string
+	ContractKind string
+	Status       TaskStatus
+	DependsOn    []string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // TaskAttempt records one Worker execution of a Task.
@@ -457,6 +467,7 @@ type TaskInput struct {
 	Position     int
 	Title        string
 	Contract     string
+	ContractKind string
 	Dependencies []string
 }
 
@@ -544,6 +555,11 @@ func ValidateTaskInputs(inputs []TaskInput) error {
 		}
 		if strings.TrimSpace(input.Contract) == "" {
 			return fmt.Errorf("task %q contract is required", clientID)
+		}
+		switch input.ContractKind {
+		case "", ContractImplementation, ContractVerification, ContractIntegration:
+		default:
+			return fmt.Errorf("task %q has unknown contract kind %q", clientID, input.ContractKind)
 		}
 		byClientID[clientID] = input
 	}

@@ -128,6 +128,28 @@ func TestValidateTaskInputs(t *testing.T) {
 	}
 }
 
+func TestValidateTaskInputsAcceptsKnownContractKinds(t *testing.T) {
+	for _, kind := range []string{"", ContractImplementation, ContractVerification, ContractIntegration} {
+		t.Run(kind, func(t *testing.T) {
+			err := ValidateTaskInputs([]TaskInput{
+				{ClientID: "a", Title: "A", Contract: "do A", ContractKind: kind},
+			})
+			if err != nil {
+				t.Fatalf("ValidateTaskInputs(kind=%q): %v", kind, err)
+			}
+		})
+	}
+}
+
+func TestValidateTaskInputsRejectsUnknownContractKind(t *testing.T) {
+	err := ValidateTaskInputs([]TaskInput{
+		{ClientID: "a", Title: "A", Contract: "do A", ContractKind: "bogus"},
+	})
+	if err == nil {
+		t.Fatal("ValidateTaskInputs with unknown ContractKind = nil error, want an error")
+	}
+}
+
 type transitionCase[S comparable] struct {
 	name string
 	from S

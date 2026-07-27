@@ -422,3 +422,102 @@ func tableHasColumn(t *testing.T, db *sql.DB, table, column string) bool {
 	}
 	return false
 }
+
+func TestTransitionTaskToVerifyingUnblocksVerificationDependent(t *testing.T) {
+	store, mission := newStoreWithMission(t)
+	plan, err := store.CreateDraftPlan(context.Background(), mission.ID, PlanInput{Tasks: []TaskInput{
+		{ClientID: "impl", Position: 1, Title: "Implement", Contract: "do the work", ContractKind: ContractImplementation},
+		{ClientID: "verify", Position: 2, Title: "Verify", Contract: "verify the work", ContractKind: ContractVerification, Dependencies: []string{"impl"}},
+	}}, "coordinator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := markPlanApprovedForTest(context.Background(), store, mission.ID, plan.Version); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.ListTasks(context.Background(), mission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var implID, verifyID string
+	for _, task := range tasks {
+		switch task.ClientID {
+		case "impl":
+			implID = task.ID
+			if task.Status != TaskQueued {
+				t.Fatalf("impl task status = %s, want queued (root task)", task.Status)
+			}
+		case "verify":
+			verifyID = task.ID
+			if task.Status != TaskBlocked {
+				t.Fatalf("verify task status = %s, want blocked (has a dependency)", task.Status)
+			}
+		}
+	}
+	if implID == "" || verifyID == "" {
+		t.Fatal("expected both impl and verify tasks to exist")
+	}
+
+	if _, err := store.AcquireLease(context.Background(), implID, "/tmp/fake-impl", "impl-branch", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(context.Background(), implID, "test-worker"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionTask(context.Background(), implID, TaskVerifying); err != nil {
+		t.Fatalf("TransitionTask to verifying: %v", err)
+	}
+
+	got, err := store.GetTask(context.Background(), verifyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != TaskQueued {
+		t.Fatalf("verify task status = %s, want queued once its dependency reached verifying", got.Status)
+	}
+}
+
+func TestTransitionTaskToVerifyingDoesNotUnblockImplementationDependent(t *testing.T) {
+	store, mission := newStoreWithMission(t)
+	plan, err := store.CreateDraftPlan(context.Background(), mission.ID, PlanInput{Tasks: []TaskInput{
+		{ClientID: "a", Position: 1, Title: "A", Contract: "do A", ContractKind: ContractImplementation},
+		{ClientID: "b", Position: 2, Title: "B", Contract: "do B, depends on A", ContractKind: ContractImplementation, Dependencies: []string{"a"}},
+	}}, "coordinator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := markPlanApprovedForTest(context.Background(), store, mission.ID, plan.Version); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.ListTasks(context.Background(), mission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var aID, bID string
+	for _, task := range tasks {
+		switch task.ClientID {
+		case "a":
+			aID = task.ID
+		case "b":
+			bID = task.ID
+		}
+	}
+
+	if _, err := store.AcquireLease(context.Background(), aID, "/tmp/fake-a", "a-branch", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(context.Background(), aID, "test-worker"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionTask(context.Background(), aID, TaskVerifying); err != nil {
+		t.Fatalf("TransitionTask to verifying: %v", err)
+	}
+
+	got, err := store.GetTask(context.Background(), bID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != TaskBlocked {
+		t.Fatalf("regression: b task status = %s, want still blocked — an implementation dependent must wait for succeeded, not verifying", got.Status)
+	}
+}

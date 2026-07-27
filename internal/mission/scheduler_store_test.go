@@ -124,3 +124,23 @@ func TestMarkMissionRunningRejectsMissionNotReady(t *testing.T) {
 		t.Fatalf("MarkMissionRunning on draft mission: err = %v, want ErrInvalidTransition", err)
 	}
 }
+
+func TestListSchedulableTasksIncludesContractKind(t *testing.T) {
+	store, mission := newStoreWithMission(t)
+	plan, err := store.CreateDraftPlan(context.Background(), mission.ID, PlanInput{Tasks: []TaskInput{
+		{ClientID: "a", Position: 1, Title: "A", Contract: "do A", ContractKind: ContractVerification},
+	}}, "coordinator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := markPlanApprovedForTest(context.Background(), store, mission.ID, plan.Version); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.ListSchedulableTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ContractKind != ContractVerification {
+		t.Fatalf("schedulable tasks = %+v, want one task with ContractKind %q", tasks, ContractVerification)
+	}
+}
