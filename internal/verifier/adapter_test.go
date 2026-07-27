@@ -169,6 +169,49 @@ func TestDispatchRollsBackWorktreeWhenLeaseAcquisitionFails(t *testing.T) {
 	}
 }
 
+// TestDispatchRequeuesTaskWhenStartAttemptFails exercises the rollback branch
+// that runs after AcquireLease has already advanced the verification Task
+// from queued to leased but StartAttempt subsequently fails. Regression test
+// for the same class of bug internal/worker.Adapter guards against (see
+// worker's TestDispatchRevertsTaskToQueuedWhenStartAttemptFails): a rollback
+// that releases the lease and removes the worktree but never calls
+// TransitionTask would permanently strand the Task in mission.TaskLeased
+// (with no active lease and no attempt row), where ListSchedulableTasks would
+// never pick it up again. A near-zero lease TTL deterministically makes
+// StartAttempt observe an already-expired lease for the verification Task's
+// own lease (acquired via this Adapter's leaseTTL) — not the target's lease,
+// which newVerifiableTarget's fixture already acquired separately with a
+// full one-hour TTL and which StartAttempt never inspects.
+func TestDispatchRequeuesTaskWhenStartAttemptFails(t *testing.T) {
+	repoRoot := newTestRepo(t)
+	store := newTestStore(t)
+	_, verifyTask := newVerifiableTarget(t, store, repoRoot)
+	adapter := &Adapter{
+		store:    store,
+		repoRoot: repoRoot,
+		leaseTTL: time.Nanosecond,
+		baseCtx:  context.Background(),
+	}
+
+	err := adapter.Dispatch(context.Background(), verifyTask)
+	if err == nil {
+		t.Fatal("Dispatch error = nil, want an error since the lease is already expired by the time StartAttempt runs")
+	}
+
+	updated, getErr := store.GetTask(context.Background(), verifyTask.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if updated.Status != mission.TaskQueued {
+		t.Fatalf("verify task status = %s, want queued (Dispatch must revert the Task to queued when StartAttempt fails, per scheduler.Dispatcher's contract)", updated.Status)
+	}
+
+	path, _ := verifyWorktreeFor(repoRoot, verifyTask)
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("worktree at %s still exists after a failed Dispatch, want it rolled back", path)
+	}
+}
+
 func TestDispatchVerifiesSuccessfullyAndAdvancesTargetToSucceeded(t *testing.T) {
 	repoRoot := newTestRepo(t)
 	store := newTestStore(t)
