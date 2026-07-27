@@ -102,7 +102,7 @@ func newVerifiableTarget(t *testing.T, store *mission.Store, repoRoot string) (t
 func TestDispatchCreatesDetachedWorktreeLeaseAndAttempt(t *testing.T) {
 	repoRoot := newTestRepo(t)
 	store := newTestStore(t)
-	_, verifyTask := newVerifiableTarget(t, store, repoRoot)
+	target, verifyTask := newVerifiableTarget(t, store, repoRoot)
 	adapter := NewAdapter(store, repoRoot, context.Background())
 
 	if err := adapter.Dispatch(context.Background(), verifyTask); err != nil {
@@ -121,6 +121,18 @@ func TestDispatchCreatesDetachedWorktreeLeaseAndAttempt(t *testing.T) {
 	if updated.Status != mission.TaskRunning {
 		t.Fatalf("verify task status = %s, want running", updated.Status)
 	}
+
+	// Dispatch's synchronous bookkeeping above is this test's actual subject,
+	// but Dispatch also launches a.run on a background goroutine that now
+	// performs a real go build/vet/test against the worktree (Task 5),
+	// instead of Task 4's no-op. Returning before that goroutine finishes
+	// would let it keep running after t.Cleanup closes this test's store's
+	// DB, so wait for the verification Task it drives to reach a terminal
+	// status first. newVerifiableTarget's fixture is a valid, passing Go
+	// module and nothing in this test breaks it, so both the target and the
+	// verifier converge on succeeded.
+	waitForTaskStatus(t, store, target.ID, mission.TaskSucceeded, 30*time.Second)
+	waitForTaskStatus(t, store, verifyTask.ID, mission.TaskSucceeded, time.Second)
 }
 
 func TestDispatchRejectsTaskWithoutExactlyOneDependency(t *testing.T) {
