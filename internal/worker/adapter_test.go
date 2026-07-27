@@ -3,6 +3,8 @@ package worker
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -170,4 +172,107 @@ func runGitErr(dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// fakeExecutor simulates the implementation Task Contract by performing real
+// git operations in the given workDir — writing a file and committing it (or
+// not, for the failure case) — so the full Adapter pipeline (including
+// captureDiff's real `git show`) is exercised end to end without a real LLM.
+type fakeExecutor struct {
+	succeed bool
+	reason  string
+}
+
+func (f *fakeExecutor) Execute(ctx context.Context, workDir, prompt string) (subagent.SubAgentResult, error) {
+	if !f.succeed {
+		return subagent.SubAgentResult{
+			FinalText: "TASK_RESULT: FAILED\nREASON: " + f.reason,
+		}, nil
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "output.txt"), []byte("done\n"), 0o644); err != nil {
+		return subagent.SubAgentResult{}, err
+	}
+	runGitInDir(workDir, "add", "-A")
+	runGitInDir(workDir, "commit", "-q", "-m", "feat: fake implementation")
+	sha := runGitInDir(workDir, "rev-parse", "HEAD")
+	return subagent.SubAgentResult{
+		FinalText: "did the work\n\nTASK_RESULT: SUCCESS\nCOMMIT: " + sha,
+	}, nil
+}
+
+// runGitInDir runs git in dir and returns trimmed stdout, panicking on error
+// (test-only helper — a git failure here means the test fixture itself is
+// broken, not the code under test).
+func runGitInDir(dir string, args ...string) string {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		panic(fmt.Sprintf("git %v in %s: %v\n%s", args, dir, err, out))
+	}
+	return trimTrailingNewline(string(out))
+}
+
+// waitForTaskStatus polls the store until task reaches one of the wanted
+// statuses or the timeout elapses, failing the test on timeout. Dispatch's
+// completion runs in a background goroutine, so tests must poll rather than
+// assert immediately after Dispatch returns.
+func waitForTaskStatus(t *testing.T, store *mission.Store, taskID string, want mission.TaskStatus, timeout time.Duration) mission.Task {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		task, err := store.GetTask(context.Background(), taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task.Status == want {
+			return task
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task %s status = %s after %s, want %s", taskID, task.Status, timeout, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestDispatchSucceedsRecordsArtifactAndEvidenceAndReachesVerifying(t *testing.T) {
+	repoRoot := newTestRepo(t)
+	store := newTestStore(t)
+	task := newQueuedTask(t, store)
+	adapter := NewAdapter(store, repoRoot, &fakeExecutor{succeed: true}, context.Background())
+
+	if err := adapter.Dispatch(context.Background(), task); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	waitForTaskStatus(t, store, task.ID, mission.TaskVerifying, time.Second)
+
+	evidence, err := store.ListEvidence(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || !evidence[0].Passed {
+		t.Fatalf("evidence = %+v, want exactly one passing record", evidence)
+	}
+}
+
+func TestDispatchFailureRecordsEvidenceAndReachesFailed(t *testing.T) {
+	repoRoot := newTestRepo(t)
+	store := newTestStore(t)
+	task := newQueuedTask(t, store)
+	adapter := NewAdapter(store, repoRoot, &fakeExecutor{succeed: false, reason: "tests kept failing"}, context.Background())
+
+	if err := adapter.Dispatch(context.Background(), task); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	waitForTaskStatus(t, store, task.ID, mission.TaskFailed, time.Second)
+
+	evidence, err := store.ListEvidence(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || evidence[0].Passed {
+		t.Fatalf("evidence = %+v, want exactly one failing record", evidence)
+	}
 }
