@@ -38,6 +38,7 @@ import (
 	"github.com/harness9/internal/env"
 	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/integration"
+	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/mission"
 	"github.com/harness9/internal/provider"
 	"github.com/harness9/internal/scheduler"
@@ -161,6 +162,9 @@ func main() {
 				return nil, 0, err
 			}
 			return p, provider.GetModelLimits(callModel).ContextTokens, nil
+		},
+		CompactorFor: func(p provider.LLMProvider, ctxWin int) memory.Compactor {
+			return memory.NewSummarizationCompactor(p, ctxWin)
 		},
 		SharedHooks:     []hooks.ToolHook{hooks.NewDangerHook()},
 		DefaultMaxTurns: 60,
