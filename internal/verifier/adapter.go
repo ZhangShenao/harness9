@@ -3,9 +3,11 @@ package verifier
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"time"
 
+	"github.com/harness9/internal/logfmt"
 	"github.com/harness9/internal/mission"
 )
 
@@ -86,8 +88,82 @@ func verifyWorktreeFor(repoRoot string, task mission.Task) (path, branch string)
 	return path, branch
 }
 
-// run is deliberately a no-op in this task: Task 4's tests only assert on
-// Dispatch's synchronous bookkeeping, not on any asynchronous outcome. Task 5
-// replaces this body with real verification logic (and its own tests).
+// run executes independent verification and records the outcome. It always
+// runs on a's baseCtx, not the ctx Dispatch's caller passed in, so it
+// survives past the lifetime of any single Tick call.
 func (a *Adapter) run(verifierTask mission.Task, targetID string, lease mission.WorkspaceLease, attempt mission.TaskAttempt) {
+	report := runVerificationChecks(lease.Path)
+	a.complete(verifierTask, targetID, attempt, lease, report)
+}
+
+// complete records the result of one verification Attempt. A conclusive
+// verification result — pass or fail — always: (1) records Evidence tagged
+// with both the target's own AttemptID and this Attempt's ID as
+// VerifierAttemptID, (2) advances the TARGET Task (not this verification
+// Task) to succeeded or failed based on the report, and (3) advances this
+// verification Task itself to succeeded, since it did its job correctly
+// regardless of what it found. Only a process failure (couldn't load the
+// target's attempt, or a Store write itself failed) fails this verification
+// Task via failVerifierOnly, leaving the target Task untouched in verifying
+// for a future verification Attempt to retry — a broken verification
+// process must never be mistaken for a verified failure of the target.
+func (a *Adapter) complete(
+	verifierTask mission.Task,
+	targetID string,
+	attempt mission.TaskAttempt,
+	lease mission.WorkspaceLease,
+	report verificationReport,
+) {
+	defer func() {
+		if _, err := a.store.ReleaseLease(a.baseCtx, lease.ID); err != nil {
+			log.Print(logfmt.FormatMsg("verifier", fmt.Sprintf("释放 lease %s 失败: %v", lease.ID, err)))
+		}
+	}()
+
+	targetAttempt, err := a.store.GetLatestAttempt(a.baseCtx, targetID)
+	if err != nil {
+		a.failVerifierOnly(verifierTask, attempt, "load target attempt", err.Error())
+		return
+	}
+	if _, err := a.store.AddEvidence(a.baseCtx, mission.CreateEvidenceInput{
+		MissionID: verifierTask.MissionID, TaskID: targetID, AttemptID: targetAttempt.ID,
+		VerifierAttemptID: attempt.ID, Kind: "independent_verification",
+		Content: []byte(report.output), Passed: report.passed,
+	}); err != nil {
+		a.failVerifierOnly(verifierTask, attempt, "record evidence", err.Error())
+		return
+	}
+
+	targetNext := mission.TaskFailed
+	if report.passed {
+		targetNext = mission.TaskSucceeded
+	}
+	if _, err := a.store.TransitionTask(a.baseCtx, targetID, targetNext); err != nil {
+		a.failVerifierOnly(verifierTask, attempt, "transition target task", err.Error())
+		return
+	}
+
+	if _, err := a.store.TransitionAttempt(a.baseCtx, attempt.ID, mission.AttemptSucceeded); err != nil {
+		log.Print(logfmt.FormatMsg("verifier", fmt.Sprintf("推进 attempt %s 失败: %v", attempt.ID, err)))
+	}
+	if _, err := a.store.TransitionTask(a.baseCtx, verifierTask.ID, mission.TaskVerifying); err != nil {
+		log.Print(logfmt.FormatMsg("verifier", fmt.Sprintf("推进 verifier task %s 失败: %v", verifierTask.ID, err)))
+		return
+	}
+	if _, err := a.store.TransitionTask(a.baseCtx, verifierTask.ID, mission.TaskSucceeded); err != nil {
+		log.Print(logfmt.FormatMsg("verifier", fmt.Sprintf("推进 verifier task %s 失败: %v", verifierTask.ID, err)))
+	}
+}
+
+// failVerifierOnly marks the verification Task itself failed without
+// touching the target Task at all, so a future verification Attempt can
+// still retry it.
+func (a *Adapter) failVerifierOnly(verifierTask mission.Task, attempt mission.TaskAttempt, kind, detail string) {
+	if _, err := a.store.TransitionAttempt(a.baseCtx, attempt.ID, mission.AttemptFailed); err != nil {
+		log.Print(logfmt.FormatMsg("verifier", fmt.Sprintf("推进 attempt %s 失败: %v", attempt.ID, err)))
+	}
+	if _, err := a.store.TransitionTask(a.baseCtx, verifierTask.ID, mission.TaskFailed); err != nil {
+		log.Print(logfmt.FormatMsg("verifier", fmt.Sprintf("推进 verifier task %s 失败: %v", verifierTask.ID, err)))
+	}
+	log.Print(logfmt.FormatMsg("verifier", fmt.Sprintf("%s: %s", kind, detail)))
 }

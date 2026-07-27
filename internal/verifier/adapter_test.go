@@ -156,3 +156,93 @@ func TestDispatchRollsBackWorktreeWhenLeaseAcquisitionFails(t *testing.T) {
 		t.Fatalf("worktree at %s still exists after a failed Dispatch, want it rolled back", path)
 	}
 }
+
+func TestDispatchVerifiesSuccessfullyAndAdvancesTargetToSucceeded(t *testing.T) {
+	repoRoot := newTestRepo(t)
+	store := newTestStore(t)
+	target, verifyTask := newVerifiableTarget(t, store, repoRoot)
+	adapter := NewAdapter(store, repoRoot, context.Background())
+
+	if err := adapter.Dispatch(context.Background(), verifyTask); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	waitForTaskStatus(t, store, target.ID, mission.TaskSucceeded, 30*time.Second)
+	waitForTaskStatus(t, store, verifyTask.ID, mission.TaskSucceeded, time.Second)
+
+	evidence, err := store.ListEvidence(context.Background(), target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || !evidence[0].Passed {
+		t.Fatalf("evidence = %+v, want exactly one passing record", evidence)
+	}
+	targetAttempt, err := store.GetLatestAttempt(context.Background(), target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence[0].AttemptID != targetAttempt.ID {
+		t.Fatalf("evidence.AttemptID = %s, want the target's own attempt %s", evidence[0].AttemptID, targetAttempt.ID)
+	}
+	if evidence[0].VerifierAttemptID == "" || evidence[0].VerifierAttemptID == evidence[0].AttemptID {
+		t.Fatalf("evidence.VerifierAttemptID = %q, want a distinct non-empty verifier attempt ID", evidence[0].VerifierAttemptID)
+	}
+}
+
+func TestDispatchVerificationFailureFailsTargetButVerifierSucceeds(t *testing.T) {
+	repoRoot := newTestRepo(t)
+	store := newTestStore(t)
+	target, verifyTask := newVerifiableTarget(t, store, repoRoot)
+	// Break the implementation worktree's build so independent verification
+	// genuinely fails (rather than faking a failure path).
+	implLease, err := store.GetLatestLease(context.Background(), target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	implPath := implLease.Path
+	if err := os.WriteFile(filepath.Join(implPath, "broken.go"), []byte("package main\nfunc broken( {\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, implPath, "add", "-A")
+	runGit(t, implPath, "commit", "-q", "-m", "feat: introduce a build break")
+
+	adapter := NewAdapter(store, repoRoot, context.Background())
+	if err := adapter.Dispatch(context.Background(), verifyTask); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	waitForTaskStatus(t, store, target.ID, mission.TaskFailed, 30*time.Second)
+	waitForTaskStatus(t, store, verifyTask.ID, mission.TaskSucceeded, time.Second)
+
+	evidence, err := store.ListEvidence(context.Background(), target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || evidence[0].Passed {
+		t.Fatalf("evidence = %+v, want exactly one failing record", evidence)
+	}
+}
+
+// waitForTaskStatus polls the store until task reaches one of the wanted
+// statuses or the timeout elapses, failing the test on timeout. Dispatch's
+// completion runs in a background goroutine, so tests must poll rather than
+// assert immediately after Dispatch returns. A generous timeout is used for
+// the two tests above since they run a real `go build`/`go vet`/`go test`
+// against the small synthetic Go module newTestRepo creates.
+func waitForTaskStatus(t *testing.T, store *mission.Store, taskID string, want mission.TaskStatus, timeout time.Duration) mission.Task {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		task, err := store.GetTask(context.Background(), taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task.Status == want {
+			return task
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task %s status = %s after %s, want %s", taskID, task.Status, timeout, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
