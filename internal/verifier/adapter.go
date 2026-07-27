@@ -98,7 +98,7 @@ func verifyWorktreeFor(repoRoot string, task mission.Task) (path, branch string)
 // runs on a's baseCtx, not the ctx Dispatch's caller passed in, so it
 // survives past the lifetime of any single Tick call.
 func (a *Adapter) run(verifierTask mission.Task, targetID string, lease mission.WorkspaceLease, attempt mission.TaskAttempt) {
-	report := runVerificationChecks(lease.Path)
+	report := RunVerificationChecks(lease.Path)
 	a.complete(verifierTask, targetID, attempt, lease, report)
 }
 
@@ -118,7 +118,7 @@ func (a *Adapter) complete(
 	targetID string,
 	attempt mission.TaskAttempt,
 	lease mission.WorkspaceLease,
-	report verificationReport,
+	report VerificationReport,
 ) {
 	defer func() {
 		if _, err := a.store.ReleaseLease(a.baseCtx, lease.ID); err != nil {
@@ -134,14 +134,14 @@ func (a *Adapter) complete(
 	if _, err := a.store.AddEvidence(a.baseCtx, mission.CreateEvidenceInput{
 		MissionID: verifierTask.MissionID, TaskID: targetID, AttemptID: targetAttempt.ID,
 		VerifierAttemptID: attempt.ID, Kind: "independent_verification",
-		Content: []byte(report.output), Passed: report.passed,
+		Content: []byte(report.Output), Passed: report.Passed,
 	}); err != nil {
 		a.failVerifierOnly(verifierTask, attempt, "record evidence", err.Error())
 		return
 	}
 
 	targetNext := mission.TaskFailed
-	if report.passed {
+	if report.Passed {
 		targetNext = mission.TaskSucceeded
 	}
 	if _, err := a.store.TransitionTask(a.baseCtx, targetID, targetNext); err != nil {
