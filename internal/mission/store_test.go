@@ -521,3 +521,106 @@ func TestTransitionTaskToVerifyingDoesNotUnblockImplementationDependent(t *testi
 		t.Fatalf("regression: b task status = %s, want still blocked — an implementation dependent must wait for succeeded, not verifying", got.Status)
 	}
 }
+
+func TestTransitionTaskCompletesMissionWhenAllTasksSucceed(t *testing.T) {
+	store, mission := newStoreWithMission(t)
+	plan, err := store.CreateDraftPlan(context.Background(), mission.ID, samplePlanInput(), "coordinator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := markPlanApprovedForTest(context.Background(), store, mission.ID, plan.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkMissionRunning(context.Background(), mission.ID); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.ListTasks(context.Background(), mission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var specID, codeID string
+	for _, task := range tasks {
+		switch task.ClientID {
+		case "spec":
+			specID = task.ID
+		case "code":
+			codeID = task.ID
+		}
+	}
+	if specID == "" || codeID == "" {
+		t.Fatal("expected both spec and code tasks to exist")
+	}
+
+	completeTask := func(taskID, path, branch string) {
+		t.Helper()
+		if _, err := store.AcquireLease(context.Background(), taskID, path, branch, "", time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.StartAttempt(context.Background(), taskID, "test-worker"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.TransitionTask(context.Background(), taskID, TaskVerifying); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.TransitionTask(context.Background(), taskID, TaskSucceeded); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	completeTask(specID, "/tmp/spec", "branch/spec")
+	got, err := store.GetMission(context.Background(), mission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != MissionRunning {
+		t.Fatalf("mission status after only spec succeeds = %s, want still running", got.Status)
+	}
+
+	completeTask(codeID, "/tmp/code", "branch/code")
+	got, err = store.GetMission(context.Background(), mission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != MissionSucceeded {
+		t.Fatalf("mission status = %s, want succeeded once every task has", got.Status)
+	}
+}
+
+func TestTransitionTaskDoesNotCompleteMissionThatIsNotRunning(t *testing.T) {
+	store, mission := newStoreWithMission(t)
+	plan, err := store.CreateDraftPlan(context.Background(), mission.ID, PlanInput{Tasks: []TaskInput{
+		{ClientID: "solo", Position: 1, Title: "Solo", Contract: "do it"},
+	}}, "coordinator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := markPlanApprovedForTest(context.Background(), store, mission.ID, plan.Version); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately do NOT call MarkMissionRunning — mission stays "ready".
+	tasks, err := store.ListTasks(context.Background(), mission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := tasks[0].ID
+	if _, err := store.AcquireLease(context.Background(), taskID, "/tmp/solo", "branch/solo", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(context.Background(), taskID, "test-worker"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionTask(context.Background(), taskID, TaskVerifying); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionTask(context.Background(), taskID, TaskSucceeded); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetMission(context.Background(), mission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != MissionReady {
+		t.Fatalf("mission status = %s, want still ready (never marked running, so completion must not fire)", got.Status)
+	}
+}

@@ -810,6 +810,11 @@ func (s *Store) TransitionTask(ctx context.Context, id string, next TaskStatus) 
 			return Task{}, err
 		}
 	}
+	if next == TaskSucceeded {
+		if err := tryCompleteMission(ctx, tx, current.MissionID, now); err != nil {
+			return Task{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return Task{}, fmt.Errorf("commit task transition: %w", err)
 	}
@@ -1061,6 +1066,59 @@ func queueReadyDependents(ctx context.Context, tx *sql.Tx, dependencyID string, 
 		}
 	}
 	return nil
+}
+
+// tryCompleteMission checks whether every Task in a Mission's current Plan
+// version has reached succeeded, and if so advances the Mission itself from
+// running through verifying to succeeded. It is called automatically every
+// time any Task transitions to succeeded — whichever Task happens to be
+// last (an implementation Task with no Verifier, a Verifier, or an
+// Integration Task) triggers it the same way, so a Mission with no
+// Integration Task at all still completes correctly once its Tasks are done.
+// It is a no-op unless the Mission is currently running, so it cannot fire
+// prematurely (e.g. before the Plan is even approved) or twice (once the
+// Mission leaves running, later succeeded transitions no longer match).
+func tryCompleteMission(ctx context.Context, tx *sql.Tx, missionID string, now time.Time) error {
+	var status MissionStatus
+	var planVersion int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT status, current_plan_version FROM missions WHERE id = ?`, missionID,
+	).Scan(&status, &planVersion); err != nil {
+		return fmt.Errorf("load mission for completion check: %w", err)
+	}
+	if status != MissionRunning {
+		return nil
+	}
+	var incomplete int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE mission_id = ? AND plan_version = ? AND status != ?`,
+		missionID, planVersion, TaskSucceeded,
+	).Scan(&incomplete); err != nil {
+		return fmt.Errorf("count incomplete tasks: %w", err)
+	}
+	if incomplete > 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE missions SET status = ?, updated_at = ? WHERE id = ?`,
+		MissionVerifying, unixMillis(now), missionID,
+	); err != nil {
+		return fmt.Errorf("mark mission verifying: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE missions SET status = ?, updated_at = ? WHERE id = ?`,
+		MissionSucceeded, unixMillis(now), missionID,
+	); err != nil {
+		return fmt.Errorf("mark mission succeeded: %w", err)
+	}
+	payload, err := json.Marshal(map[string]any{"reason": "all tasks succeeded"})
+	if err != nil {
+		return fmt.Errorf("marshal mission.succeeded event: %w", err)
+	}
+	return insertEvent(ctx, tx, Event{
+		ID: newID(), MissionID: missionID, Type: "mission.succeeded",
+		Payload: payload, CreatedAt: now,
+	})
 }
 
 func uniqueIDs(ids []string) []string {
