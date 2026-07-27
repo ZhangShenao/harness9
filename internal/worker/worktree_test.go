@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/harness9/internal/mission"
 )
 
 func TestCreateWorktreeAddsWorktreeAtPath(t *testing.T) {
@@ -48,6 +50,39 @@ func TestRemoveWorktreeCleansUpPath(t *testing.T) {
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
 		t.Fatalf("worktree path still exists after RemoveWorktree: err = %v", err)
+	}
+}
+
+// TestWorktreeForKeysOffTaskIDNotClientID is a regression test for a
+// permanent-collision bug: worktreeFor used to key off task.ClientID
+// (falling back to task.ID only when ClientID was empty). ClientID is only
+// unique within one (mission_id, plan_version) — internal/mission's Plan
+// Change Request flow can create a new Plan version whose Tasks legally
+// reuse a ClientID from an earlier version, each getting a fresh, globally
+// unique task.ID (see insertPlanGraphTx's newID() call in
+// internal/mission/plan_store.go). Two such Tasks must resolve to distinct,
+// non-colliding worktree paths/branches, and worktreeFor must key off
+// task.ID unconditionally to guarantee that.
+func TestWorktreeForKeysOffTaskIDNotClientID(t *testing.T) {
+	repoRoot := newTestRepo(t)
+	taskV1 := mission.Task{ID: "task-id-v1", MissionID: "m1", ClientID: "task-a"}
+	taskV2 := mission.Task{ID: "task-id-v2", MissionID: "m1", ClientID: "task-a"}
+
+	pathV1, branchV1 := worktreeFor(repoRoot, taskV1)
+	pathV2, branchV2 := worktreeFor(repoRoot, taskV2)
+
+	if pathV1 == pathV2 {
+		t.Fatalf("worktreeFor produced identical paths for two Tasks with different IDs sharing a reused ClientID: %s", pathV1)
+	}
+	if branchV1 == branchV2 {
+		t.Fatalf("worktreeFor produced identical branches for two Tasks with different IDs sharing a reused ClientID: %s", branchV1)
+	}
+
+	if err := CreateWorktree(repoRoot, pathV1, branchV1); err != nil {
+		t.Fatalf("CreateWorktree for the first Task: %v", err)
+	}
+	if err := CreateWorktree(repoRoot, pathV2, branchV2); err != nil {
+		t.Fatalf("CreateWorktree for the second Task must not collide with the first despite the reused ClientID: %v", err)
 	}
 }
 

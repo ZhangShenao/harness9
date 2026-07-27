@@ -98,13 +98,17 @@ func (a *Adapter) Dispatch(ctx context.Context, task mission.Task) error {
 
 // worktreeFor computes a deterministic, collision-free worktree path and
 // branch name for one Task, rooted under the repo's .harness9/missions/ tree.
+//
+// This keys off task.ID, never task.ClientID. ClientID is only unique within
+// one (mission_id, plan_version) — internal/mission's Plan Change Request flow
+// (CreateDraftPlan/ApprovePlan/ResolvePlanChange) can create a new Plan
+// version whose Tasks reuse a ClientID from an earlier version. task.ID, in
+// contrast, is a fresh call to newID() for every Task row insertPlanGraphTx
+// writes (see internal/mission/plan_store.go), including across re-plans that
+// reuse a ClientID, so it is globally unique and never collides.
 func worktreeFor(repoRoot string, task mission.Task) (path, branch string) {
-	name := task.ClientID
-	if name == "" {
-		name = task.ID
-	}
-	path = filepath.Join(repoRoot, ".harness9", "missions", task.MissionID, name)
-	branch = fmt.Sprintf("mission/%s/%s", task.MissionID, name)
+	path = filepath.Join(repoRoot, ".harness9", "missions", task.MissionID, task.ID)
+	branch = fmt.Sprintf("mission/%s/%s", task.MissionID, task.ID)
 	return path, branch
 }
 
@@ -123,6 +127,32 @@ func (a *Adapter) run(task mission.Task, lease mission.WorkspaceLease, attempt m
 // as an Artifact, passing Evidence, and advances the Task to verifying —
 // independent re-verification is a later increment's responsibility, not
 // this Adapter's.
+//
+// Neither this method nor fail ever calls RemoveWorktree: a completed
+// Attempt's worktree (win or lose) is intentionally retained on disk, not
+// garbage-collected here. This is deliberate, not an oversight — the
+// worktree stays available for later debugging and for a future Integration
+// Task to reference the Attempt's actual working tree. Reaping old
+// worktrees (e.g. once a Task reaches a genuinely terminal state) is
+// deferred to a future hardening/GC pass, mirroring how internal/sandbox's
+// Manager exposes ReapOrphans for the analogous container-cleanup concern.
+// worktreeFor keying off task.ID (rather than the reusable-across-plan-
+// versions ClientID) means this permanent retention never causes a path
+// collision on a later re-plan.
+//
+// KNOWN LIMITATION: the sequence below is not transactional across the two
+// Store calls it ends with. If TransitionAttempt(..., AttemptSucceeded)
+// succeeds but the following TransitionTask(..., TaskVerifying) then fails,
+// the code falls through to fail() — but fail()'s own
+// TransitionAttempt(..., AttemptFailed) call is illegal from AttemptSucceeded
+// (only AttemptRunning can transition further) and silently no-ops. The
+// net result can be a Task left TaskFailed while its Attempt is still
+// AttemptSucceeded, with both a passing and a failing Evidence record on
+// file. This is a narrow, two-sequential-writes-diverge edge case that would
+// need wrapping the whole completion sequence in one Store-level transaction
+// to close properly (mission.Store does not currently expose a public
+// multi-call transaction API for that) — tracked here as a known gap, not
+// attempted in this pass.
 func (a *Adapter) complete(
 	task mission.Task,
 	attempt mission.TaskAttempt,
