@@ -683,11 +683,10 @@ func (s *Store) AddEvidence(ctx context.Context, in CreateEvidenceInput) (Eviden
 		return Evidence{}, err
 	}
 	if in.VerifierAttemptID != "" {
-		if err := validateAttemptWith(
+		if err := validateAttemptInMission(
 			ctx,
 			tx,
 			in.MissionID,
-			in.TaskID,
 			in.VerifierAttemptID,
 		); err != nil {
 			return Evidence{}, fmt.Errorf("validate verifier attempt: %w", err)
@@ -924,6 +923,32 @@ func validateAttemptWith(ctx context.Context, q queryRower, missionID, taskID, a
 		JOIN tasks task ON task.id = attempt.task_id
 		WHERE attempt.id = ? AND attempt.task_id = ? AND task.mission_id = ?`,
 		attemptID, taskID, missionID).Scan(&count); err != nil {
+		return fmt.Errorf("validate task attempt: %w", err)
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// validateAttemptInMission confirms attemptID belongs to some Task within
+// missionID, without requiring it to belong to one specific Task. Unlike
+// validateAttemptWith's producer-Attempt check, a verifier Attempt
+// legitimately belongs to a different Task than the one it is producing
+// Evidence for — an independent verification Task depends on (but is not) the
+// Task it re-verifies, so its own Attempt's task_id never equals the target
+// Task's ID. Scoping the check to the Mission instead of one Task preserves
+// the invariant that actually matters (the verifier Attempt is real and
+// belongs to the same Mission) without wrongly rejecting this legitimate
+// cross-Task pattern.
+func validateAttemptInMission(ctx context.Context, q queryRower, missionID, attemptID string) error {
+	var count int
+	if err := q.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM task_attempts attempt
+		JOIN tasks task ON task.id = attempt.task_id
+		WHERE attempt.id = ? AND task.mission_id = ?`,
+		attemptID, missionID).Scan(&count); err != nil {
 		return fmt.Errorf("validate task attempt: %w", err)
 	}
 	if count == 0 {

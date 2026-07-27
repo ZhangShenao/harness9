@@ -330,6 +330,113 @@ func TestAddEvidenceSeparatesProducerAndVerifierAttempts(t *testing.T) {
 	}
 }
 
+// TestAddEvidenceAcceptsVerifierAttemptFromADifferentTaskInTheSameMission
+// mirrors internal/verifier.Adapter's real shape: a verification Task's own
+// Attempt (started against the verification Task's ID, never the target's)
+// is used as VerifierAttemptID on Evidence recorded against a different Task
+// (the one being verified) in the same Mission. Regression coverage for
+// validateAttemptInMission: the producer/verifier Attempt pair no longer has
+// to share a Task, only a Mission.
+func TestAddEvidenceAcceptsVerifierAttemptFromADifferentTaskInTheSameMission(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	m, err := store.CreateMission(ctx, CreateMissionInput{Goal: "verify cross-task evidence"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := store.CreateTask(ctx, CreateTaskInput{MissionID: m.ID, Title: "target"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyTask, err := store.CreateTask(ctx, CreateTaskInput{MissionID: m.ID, Title: "verify"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireLease(ctx, target.ID, "wt/target", "branch/target", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	producer, err := store.StartAttempt(ctx, target.ID, "worker-adapter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireLease(ctx, verifyTask.ID, "wt/verify", "branch/verify", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	verifierAttempt, err := store.StartAttempt(ctx, verifyTask.ID, "verifier-adapter")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	evidence, err := store.AddEvidence(ctx, CreateEvidenceInput{
+		MissionID:         m.ID,
+		TaskID:            target.ID,
+		AttemptID:         producer.ID,
+		VerifierAttemptID: verifierAttempt.ID,
+		Kind:              "independent_verification",
+		Content:           []byte("go build/vet/test all passed"),
+		Passed:            true,
+	})
+	if err != nil {
+		t.Fatalf("AddEvidence with a cross-Task verifier Attempt: %v", err)
+	}
+	if evidence.AttemptID != producer.ID || evidence.VerifierAttemptID != verifierAttempt.ID {
+		t.Fatalf("Evidence Attempts = %+v", evidence)
+	}
+}
+
+// TestAddEvidenceRejectsVerifierAttemptFromAnotherMission proves
+// validateAttemptInMission's relaxation from Task-scoped to Mission-scoped
+// still enforces a real boundary: an Attempt belonging to an unrelated
+// Mission must still be rejected as VerifierAttemptID.
+func TestAddEvidenceRejectsVerifierAttemptFromAnotherMission(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	m1, err := store.CreateMission(ctx, CreateMissionInput{Goal: "mission one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task1, err := store.CreateTask(ctx, CreateTaskInput{MissionID: m1.ID, Title: "target"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireLease(ctx, task1.ID, "wt/m1", "branch/m1", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	producer, err := store.StartAttempt(ctx, task1.ID, "worker-adapter")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m2, err := store.CreateMission(ctx, CreateMissionInput{Goal: "mission two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task2, err := store.CreateTask(ctx, CreateTaskInput{MissionID: m2.ID, Title: "unrelated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireLease(ctx, task2.ID, "wt/m2", "branch/m2", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	foreignAttempt, err := store.StartAttempt(ctx, task2.ID, "verifier-adapter")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.AddEvidence(ctx, CreateEvidenceInput{
+		MissionID:         m1.ID,
+		TaskID:            task1.ID,
+		AttemptID:         producer.ID,
+		VerifierAttemptID: foreignAttempt.ID,
+		Kind:              "independent_verification",
+		Content:           []byte("borrowed from another mission"),
+		Passed:            true,
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("AddEvidence with a verifier Attempt from a different Mission error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestListEventsOrdersByCreationThenIDAndSupportsCursor(t *testing.T) {
 	store, task := newReadyTask(t)
 	now := time.Date(2026, time.July, 26, 10, 0, 0, 0, time.UTC)
