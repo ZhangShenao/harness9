@@ -28,6 +28,9 @@ func (s *Scheduler) RecoverInterrupted(ctx context.Context) (int, error) {
 // until ctx is cancelled. Tick errors are logged, not returned, so one failing
 // Task or Mission never stops the dispatch loop for the rest of the fleet.
 func (s *Scheduler) Run(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
+		return fmt.Errorf("scheduler run interval must be positive")
+	}
 	if _, err := s.RecoverInterrupted(ctx); err != nil {
 		return err
 	}

@@ -49,3 +49,16 @@ func TestRunStopsWhenContextIsCancelled(t *testing.T) {
 		t.Fatal("Run did not stop within 1s of context cancellation")
 	}
 }
+
+func TestRunRejectsNonPositiveInterval(t *testing.T) {
+	store := newTestStore(t)
+	dispatcher := &fakeDispatcher{store: store, failTask: map[string]bool{}}
+	s := NewScheduler(store, dispatcher, WithMaxGlobalConcurrency(10))
+
+	if err := s.Run(context.Background(), 0); err == nil {
+		t.Fatal("Run(interval=0) error = nil, want an error")
+	}
+	if err := s.Run(context.Background(), -time.Second); err == nil {
+		t.Fatal("Run(interval=-1s) error = nil, want an error")
+	}
+}
