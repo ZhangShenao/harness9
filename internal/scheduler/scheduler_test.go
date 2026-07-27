@@ -153,3 +153,18 @@ func TestTickLeavesFailedTaskQueuedAndContinuesOthers(t *testing.T) {
 		t.Fatalf("failed task status = %s, want queued so it retries next tick", failedTask.Status)
 	}
 }
+
+func TestTickCachesPolicyErrorPerMissionWithinOneTick(t *testing.T) {
+	store := newTestStore(t)
+	approvedMissionWithTwoRootTasks(t, store, `{"max_concurrent_tasks":-1}`)
+	dispatcher := &fakeDispatcher{store: store, failTask: map[string]bool{}}
+	s := NewScheduler(store, dispatcher, WithMaxGlobalConcurrency(10))
+
+	dispatched, err := s.Tick(context.Background())
+	if err == nil {
+		t.Fatal("Tick error = nil, want an error for the broken policy")
+	}
+	if dispatched != 0 {
+		t.Fatalf("dispatched = %d, want 0 (mission policy is invalid)", dispatched)
+	}
+}

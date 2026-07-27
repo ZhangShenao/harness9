@@ -70,6 +70,7 @@ func (s *Scheduler) Tick(ctx context.Context) (int, error) {
 
 	remainingGlobal := s.maxGlobalConcurrency - globalActive
 	policies := make(map[string]mission.Policy)
+	policyErrors := make(map[string]error)
 	dispatched := 0
 	var dispatchErrors []error
 
@@ -77,10 +78,15 @@ func (s *Scheduler) Tick(ctx context.Context) (int, error) {
 		if remainingGlobal <= 0 {
 			break
 		}
+		if prepErr, failed := policyErrors[task.MissionID]; failed {
+			dispatchErrors = append(dispatchErrors, fmt.Errorf("task %s: %w", task.ID, prepErr))
+			continue
+		}
 		policy, cached := policies[task.MissionID]
 		if !cached {
 			policy, err = s.prepareMission(ctx, task.MissionID)
 			if err != nil {
+				policyErrors[task.MissionID] = err
 				dispatchErrors = append(dispatchErrors, fmt.Errorf("task %s: %w", task.ID, err))
 				continue
 			}
