@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -114,6 +115,46 @@ func TestDispatchRollsBackWorktreeWhenLeaseAcquisitionFails(t *testing.T) {
 	err := adapter.Dispatch(context.Background(), task)
 	if err == nil {
 		t.Fatal("Dispatch error = nil, want an error since the task cannot acquire a lease")
+	}
+
+	path, _ := worktreeFor(repoRoot, task)
+	if _, statErr := runGitErr(path, "rev-parse", "--is-inside-work-tree"); statErr == nil {
+		t.Fatalf("worktree at %s still exists after a failed Dispatch, want it rolled back", path)
+	}
+}
+
+// TestDispatchRevertsTaskToQueuedWhenStartAttemptFails exercises the rollback
+// branch that runs after AcquireLease has already advanced the Task from
+// queued to leased but StartAttempt subsequently fails. Regression test for a
+// bug where the rollback released the lease and removed the worktree but
+// never called TransitionTask, permanently stranding the Task in
+// mission.TaskLeased (with no active lease and no attempt row) where
+// ListSchedulableTasks would never pick it up again. A near-zero lease TTL
+// deterministically makes StartAttempt observe an already-expired lease.
+func TestDispatchRevertsTaskToQueuedWhenStartAttemptFails(t *testing.T) {
+	repoRoot := newTestRepo(t)
+	store := newTestStore(t)
+	task := newQueuedTask(t, store)
+	adapter := &Adapter{
+		store:      store,
+		repoRoot:   repoRoot,
+		leaseTTL:   time.Nanosecond,
+		executor:   noopExecutor{},
+		baseCtx:    context.Background(),
+		workerName: "worker-adapter",
+	}
+
+	err := adapter.Dispatch(context.Background(), task)
+	if err == nil {
+		t.Fatal("Dispatch error = nil, want an error since the lease is already expired by the time StartAttempt runs")
+	}
+
+	updated, getErr := store.GetTask(context.Background(), task.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if updated.Status != mission.TaskQueued {
+		t.Fatalf("task status = %s, want queued (Dispatch must revert the Task to queued when StartAttempt fails, per scheduler.Dispatcher's contract)", updated.Status)
 	}
 
 	path, _ := worktreeFor(repoRoot, task)

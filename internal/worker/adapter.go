@@ -69,6 +69,13 @@ func (a *Adapter) Dispatch(ctx context.Context, task mission.Task) error {
 		if _, releaseErr := a.store.ReleaseLease(ctx, lease.ID); releaseErr != nil {
 			err = fmt.Errorf("%w (lease release also failed: %v)", err, releaseErr)
 		}
+		// AcquireLease already advanced the Task from queued to leased; undo
+		// that here so it is not left stuck in mission.TaskLeased with no
+		// active lease and no attempt, which would make it permanently
+		// unschedulable (see scheduler.Dispatcher's contract).
+		if _, transitionErr := a.store.TransitionTask(ctx, task.ID, mission.TaskQueued); transitionErr != nil {
+			err = fmt.Errorf("%w (task requeue also failed: %v)", err, transitionErr)
+		}
 		if removeErr := RemoveWorktree(a.repoRoot, path); removeErr != nil {
 			err = fmt.Errorf("%w (worktree cleanup also failed: %v)", err, removeErr)
 		}
