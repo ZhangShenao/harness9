@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/provider"
 	"github.com/harness9/internal/sandbox"
@@ -13,9 +14,20 @@ import (
 
 // RunnerExecutorConfig configures a RunnerExecutor.
 type RunnerExecutorConfig struct {
-	ProviderFor        func(model string) (provider.LLMProvider, int, error)
-	CompactorFor       func(p provider.LLMProvider, ctxWin int) memory.Compactor
-	SandboxMgr         *sandbox.Manager // optional; nil = no Sandbox for any Attempt
+	ProviderFor  func(model string) (provider.LLMProvider, int, error)
+	CompactorFor func(p provider.LLMProvider, ctxWin int) memory.Compactor
+	SandboxMgr   *sandbox.Manager // optional; nil = no Sandbox for any Attempt
+	// SharedHooks is threaded straight through to subagent.RunnerConfig.SharedHooks
+	// for every Attempt this Executor runs. Worker Attempts run unattended
+	// (Execute always passes background=true to Runner.Run, which auto-denies
+	// any HookActionAsk decision since there is no human present to answer an
+	// approval prompt), so this is the only seam through which a caller can
+	// give the Attempt's bash tool the same high-risk-pattern interception
+	// (e.g. hooks.NewDangerHook()) the rest of the codebase relies on. This
+	// package deliberately does not construct any default hooks itself —
+	// choosing which hooks (if any) to install is left to whoever builds a
+	// RunnerExecutorConfig.
+	SharedHooks        []hooks.ToolHook
 	SettingsPath       string
 	DefaultMaxTurns    int
 	ToolTimeout        time.Duration
@@ -54,6 +66,7 @@ func (e *RunnerExecutor) Execute(ctx context.Context, workDir, prompt string) (s
 	}
 	runner := subagent.NewRunner(subagent.RunnerConfig{
 		BaseTools:          baseTools,
+		SharedHooks:        e.cfg.SharedHooks,
 		SettingsPath:       e.cfg.SettingsPath,
 		WorkDir:            workDir,
 		DefaultMaxTurns:    e.cfg.DefaultMaxTurns,
