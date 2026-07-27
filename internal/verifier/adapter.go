@@ -31,6 +31,12 @@ func NewAdapter(store *mission.Store, repoRoot string, baseCtx context.Context) 
 	return &Adapter{store: store, repoRoot: repoRoot, leaseTTL: 2 * time.Hour, baseCtx: baseCtx}
 }
 
+// var _ ... proves Adapter has the exact method shape scheduler.Dispatcher
+// requires, without importing internal/scheduler.
+var _ interface {
+	Dispatch(ctx context.Context, task mission.Task) error
+} = (*Adapter)(nil)
+
 // Dispatch implements scheduler.Dispatcher. On any failure it leaves no
 // partial state behind, mirroring internal/worker.Adapter.Dispatch: an
 // already-created worktree is removed, an already-acquired lease is
