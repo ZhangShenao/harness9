@@ -16,10 +16,20 @@ import (
 	"github.com/harness9/internal/subagent"
 )
 
-// newTestStore creates a fresh in-memory-backed mission.Store for tests.
+// newTestStore creates a fresh in-memory-backed mission.Store for tests. The
+// _pragma=busy_timeout DSN parameter makes concurrent writers block-and-retry
+// instead of immediately failing with SQLITE_BUSY ("database is locked"):
+// Task 4's Adapter.run genuinely executes on a background goroutine
+// concurrently with the test goroutine's polling reads, unlike Task 3's
+// no-op run, so this package is the first in this codebase to put real
+// concurrent load on a mission.Store. (A single-connection pool was also
+// tried and rejected: mission.Store.ListSchedulableTasks holds an open
+// *sql.Rows while issuing a nested per-row query, which self-deadlocks with
+// SetMaxOpenConns(1).)
 func newTestStore(t *testing.T) *mission.Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "mission.db"))
+	dsn := filepath.Join(t.TempDir(), "mission.db") + "?_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,12 +75,30 @@ func newQueuedTask(t *testing.T, store *mission.Store) mission.Task {
 	return mission.Task{}
 }
 
-// noopExecutor never actually gets called by this task's tests (Dispatch's
-// synchronous half returns before the goroutine reaches the executor), but is
-// needed to construct an Adapter.
+// noopExecutor never actually gets called by the two rollback tests below
+// (Dispatch's synchronous half returns an error before the goroutine reaches
+// the executor in either case), but is needed to construct an Adapter.
 type noopExecutor struct{}
 
 func (noopExecutor) Execute(ctx context.Context, workDir, prompt string) (subagent.SubAgentResult, error) {
+	return subagent.SubAgentResult{}, nil
+}
+
+// blockingExecutor blocks in Execute until release is closed. Used only by
+// TestDispatchCreatesWorktreeLeaseAndAttempt, which asserts on Dispatch's
+// synchronous bookkeeping alone: now that Task 4's a.run actually calls the
+// executor, a noopExecutor's empty SubAgentResult fails ParseResult and races
+// the Task past running to failed before the test observes the running
+// state (the background completion routinely outruns the test's own
+// post-Dispatch git subprocess calls). Parking the goroutine here removes
+// that race so the test observes exactly the synchronous state Dispatch
+// itself is responsible for.
+type blockingExecutor struct {
+	release chan struct{}
+}
+
+func (b *blockingExecutor) Execute(ctx context.Context, workDir, prompt string) (subagent.SubAgentResult, error) {
+	<-b.release
 	return subagent.SubAgentResult{}, nil
 }
 
@@ -78,7 +106,7 @@ func TestDispatchCreatesWorktreeLeaseAndAttempt(t *testing.T) {
 	repoRoot := newTestRepo(t)
 	store := newTestStore(t)
 	task := newQueuedTask(t, store)
-	adapter := NewAdapter(store, repoRoot, noopExecutor{}, context.Background())
+	adapter := NewAdapter(store, repoRoot, &blockingExecutor{release: make(chan struct{})}, context.Background())
 
 	if err := adapter.Dispatch(context.Background(), task); err != nil {
 		t.Fatalf("Dispatch: %v", err)
