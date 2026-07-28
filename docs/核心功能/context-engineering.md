@@ -813,3 +813,109 @@ eng := engine.NewAgentEngine(llm, registry, workDir,
 | TTL 自动过期清理 | P3 | 定期清除旧会话，控制磁盘占用 |
 | CLI 模式 session 支持 | P3 | CLI 当前为无状态 REPL |
 | Token Budget 精确计数 | P2 | 接入官方 tokenizer，消除 char÷4 误差（当前已通过 API 响应实际值校正） |
+
+---
+
+## 14. 会话全文检索（FTS5）
+
+### 14.1 背景与定位
+
+harness9 已通过 `internal/ltm/` 包为**长期记忆条目**提供了 FTS5 全文检索能力（`memory_search` 工具）。但长期记忆存储的是经过 LLM 提取、结构化整理的知识片段，并非会话的原始对话内容。
+
+会话全文检索解决的是另一个问题：**在历史会话的原始消息本身中自由检索**。典型场景：
+
+- 用户想找出某次历史会话里 Agent 给出的具体代码片段或操作步骤
+- 开发者想确认某个关键词在哪些会话里被提及过
+- Agent 在当前对话中想主动回忆"我之前有没有处理过类似的问题"
+
+这类需求的特点是：检索目标是**未经压缩的原始消息文本**，粒度细、覆盖全，与长期记忆互为补充而非替代关系。
+
+### 14.2 核心组件
+
+#### messages_fts 虚表
+
+在 `internal/memory/` 包的 SQLite Schema 中新增一张 standalone FTS5 虚表，镜像 `messages` 表的核心字段：
+
+```sql
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
+USING fts5(session_id UNINDEXED, role UNINDEXED, content, content='messages', content_rowid='id');
+```
+
+- `session_id`、`role` 标记为 `UNINDEXED`，仅作为检索结果的返回字段，不参与全文索引
+- `content` 字段进入 FTS5 索引，支持关键词全文匹配
+- `content=''messages''`、`content_rowid=''id''` 将虚表与 `messages` 主表关联（content table 模式），节省磁盘空间
+
+新消息写入 `messages` 表时，同步通过 `INSERT INTO messages_fts(...)` 更新索引，保证实时可检索。
+
+#### SearchMessages 方法
+
+`Manager` 新增以下方法：
+
+```go
+// MessageSearchResult 表示一条全文检索结果，包含消息的来源会话、角色和内容。
+type MessageSearchResult struct {
+    SessionID string
+    Role      string
+    Content   string
+}
+
+// SearchMessages 在所有历史会话消息中执行 FTS5 全文检索。
+// query 为检索关键词（支持 FTS5 查询语法）；limit 控制返回条数上限。
+// 结果按 FTS5 相关性排序（bm25），最相关的排在最前。
+func (m *Manager) SearchMessages(ctx context.Context, query string, limit int) ([]MessageSearchResult, error)
+```
+
+底层查询示例：
+
+```sql
+SELECT session_id, role, content
+FROM messages_fts
+WHERE messages_fts MATCH ?
+ORDER BY rank
+LIMIT ?;
+```
+
+#### session_search 工具
+
+`internal/tools/` 包新增 `session_search` 工具（`BaseTool` 实现），让 Agent 在对话中可以直接调用检索：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `query` | string | ✅ | FTS5 检索关键词 |
+| `limit` | integer | ❌ | 返回条数上限，默认 5 |
+
+工具内部调用 `Manager.SearchMessages()`，将结果格式化后作为工具输出返回给 Agent。
+
+### 14.3 工作原理
+
+```
+用户输入检索词（或 Agent 自主调用 session_search 工具）
+         │
+         ▼
+  session_search 工具（internal/tools/）
+         │   query + limit
+         ▼
+  Manager.SearchMessages()（internal/memory/）
+         │   SQL: SELECT … FROM messages_fts WHERE messages_fts MATCH ? ORDER BY rank LIMIT ?
+         ▼
+  SQLite FTS5 引擎执行 BM25 排序全文检索
+         │
+         ▼
+  []MessageSearchResult{SessionID, Role, Content}
+         │
+         ▼
+  格式化为文本 → 作为工具输出注入对话上下文 → Agent 继续推理
+```
+
+**写入时同步索引**：`SQLiteSession.AddMessages()` 每次写入 `messages` 表后，立即在同一事务中向 `messages_fts` 插入对应记录，确保索引与主表始终保持一致，不存在延迟或异步 gap。
+
+### 14.4 与 LTM memory_search 的区别
+
+| 维度 | 会话全文检索（messages_fts） | LTM 记忆检索（memories_fts） |
+|------|----------------------------|-----------------------------|
+| **检索目标** | 历史会话原始消息 | LTM 提取的结构化知识条目 |
+| **覆盖范围** | 所有历史对话，不经筛选 | 仅被 Extractor / memory_write 显式记录的内容 |
+| **粒度** | 单条消息（role + content） | 单条记忆（category + content + importance） |
+| **更新时机** | 写入消息时同步索引 | Extractor 压缩前提取 / 显式调用 memory_write |
+| **使用场景** | 回忆"原话"、查找具体代码片段 | 跨会话语义理解、用户偏好、项目背景 |
+| **存储位置** | `sessions.db` messages_fts | `sessions.db` memories_fts |

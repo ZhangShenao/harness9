@@ -813,3 +813,110 @@ eng := engine.NewAgentEngine(llm, registry, workDir,
 | TTL automatic expiry cleanup | P3 | Periodically purge old sessions to control disk usage |
 | CLI mode session support | P3 | The CLI is currently a stateless REPL |
 | Precise Token Budget counting | P2 | Integrate an official tokenizer to eliminate char÷4 error (currently corrected via the actual value from the API response) |
+
+---
+
+## 14. Session Full-Text Search (FTS5)
+
+### 14.1 Background and Positioning
+
+harness9 already provides FTS5 full-text search for **long-term memory entries** via the `internal/ltm/` package (the `memory_search` tool). However, long-term memory stores knowledge fragments that have been extracted and structured by the LLM — not the raw conversation messages from sessions.
+
+Session full-text search solves a different problem: **searching freely within the raw messages of historical sessions themselves**. Typical use cases include:
+
+- A user wants to find a specific code snippet or set of steps that the Agent provided in a previous session
+- A developer wants to confirm which sessions a particular keyword has appeared in
+- An Agent wants to proactively recall "have I dealt with a similar problem before?" during the current conversation
+
+These scenarios share a common characteristic: the search target is **uncompressed raw message text** — fine-grained, comprehensive, and complementary to long-term memory rather than a replacement for it.
+
+### 14.2 Core Components
+
+#### messages_fts Virtual Table
+
+A standalone FTS5 virtual table is added to the SQLite schema in the `internal/memory/` package, mirroring the core fields of the `messages` table:
+
+```sql
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
+USING fts5(session_id UNINDEXED, role UNINDEXED, content, content='messages', content_rowid='id');
+```
+
+- `session_id` and `role` are marked `UNINDEXED` — they are returned as part of search results but do not participate in the full-text index
+- The `content` field enters the FTS5 index, supporting full-text keyword matching
+- `content='messages'` and `content_rowid='id'` associate the virtual table with the `messages` primary table (content table mode), saving disk space
+
+When new messages are written to the `messages` table, the index is synchronously updated via `INSERT INTO messages_fts(...)`, ensuring messages are immediately searchable.
+
+#### SearchMessages Method
+
+The `Manager` gains the following new method:
+
+```go
+// MessageSearchResult represents a single full-text search result,
+// containing the source session, role, and content of the message.
+type MessageSearchResult struct {
+    SessionID string
+    Role      string
+    Content   string
+}
+
+// SearchMessages performs an FTS5 full-text search across all historical session messages.
+// query is the search keyword (supports FTS5 query syntax); limit controls the maximum number of results returned.
+// Results are sorted by FTS5 relevance (bm25), with the most relevant appearing first.
+func (m *Manager) SearchMessages(ctx context.Context, query string, limit int) ([]MessageSearchResult, error)
+```
+
+Example underlying query:
+
+```sql
+SELECT session_id, role, content
+FROM messages_fts
+WHERE messages_fts MATCH ?
+ORDER BY rank
+LIMIT ?;
+```
+
+#### session_search Tool
+
+The `internal/tools/` package adds a `session_search` tool (a `BaseTool` implementation), enabling the Agent to invoke retrieval directly during a conversation:
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | ✅ | FTS5 search keyword |
+| `limit` | integer | ❌ | Maximum number of results to return, default 5 |
+
+The tool calls `Manager.SearchMessages()` internally, formats the results, and returns them as tool output to the Agent.
+
+### 14.3 How It Works
+
+```
+User inputs a search term (or Agent autonomously invokes the session_search tool)
+         │
+         ▼
+  session_search tool (internal/tools/)
+         │   query + limit
+         ▼
+  Manager.SearchMessages() (internal/memory/)
+         │   SQL: SELECT … FROM messages_fts WHERE messages_fts MATCH ? ORDER BY rank LIMIT ?
+         ▼
+  SQLite FTS5 engine executes BM25-ranked full-text search
+         │
+         ▼
+  []MessageSearchResult{SessionID, Role, Content}
+         │
+         ▼
+  Formatted as text → injected into conversation context as tool output → Agent continues reasoning
+```
+
+**Synchronous indexing on write**: `SQLiteSession.AddMessages()` writes to the `messages` table and immediately inserts the corresponding record into `messages_fts` within the same transaction, ensuring the index remains consistent with the primary table at all times — no delays or asynchronous gaps.
+
+### 14.4 Comparison with LTM memory_search
+
+| Dimension | Session FTS (messages_fts) | LTM Memory Search (memories_fts) |
+|-----------|---------------------------|----------------------------------|
+| **Search target** | Raw messages from historical sessions | Structured knowledge entries extracted by LTM |
+| **Coverage** | All historical conversations, without filtering | Only content explicitly recorded by the Extractor or `memory_write` |
+| **Granularity** | Individual messages (role + content) | Individual memory entries (category + content + importance) |
+| **Update timing** | Synchronously indexed on message write | Extracted before compaction by Extractor / explicit `memory_write` call |
+| **Use cases** | Recalling exact wording, finding specific code snippets | Cross-session semantic understanding, user preferences, project context |
+| **Storage location** | `sessions.db` messages_fts | `sessions.db` memories_fts |
