@@ -1,3 +1,8 @@
+// Package integration implements the multi-Task consolidation half of
+// Mission's execution loop: it merges every dependency Task's completed
+// branch into one Mission-level worktree, independently re-verifies the
+// combined result, and is the only component allowed to advance an
+// Integration Task (and, indirectly, its whole Mission) to succeeded.
 package integration
 
 import (
@@ -121,7 +126,7 @@ func (a *Adapter) run(task mission.Task, lease mission.WorkspaceLease, attempt m
 			a.complete(task, attempt, lease, baseSHA, verifier.VerificationReport{}, fmt.Errorf("load dependency lease: %w", err))
 			return
 		}
-		if err := MergeBranch(lease.Path, depLease.Branch); err != nil {
+		if err := worker.MergeBranch(lease.Path, depLease.Branch); err != nil {
 			a.complete(task, attempt, lease, baseSHA, verifier.VerificationReport{}, fmt.Errorf("merge branch %s: %w", depLease.Branch, err))
 			return
 		}

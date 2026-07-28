@@ -65,6 +65,12 @@ func (a *Adapter) Dispatch(ctx context.Context, task mission.Task) error {
 	if err := CreateWorktree(a.repoRoot, path, branch); err != nil {
 		return fmt.Errorf("create worktree: %w", err)
 	}
+	if err := a.mergeDependencies(ctx, task, path); err != nil {
+		if removeErr := RemoveWorktree(a.repoRoot, path); removeErr != nil {
+			return fmt.Errorf("%w (worktree cleanup also failed: %v)", err, removeErr)
+		}
+		return err
+	}
 
 	lease, err := a.store.AcquireLease(ctx, task.ID, path, branch, "", a.leaseTTL)
 	if err != nil {
@@ -93,6 +99,32 @@ func (a *Adapter) Dispatch(ctx context.Context, task mission.Task) error {
 	}
 
 	go a.run(task, lease, attempt)
+	return nil
+}
+
+// mergeDependencies merges every dependency Task's committed branch into the
+// freshly created worktree at path, so a Task whose Contract genuinely
+// depends on a sibling implementation Task's code — not just its position in
+// the Task graph — actually sees that code before its own Attempt starts.
+// Without this, path only ever contains repoRoot's original HEAD: a
+// dependent Task's Worker has no way to know what its dependency actually
+// implemented, only the Contract's prose description of what should already
+// exist, and nothing stops it from independently re-implementing (and
+// duplicate-declaring) the same symbols its dependency already committed —
+// a real conflict that only surfaces later, when an Integration Task merges
+// both branches together and its joint `go build` fails. A no-op for root
+// Tasks (task.DependsOn is empty), preserving prior behavior exactly for the
+// common case.
+func (a *Adapter) mergeDependencies(ctx context.Context, task mission.Task, path string) error {
+	for _, depID := range task.DependsOn {
+		depLease, err := a.store.GetLatestLease(ctx, depID)
+		if err != nil {
+			return fmt.Errorf("get dependency %s lease: %w", depID, err)
+		}
+		if err := MergeBranch(path, depLease.Branch); err != nil {
+			return fmt.Errorf("merge dependency %s branch %s: %w", depID, depLease.Branch, err)
+		}
+	}
 	return nil
 }
 

@@ -304,3 +304,95 @@ func TestDispatchFailureRecordsEvidenceAndReachesFailed(t *testing.T) {
 		t.Fatalf("evidence = %+v, want exactly one failing record", evidence)
 	}
 }
+
+// dependencyCheckExecutor records whether depFile already existed in workDir
+// when Execute was called, then completes successfully like fakeExecutor.
+type dependencyCheckExecutor struct {
+	depFile    string
+	sawDepFile bool
+}
+
+func (f *dependencyCheckExecutor) Execute(ctx context.Context, workDir, prompt string) (subagent.SubAgentResult, error) {
+	if _, err := os.Stat(filepath.Join(workDir, f.depFile)); err == nil {
+		f.sawDepFile = true
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "b_output.txt"), []byte("done\n"), 0o644); err != nil {
+		return subagent.SubAgentResult{}, err
+	}
+	runGitInDir(workDir, "add", "-A")
+	runGitInDir(workDir, "commit", "-q", "-m", "feat: task b implementation")
+	sha := runGitInDir(workDir, "rev-parse", "HEAD")
+	return subagent.SubAgentResult{FinalText: "TASK_RESULT: SUCCESS\nCOMMIT: " + sha}, nil
+}
+
+// TestDispatchMergesDependencyBranchIntoNewWorktree proves the fix for a real
+// bug the M2 frozen Feature Mission's first end-to-end run surfaced: task-b
+// (which depends on task-a) used to get a worktree forked from repoRoot's
+// original HEAD, never containing task-a's actual committed code — task-b's
+// Worker could only go on the Contract's prose description of what task-a
+// should have implemented, and would independently (and, once an Integration
+// Task later merged both branches, conflictingly) reimplement the same
+// symbols task-a already committed.
+func TestDispatchMergesDependencyBranchIntoNewWorktree(t *testing.T) {
+	repoRoot := newTestRepo(t)
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	m, err := store.CreateMission(ctx, mission.CreateMissionInput{Goal: "ship a feature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := store.CreateDraftPlan(ctx, m.ID, mission.PlanInput{Tasks: []mission.TaskInput{
+		{ClientID: "task-a", Position: 1, Title: "Task A", Contract: "implement A"},
+		{ClientID: "task-b", Position: 2, Title: "Task B", Contract: "implement B on top of A", Dependencies: []string{"task-a"}},
+	}}, "coordinator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := mission.NewCommandService(store)
+	if _, err := svc.ApprovePlan(ctx, mission.ApprovePlanCommand{
+		MissionID: m.ID, Version: plan.Version, Actor: "user:zsa", Reason: "looks good", IdempotencyKey: "approve-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.ListTasks(ctx, m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var taskA, taskB mission.Task
+	for _, task := range tasks {
+		switch task.ClientID {
+		case "task-a":
+			taskA = task
+		case "task-b":
+			taskB = task
+		}
+	}
+
+	adapterA := NewAdapter(store, repoRoot, &fakeExecutor{succeed: true}, ctx)
+	if err := adapterA.Dispatch(ctx, taskA); err != nil {
+		t.Fatalf("Dispatch task A: %v", err)
+	}
+	waitForTaskStatus(t, store, taskA.ID, mission.TaskVerifying, time.Second)
+	// task-a's Worker only leaves it at verifying; drive it the rest of the
+	// way to succeeded exactly as a real Verifier eventually would, so
+	// GetLatestLease has an actual committed branch to find.
+	if _, err := store.TransitionTask(ctx, taskA.ID, mission.TaskSucceeded); err != nil {
+		t.Fatal(err)
+	}
+
+	taskB, err = store.GetTask(ctx, taskB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	depCheck := &dependencyCheckExecutor{depFile: "output.txt"}
+	adapterB := NewAdapter(store, repoRoot, depCheck, ctx)
+	if err := adapterB.Dispatch(ctx, taskB); err != nil {
+		t.Fatalf("Dispatch task B: %v", err)
+	}
+	waitForTaskStatus(t, store, taskB.ID, mission.TaskVerifying, time.Second)
+
+	if !depCheck.sawDepFile {
+		t.Fatal("task B's worktree did not contain task A's committed file — dependency branch was not merged in before B's Attempt started")
+	}
+}

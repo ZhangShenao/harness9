@@ -1,9 +1,4 @@
-// Package integration implements the multi-Task consolidation half of
-// Mission's execution loop: it merges every dependency Task's completed
-// branch into one Mission-level worktree, independently re-verifies the
-// combined result, and is the only component allowed to advance an
-// Integration Task (and, indirectly, its whole Mission) to succeeded.
-package integration
+package worker
 
 import (
 	"fmt"
@@ -15,6 +10,12 @@ import (
 // combined in sequence without losing their individual commit history. On
 // conflict, it aborts the merge — restoring worktreePath to the clean state
 // it was in before this call — and returns an error describing the conflict.
+//
+// Reused by two callers: internal/integration's Adapter merges every
+// dependency Task's branch into one Mission-level Integration worktree, and
+// this package's own Adapter.mergeDependencies merges a Task's dependencies
+// into its worktree before that Task's own Attempt starts, so a Worker whose
+// Contract genuinely depends on a sibling Task's code actually sees it.
 func MergeBranch(worktreePath, branch string) error {
 	cmd := exec.Command("git", "merge", "--no-ff", "--no-edit", branch)
 	cmd.Dir = worktreePath
