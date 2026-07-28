@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS session_todos (
 );
 
 CREATE INDEX IF NOT EXISTS idx_todos_session ON session_todos(session_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(session_id UNINDEXED, role UNINDEXED, content);
 `
 
 // Manager 持有共享 SQLite 连接，管理所有会话的生命周期。

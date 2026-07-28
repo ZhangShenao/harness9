@@ -118,6 +118,12 @@ func (s *SQLiteSession) AddMessages(ctx context.Context, msgs []schema.Message) 
 		if err != nil {
 			return fmt.Errorf("插入消息: %w", err)
 		}
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO messages_fts (session_id, role, content) VALUES (?, ?, ?)`,
+			s.sessionID, string(msg.Role), msg.Content)
+		if err != nil {
+			return fmt.Errorf("插入 fts 消息: %w", err)
+		}
 	}
 	_, err = tx.ExecContext(ctx,
 		`UPDATE sessions SET updated_at = ? WHERE id = ?`, now, s.sessionID)
