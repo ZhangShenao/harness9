@@ -720,6 +720,7 @@ class AgentContractTest(unittest.TestCase):
             "silent_cli_or_api_fallback": "forbidden",
             "prompt_only_fallback": "forbidden",
             "block_if_builtin_unavailable": "true",
+            "cover_must_be_distinct_from_body_pngs": "true",
         }
         for key, value in required.items():
             with self.subTest(key=key):
@@ -732,6 +733,17 @@ class AgentContractTest(unittest.TestCase):
                     ),
                 )
                 self.assert_error(errors, "image generation contract mismatch")
+
+    def test_blog_writer_requires_a_distinct_cover_asset(self) -> None:
+        errors = self.validate(
+            "harness-blog-writer",
+            lambda text: text.replace(
+                "cover_must_be_distinct_from_body_pngs = true\n",
+                "",
+                1,
+            ),
+        )
+        self.assert_error(errors, "image generation contract mismatch")
 
     def test_blog_writer_rejects_malformed_image_contract_keys(self) -> None:
         mutations = {

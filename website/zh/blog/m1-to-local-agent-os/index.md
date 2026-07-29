@@ -186,3 +186,25 @@ M1 终于达成了。它不是一张漂亮的功能清单，而是很多次认�
 但今天也值得停下来，认真记住这个时刻：harness9 已经走过了最开始那段只有想法、没有底气的路。谢谢每一份投入的心血。M1 是一个里程碑，也是继续往前的起点！
 
 (PS. 一个人写代码还是蛮无聊的，如果大家对 harness9 这个项目感兴趣，欢迎一起来共建呀~)
+
+---
+
+## 封面图
+
+![M1 之后，向新的本地 Agent OS 出发](./images/cover.png)
+
+> 🎨 **封面图最终 Prompt**（横版，适配文章头图 / 社交分享卡片）
+>
+> *M1 之后，向新的本地 Agent OS 出发*
+>
+> ```
+> Use case: illustration-story
+> Asset type: Chinese technical blog cover image and social sharing card for the article “M1 完成之后：harness9 为什么要走向本地 Agent OS”.
+> Primary request: A warm, cinematic narrative illustration that conveys a long-running local developer project reaching a meaningful milestone and setting out toward a hopeful next chapter. At dawn, a small handcrafted workshop glows on a quiet hill. A developer and a gentle small robot companion stand at its open doorway, looking toward a distant landscape where several softly lit paths converge into a new horizon. On the workbench behind them are subtle paper notes, a lantern, and a few tiny wooden mechanisms, suggesting careful craft and many nights of work. The mood is quiet pride, relief, gratitude, and renewed curiosity—not triumphalism.
+> Scene/backdrop: misty mountains, early golden sunlight, a calm sky, wild grass and lanterns along the path.
+> Style/medium: original hand-painted cinematic animation illustration, soft watercolor and gouache textures, rich layered foreground/midground/background, elegant and emotionally resonant; not a technical diagram.
+> Composition/framing: wide 16:9 landscape composition, visual focus centered slightly left, generous negative space on the right for optional page overlay, suitable as a blog cover.
+> Lighting/mood: warm dawn light, peaceful, intimate, hopeful.
+> Constraints: absolutely no text, no labels, no charts, no architecture diagram, no UI screenshot, no logo, no watermark, no copied composition from any existing body illustration.
+> Avoid: dark cyberpunk scene, generic office stock imagery, technical flowcharts, illegible words, gradients that look synthetic.
+> ```

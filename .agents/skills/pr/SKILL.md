@@ -120,7 +120,7 @@ Inspect `url.*.insteadOf` and `url.*.pushInsteadOf` configuration at every Git c
 Run `gh auth status --hostname github.com`, then query the URL-derived repository explicitly:
 
 ```bash
-gh repo view --repo "$ORIGIN_REPO" \
+gh repo view "$ORIGIN_REPO" \
   --json nameWithOwner,isFork,parent,defaultBranchRef
 ```
 
@@ -131,7 +131,7 @@ If `isFork` is false, set `BASE_REPO` to `ORIGIN_REPO`. If `isFork` is true, sto
 Query the chosen base explicitly and record its normalized topology:
 
 ```bash
-gh repo view --repo "$BASE_REPO" \
+gh repo view "$BASE_REPO" \
   --json nameWithOwner,isFork,parent,defaultBranchRef
 ```
 
