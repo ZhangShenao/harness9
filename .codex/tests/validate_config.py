@@ -138,6 +138,7 @@ BLOG_IMAGE_GENERATION_CONTRACT = {
     "silent_cli_or_api_fallback": "forbidden",
     "prompt_only_fallback": "forbidden",
     "block_if_builtin_unavailable": "true",
+    "cover_must_be_distinct_from_body_pngs": "true",
 }
 UNIX_ABSOLUTE_PATH = re.compile(
     r"(?<![A-Za-z0-9_.:/\\])/"

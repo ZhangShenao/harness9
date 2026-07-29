@@ -29,6 +29,11 @@ class PullRequestSkillTest(unittest.TestCase):
             self.content,
         )
 
+    def test_uses_positional_repository_argument_for_gh_repo_view(self) -> None:
+        self.assertIn('gh repo view "$ORIGIN_REPO"', self.content)
+        self.assertIn('gh repo view "$BASE_REPO"', self.content)
+        self.assertNotIn("gh repo view --repo", self.content)
+
 
 if __name__ == "__main__":
     unittest.main()
