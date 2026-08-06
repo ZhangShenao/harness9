@@ -1,6 +1,5 @@
 .DS_Store
 .env
-opencode.json
 # 编译产物：必须用前导 / 锚定到仓库根，避免误伤 cmd/harness9 目录
 /harness9
 # GoReleaser 构建输出目录
@@ -12,9 +11,6 @@ docs/specs/
 
 # Claude Code 本地权限/会话配置，因机器和会话而异，不纳入版本控制
 .claude/settings.local.json
-
-# OpenCode 等本地协作工具的缓存与依赖目录，仅在本机使用
-.opencode/
 
 # Deep Research 生成的调研报告
 reports/
