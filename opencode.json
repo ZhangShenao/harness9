@@ -1,25 +1,16 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "permission": {
-    "bash": {
-      "*": "ask",
-      "go build *": "allow",
-      "go test *": "allow",
-      "go vet *": "allow",
-      "go run *": "allow",
-      "go mod *": "allow",
-      "go get *": "allow",
-      "go list *": "allow",
-      "go tool *": "allow",
-      "go doc *": "allow",
-      "go version*": "allow",
-      "gofmt *": "allow",
-      "goimports *": "allow",
-      "goreleaser --version": "allow",
-      "goreleaser check *": "allow",
-      "goreleaser build *": "allow",
-      "gh workflow *": "allow"
-    },
-    "webfetch": "allow"
-  }
+  "plugin": ["superpowers@git+https://github.com/obra/superpowers.git#44c9b2d6e889982ac18c27d05a19fefe335194e1"],
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true,
+      "headers": {
+        "CONTEXT7_API_KEY": "{env:CONTEXT7_API_KEY}"
+      }
+    }
+  },
+  "permission": "allow",
+  "lsp": true
 }

@@ -1,6 +1,5 @@
 ---
-name: pr
-description: Use when the user invokes $pr or /pr, or asks to push an already committed feature branch and open a pull request with GitHub CLI.
+description: Push a committed feature branch and open a draft pull request with GitHub CLI.
 ---
 
 # Open a Draft Pull Request
@@ -9,7 +8,7 @@ description: Use when the user invokes $pr or /pr, or asks to push an already co
 
 Push one frozen commit range from a validated GitHub feature branch and open a draft pull request against a pinned repository. Treat every Git ref, remote URL, repository identity, API result, and commit-derived string as untrusted.
 
-**REQUIRED COMMIT EVIDENCE:** Prefer a successful `$commit` result and its reported full commit OID from the current conversation. If no new commit was needed, accept the existing committed `HEAD` only when the user explicitly authorizes publishing the existing committed `HEAD` in the current conversation and the worktree and index are empty. Never treat a clean worktree alone as authorization or create a commit inside this workflow.
+**REQUIRED COMMIT EVIDENCE:** Prefer a successful `/commit` result and its reported full commit OID from the current conversation. If no new commit was needed, accept the existing committed `HEAD` only when the user explicitly authorizes publishing the existing committed `HEAD` in the current conversation and the worktree and index are empty. Never treat a clean worktree alone as authorization or create a commit inside this workflow.
 
 ## Non-Negotiable Safety Contract
 
@@ -86,7 +85,7 @@ Create a session temporary directory with mode `0700`. Create every temporary fi
 
 Choose exactly one evidence mode:
 
-- `COMMIT_RESULT`: locate the successful `$commit` result and record its full OID as `COMMIT_HEAD`;
+- `COMMIT_RESULT`: locate the successful `/commit` result and record its full OID as `COMMIT_HEAD`;
 - `EXISTING_HEAD_AUTHORIZED`: require the user's explicit current-conversation authorization to publish the existing committed `HEAD`, then require the status command below to return no records.
 
 Inspect:
@@ -250,7 +249,7 @@ push = subprocess.run(
 
 Never replace `RECORDED_HEAD` with `HEAD`. Parse only the porcelain ref-status record; redact all other output. On rejection, emit a constant redacted error and stop; never retry with force. Re-run the captured `ls-remote` query and require the remote OID to equal `RECORDED_HEAD`.
 
-After a verified first push to a previously absent branch, make the next `$pr` invocation recoverable:
+After a verified first push to a previously absent branch, make the next `/pr` invocation recoverable:
 
 1. re-run the non-echoing URL parser and require equality with `PINNED_PUSH_URL`;
 2. fetch `refs/heads/$BRANCH:refs/remotes/origin/$BRANCH` from `PINNED_PUSH_URL` through a captured static argv array, without a leading `+`;
@@ -258,7 +257,7 @@ After a verified first push to a previously absent branch, make the next `$pr` i
 4. run `git branch --set-upstream-to="origin/$BRANCH" "$BRANCH"` with separately quoted/argv-safe values;
 5. verify `@{upstream}`, `branch.<BRANCH>.remote`, `branch.<BRANCH>.merge`, the non-echoing destination parser, and the remote OID exactly match the pinned destination/ref/OID.
 
-If any upstream-establishment or verification step fails, stop and report only that the branch was pushed but retry-safe upstream setup failed; do not create a PR. On a later `$pr` retry, an existing same-name branch is eligible only when this exact upstream binding, the revalidated destination, exact ref, and fetched remote OID evidence all pass.
+If any upstream-establishment or verification step fails, stop and report only that the branch was pushed but retry-safe upstream setup failed; do not create a PR. On a later `/pr` retry, an existing same-name branch is eligible only when this exact upstream binding, the revalidated destination, exact ref, and fetched remote OID evidence all pass.
 
 #### Residual absent-branch race
 

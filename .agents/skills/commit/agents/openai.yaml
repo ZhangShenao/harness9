@@ -1,4 +1,0 @@
-interface:
-  display_name: "Commit Reviewed Changes"
-  short_description: "Stage precise reviewed changes and create a local commit"
-  default_prompt: "Use $commit to review, stage, and commit the intended working-tree changes."

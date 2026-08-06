@@ -1,6 +1,5 @@
 ---
-name: release-cli
-description: Use when the user explicitly invokes $release-cli to publish a harness9 command-line release from the canonical master branch.
+description: Publish a harness9 command-line release from the canonical master branch.
 ---
 
 # Release harness9 CLI
@@ -93,11 +92,11 @@ decision.
 Show only the normalized candidate and ask:
 
 ```text
-Use $release-cli to confirm release vX.Y.Z exactly
+Use /release-cli to confirm release vX.Y.Z exactly
 ```
 
 Freeze the candidate in the current conversation and stop the turn. Continue
-only on a new explicit `$release-cli` invocation that exactly matches that
+only on a new explicit `/release-cli` invocation that exactly matches that
 sentence and version. Consume that confirmation once by freezing
 `CONFIRMATION_CONSUMED=true`, set `VERSION` to the frozen candidate, and
 continue directly to Step 2 without asking again. Any different version,
@@ -140,7 +139,7 @@ git rev-parse refs/heads/master
 
 Require the branch to be exactly `master` and status output to be empty. If
 either check fails, stop and ask the user to switch or resolve the dirty
-worktree, then reinvoke `$release-cli`.
+worktree, then reinvoke `/release-cli`.
 
 Fetch only the canonical branch from `PINNED_FETCH_URL` into
 `refs/remotes/origin/master`, without tags and without a forced refspec:
@@ -443,7 +442,7 @@ release OID without exposing credentials or raw commit text.
 On any failure after note creation, retain `NOTES_FILE` and `RECOVERY_STATE`
 and report their paths plus the failed phase without printing contents.
 
-Resume only from a new explicit `$release-cli` invocation naming the exact
+Resume only from a new explicit `/release-cli` invocation naming the exact
 recovery-state path. Open every component without following symlinks and
 require the state and notes to be distinct regular `0600` files owned by the
 current user in the same `0700` session directory whose realpath identity
