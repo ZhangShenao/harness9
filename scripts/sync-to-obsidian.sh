@@ -1,15 +1,19 @@
 #!/bin/bash
 # 将 harness9 项目的重要 Markdown 文档自动同步到 Obsidian Workspace
-# 由 Claude Code PostToolUse Hook 触发，stdin 接收工具调用的 JSON payload
+# 由 Claude Code PostToolUse Hook（stdin 接收工具调用的 JSON payload）
+# 或 OpenCode tool.execute.after 插件（$1 直接传入文件路径）触发
 
 set -euo pipefail
 
 OBSIDIAN_VAULT="/Users/zsa/Desktop/workspace/harness9"
 PROJECT_ROOT="/Users/zsa/Desktop/harness/harness9"
 
-# 从 stdin 解析 file_path
-INPUT=$(cat)
-FILE_PATH=$(echo "$INPUT" | python3 -c "
+# 优先使用命令行参数（OpenCode 插件），否则回退到 stdin JSON（Claude Code Hook）
+if [[ -n "${1:-}" ]]; then
+    FILE_PATH="$1"
+else
+    INPUT=$(cat)
+    FILE_PATH=$(echo "$INPUT" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -17,6 +21,7 @@ try:
 except Exception:
     print('')
 " 2>/dev/null)
+fi
 
 # 无路径则跳过
 [[ -z "$FILE_PATH" ]] && exit 0
