@@ -1,5 +1,16 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "plugin": ["superpowers@git+https://github.com/obra/superpowers.git#44c9b2d6e889982ac18c27d05a19fefe335194e1"],
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true,
+      "headers": {
+        "CONTEXT7_API_KEY": "{env:CONTEXT7_API_KEY}"
+      }
+    }
+  },
   "permission": {
     "bash": {
       "*": "ask",
@@ -21,5 +32,6 @@
       "gh workflow *": "allow"
     },
     "webfetch": "allow"
-  }
+  },
+  "lsp": true
 }

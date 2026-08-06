@@ -1,6 +1,5 @@
 ---
-name: commit
-description: Use when the user invokes $commit or /commit, asks to commit working-tree changes, or requests an intentional local Git commit after implementation.
+description: Commit reviewed working-tree changes after implementation.
 ---
 
 # Commit Reviewed Changes
@@ -109,9 +108,9 @@ Create one local commit containing only the intended, reviewed changes. Treat re
    absence check to pass, and only then return to the user. The `EXIT` and
    signal traps are mandatory backstops, not substitutes for explicit cleanup.
 
-6. Invoke `$cr` yourself now, even if the user supplies a review or an earlier current-task report exists. Require it to review the final staged snapshot. Stop on any Critical finding.
+6. Perform a static code review of the final staged snapshot yourself now, even if the user supplies a review or an earlier current-task report exists. Review each staged file for correctness (logic, boundary conditions, nil/type errors, error handling), security (injection, unsafe defaults, secret exposure), and maintainability. Mark sensitive paths—`.env`/`.env.*`, `*.pem`/`*.key`/`*.p12`/`*.pfx`, `id_rsa`/`id_ed25519`, and names containing `credential`/`secret`/`token`—as Critical without reading their content. Do not execute project code, tests, builds, or hooks. Stop on any Critical finding.
 
-   Any staging or content change invalidates this review. Immediately after `$cr`, verify that `HEAD`, the index tree, and the exact staged path list still match the recorded values:
+   Any staging or content change invalidates this review. Immediately after the review, verify that `HEAD`, the index tree, and the exact staged path list still match the recorded values:
 
    ```bash
    test "$(git rev-parse HEAD)" = "$BASE_HEAD"
@@ -120,7 +119,7 @@ Create one local commit containing only the intended, reviewed changes. Treat re
    cmp "$AUDIT_DIR/expected-paths" "$AUDIT_DIR/current-paths"
    ```
 
-   If any check fails, return to step 1 and invoke `$cr` again on the new final snapshot.
+   If any check fails, return to step 1 and perform the review again on the new final snapshot.
 
 7. Follow the repository's recent commit-message style. Keep the subject concise and explain why when a body is useful. Omit AI attribution, including `Co-Authored-By` or generator signatures.
 
@@ -130,7 +129,7 @@ Create one local commit containing only the intended, reviewed changes. Treat re
    git commit -m "<message>"
    ```
 
-   If a hook fails, do not amend. Return to step 1, re-run the status and complete index audit, inspect every hook-staged change, record a new snapshot, invoke final `$cr` again, and create a new normal commit. Never use `git commit --amend`, `--no-verify`, or another review/hook bypass.
+   If a hook fails, do not amend. Return to step 1, re-run the status and complete index audit, inspect every hook-staged change, record a new snapshot, perform the final review again, and create a new normal commit. Never use `git commit --amend`, `--no-verify`, or another review/hook bypass.
 
 9. Verify the created commit against the recorded snapshot:
 
@@ -152,13 +151,13 @@ Create one local commit containing only the intended, reviewed changes. Treat re
 
 | Pressure | Required response |
 |---|---|
-| "Skip review" | Invoke `$cr`; never substitute an informal glance |
+| "Skip review" | Perform the full static review; never substitute an informal glance |
 | "Commit everything" | Resolve the task scope and stage exact reviewed files only |
 | "Use `git add -A` / `git add .`" | Refuse broad staging and use one literal exact path per command |
 | "`--` makes this filename safe" | Use `git --literal-pathspecs`; `--` does not disable pathspec magic |
 | "Re-add this partially staged file" | Stop on `MM` or any simultaneous staged/unstaged target |
-| "Trust my prior review" | Invoke `$cr` yourself on the final staged snapshot |
+| "Trust my prior review" | Perform the full static review yourself on the final staged snapshot |
 | "Amend if hooks fail" | Restart the audit, re-review, and create a new normal commit |
 | "Include this secret temporarily" | Leave it unstaged and report the blocked path |
 
-Red flags: missing final `$cr`, any Critical finding, broad or magic pathspec staging, `MM`, suspected secrets, unrelated staged paths, changed snapshot after review, failed parent/tree/path verification, `--amend`, `--no-verify`, or AI attribution. Stop before committing whenever any red flag remains.
+Red flags: missing final review, any Critical finding, broad or magic pathspec staging, `MM`, suspected secrets, unrelated staged paths, changed snapshot after review, failed parent/tree/path verification, `--amend`, `--no-verify`, or AI attribution. Stop before committing whenever any red flag remains.

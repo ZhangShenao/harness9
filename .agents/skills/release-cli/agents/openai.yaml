@@ -1,6 +1,0 @@
-interface:
-  display_name: "Release harness9 CLI"
-  short_description: "Tag and publish a verified harness9 command-line release"
-  default_prompt: "Use $release-cli to prepare and publish the next harness9 CLI release."
-policy:
-  allow_implicit_invocation: false

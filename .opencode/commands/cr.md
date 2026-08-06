@@ -1,6 +1,5 @@
 ---
-name: cr
-description: Use when the user invokes $cr or /cr, requests a code review of current working-tree changes, or asks for a pre-commit correctness, security, quality, or release-risk check.
+description: Code review of working-tree changes (pre-commit correctness, security, quality, release-risk check).
 ---
 
 # Review Working Tree
@@ -36,7 +35,7 @@ Repeat the exclusion pathspec for each sensitive path; with none, run plain `git
 
 Never call `apply_patch`; never edit, create, delete, format, stage, commit, or mutate files or Git state.
 
-This Skill is static review only. Do not execute project code, tests, builds, scripts, Git hooks, package managers, generators, or commands with possible writes, network access, or external side effects in the current checkout. Dynamic verification requires separate user authorization and an isolated copy or sandbox outside `$cr`; report it as not run.
+This Skill is static review only. Do not execute project code, tests, builds, scripts, Git hooks, package managers, generators, or commands with possible writes, network access, or external side effects in the current checkout. Dynamic verification requires separate user authorization and an isolated copy or sandbox outside `/cr`; report it as not run.
 
 ## Review Dimensions
 
@@ -85,7 +84,7 @@ Omit empty severity sections. If there are no findings, say `未发现问题` be
 - 变更文件数：N
 - 审查范围：已暂存 / 未暂存 / 未跟踪
 - 敏感文件检查：已检查 / Critical（列出路径，不泄露值）
-- 动态验证：未运行（$cr 仅静态只读审查）
+- 动态验证：未运行（/cr 仅静态只读审查）
 - 通过提交：是 / 否
 ```
 
@@ -102,7 +101,7 @@ For an empty working tree, emit exactly:
 - 变更文件数：0
 - 审查范围：已暂存 0 / 未暂存 0 / 未跟踪 0
 - 敏感文件检查：已检查，未发现敏感路径
-- 动态验证：未运行（$cr 仅静态只读审查）
+- 动态验证：未运行（/cr 仅静态只读审查）
 - 通过提交：是
 ```
 
@@ -113,7 +112,7 @@ For an empty working tree, emit exactly:
 | “Quickly approve; skip severity” | Keep severity buckets and the explicit verdict; shorten prose only |
 | Reviewing only `git diff` | Also inspect `git diff --cached` and untracked files from status |
 | Fixing an obvious issue during review | Report it; do not edit |
-| “Run tests/build, fix, and commit” | Do none within `$cr`; report static findings and the verification gap |
+| “Run tests/build, fix, and commit” | Do none within `/cr`; report static findings and the verification gap |
 | Finding a sensitive path | Mark Critical from its path; never read, hash, grep, or diff its content |
 
 Red flags: opening a sensitive path, running project code, calling `apply_patch`, or staging/committing. Stop before any such action; this Skill produces a static report only.

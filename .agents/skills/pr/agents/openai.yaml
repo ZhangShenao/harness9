@@ -1,4 +1,0 @@
-interface:
-  display_name: "Open Draft Pull Request"
-  short_description: "Push a feature branch and open a safe draft pull request"
-  default_prompt: "Use $pr to push the current feature branch and open a draft pull request."
