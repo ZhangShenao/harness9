@@ -75,3 +75,56 @@ func TestRejectPlanViaCommand(t *testing.T) {
 		t.Fatalf("reject not applied: %v", rejectRes.Error)
 	}
 }
+
+func TestPauseAndResumeMission(t *testing.T) {
+	store := newTestStore(t)
+	cs := NewCommandService(store)
+	ctx := context.Background()
+	m, _ := store.CreateMission(ctx, CreateMissionInput{Goal: "ship feature"})
+	// move to running first
+	store.db.ExecContext(ctx, `UPDATE missions SET status = ? WHERE id = ?`, MissionRunning, m.ID)
+
+	pauseRes := cs.Execute(ctx, Command{
+		Kind: CmdPauseMission, Actor: "operator", Target: m.ID,
+		IdempotencyKey: "pause-1", Reason: "investigating",
+	})
+	if !pauseRes.Applied {
+		t.Fatalf("pause not applied: %v", pauseRes.Error)
+	}
+	// pause maps to needs_attention
+	updated, _ := cs.getMission(ctx, m.ID)
+	if updated.Status != MissionNeedsAttention {
+		t.Fatalf("status = %q, want needs_attention", updated.Status)
+	}
+
+	resumeRes := cs.Execute(ctx, Command{
+		Kind: CmdResumeMission, Actor: "operator", Target: m.ID,
+		IdempotencyKey: "resume-1", Reason: "resolved",
+	})
+	if !resumeRes.Applied {
+		t.Fatalf("resume not applied: %v", resumeRes.Error)
+	}
+	updated, _ = cs.getMission(ctx, m.ID)
+	if updated.Status != MissionRunning {
+		t.Fatalf("status = %q, want running", updated.Status)
+	}
+}
+
+func TestCancelMissionFromRunning(t *testing.T) {
+	store := newTestStore(t)
+	cs := NewCommandService(store)
+	ctx := context.Background()
+	m, _ := store.CreateMission(ctx, CreateMissionInput{Goal: "ship feature"})
+	store.db.ExecContext(ctx, `UPDATE missions SET status = ? WHERE id = ?`, MissionRunning, m.ID)
+	res := cs.Execute(ctx, Command{
+		Kind: CmdCancelMission, Actor: "operator", Target: m.ID,
+		IdempotencyKey: "cancel-1",
+	})
+	if !res.Applied {
+		t.Fatalf("cancel not applied: %v", res.Error)
+	}
+	updated, _ := cs.getMission(ctx, m.ID)
+	if updated.Status != MissionCancelled {
+		t.Fatalf("status = %q, want cancelled", updated.Status)
+	}
+}

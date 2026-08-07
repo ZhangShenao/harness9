@@ -102,11 +102,51 @@ func (cs *CommandService) dispatch(ctx context.Context, cmd Command) (commandOut
 		return cs.handleApproveChange(ctx, cmd)
 	case CmdRejectChange:
 		return cs.handleRejectChange(ctx, cmd)
+	case CmdPauseMission:
+		return cs.handlePauseMission(ctx, cmd)
+	case CmdResumeMission:
+		return cs.handleResumeMission(ctx, cmd)
 	case CmdCancelMission:
 		return cs.handleCancelMission(ctx, cmd)
 	default:
 		return commandOutcome{}, fmt.Errorf("unsupported command kind %q", cmd.Kind)
 	}
+}
+
+func (cs *CommandService) handlePauseMission(ctx context.Context, cmd Command) (commandOutcome, error) {
+	mission, err := cs.getMission(ctx, cmd.Target)
+	if err != nil {
+		return commandOutcome{}, err
+	}
+	before := string(mission.Status)
+	if !validMissionTransition(mission.Status, MissionNeedsAttention) {
+		return commandOutcome{}, fmt.Errorf("%w: mission %s cannot pause from %s", ErrInvalidTransition, cmd.Target, mission.Status)
+	}
+	if _, err := cs.store.db.ExecContext(ctx,
+		`UPDATE missions SET status = ?, updated_at = ? WHERE id = ?`,
+		MissionNeedsAttention, unixMillis(time.Now().UTC()), cmd.Target); err != nil {
+		return commandOutcome{}, fmt.Errorf("pause mission: %w", err)
+	}
+	return commandOutcome{MissionID: cmd.Target, TargetID: cmd.Target,
+		BeforeState: before, AfterState: string(MissionNeedsAttention)}, nil
+}
+
+func (cs *CommandService) handleResumeMission(ctx context.Context, cmd Command) (commandOutcome, error) {
+	mission, err := cs.getMission(ctx, cmd.Target)
+	if err != nil {
+		return commandOutcome{}, err
+	}
+	before := string(mission.Status)
+	if !validMissionTransition(mission.Status, MissionRunning) {
+		return commandOutcome{}, fmt.Errorf("%w: mission %s cannot resume from %s", ErrInvalidTransition, cmd.Target, mission.Status)
+	}
+	if _, err := cs.store.db.ExecContext(ctx,
+		`UPDATE missions SET status = ?, updated_at = ? WHERE id = ?`,
+		MissionRunning, unixMillis(time.Now().UTC()), cmd.Target); err != nil {
+		return commandOutcome{}, fmt.Errorf("resume mission: %w", err)
+	}
+	return commandOutcome{MissionID: cmd.Target, TargetID: cmd.Target,
+		BeforeState: before, AfterState: string(MissionRunning)}, nil
 }
 
 func (cs *CommandService) handleSubmitPlanDraft(ctx context.Context, cmd Command) (commandOutcome, error) {
