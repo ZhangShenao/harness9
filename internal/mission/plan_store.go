@@ -3,6 +3,7 @@ package mission
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -152,4 +153,136 @@ func (s *Store) ListPlanVersions(ctx context.Context, missionID string) ([]PlanV
 		versions = append(versions, pv)
 	}
 	return versions, rows.Err()
+}
+
+// CreateChangeRequest records a pending Plan change proposal.
+func (s *Store) CreateChangeRequest(ctx context.Context, cr PlanChangeRequest) (PlanChangeRequest, error) {
+	if cr.MissionID == "" || cr.Reason == "" {
+		return PlanChangeRequest{}, fmt.Errorf("mission ID and reason are required")
+	}
+	affectedJSON, _ := json.Marshal(cr.AffectedTasks)
+	addedJSON, _ := json.Marshal(cr.AddedTasks)
+	cr.ID = newID()
+	cr.Status = ChangePending
+	cr.CreatedAt = time.Now().UTC()
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO plan_change_requests (id, mission_id, reason, trigger_attempt_id, affected_tasks, added_tasks, proposed_plan_json, status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		cr.ID, cr.MissionID, cr.Reason, cr.TriggerAttemptID, string(affectedJSON), string(addedJSON),
+		cr.ProposedPlanJSON, cr.Status, unixMillis(cr.CreatedAt)); err != nil {
+		return PlanChangeRequest{}, fmt.Errorf("insert change request: %w", err)
+	}
+	return cr, nil
+}
+
+// GetChangeRequest reads a PlanChangeRequest by ID.
+func (s *Store) GetChangeRequest(ctx context.Context, id string) (PlanChangeRequest, error) {
+	var cr PlanChangeRequest
+	var affectedJSON, addedJSON string
+	var reviewedAt sql.NullInt64
+	var createdAt int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, mission_id, reason, trigger_attempt_id, affected_tasks, added_tasks,
+			proposed_plan_json, status, reviewed_by, reviewed_at, review_reason, created_at
+		FROM plan_change_requests WHERE id = ?`, id).
+		Scan(&cr.ID, &cr.MissionID, &cr.Reason, &cr.TriggerAttemptID, &affectedJSON, &addedJSON,
+			&cr.ProposedPlanJSON, &cr.Status, &cr.ReviewedBy, &reviewedAt, &cr.ReviewReason, &createdAt)
+	if err == sql.ErrNoRows {
+		return PlanChangeRequest{}, ErrNotFound
+	}
+	if err != nil {
+		return PlanChangeRequest{}, fmt.Errorf("get change request: %w", err)
+	}
+	_ = json.Unmarshal([]byte(affectedJSON), &cr.AffectedTasks)
+	_ = json.Unmarshal([]byte(addedJSON), &cr.AddedTasks)
+	if reviewedAt.Valid {
+		t := fromUnixMillis(reviewedAt.Int64)
+		cr.ReviewedAt = &t
+	}
+	cr.CreatedAt = fromUnixMillis(createdAt)
+	return cr, nil
+}
+
+// ReviewChangeRequest approves or rejects a pending PlanChangeRequest.
+func (s *Store) ReviewChangeRequest(ctx context.Context, id string, status ChangeRequestStatus, reviewer, reason string) (PlanChangeRequest, error) {
+	if status != ChangeApproved && status != ChangeRejected {
+		return PlanChangeRequest{}, fmt.Errorf("invalid review status %q", status)
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE plan_change_requests SET status = ?, reviewed_by = ?, reviewed_at = ?, review_reason = ?
+		WHERE id = ? AND status = ?`,
+		status, reviewer, unixMillis(now), reason, id, ChangePending)
+	if err != nil {
+		return PlanChangeRequest{}, fmt.Errorf("review change request: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return PlanChangeRequest{}, fmt.Errorf("%w: change request %s is not pending", ErrInvalidTransition, id)
+	}
+	return s.GetChangeRequest(ctx, id)
+}
+
+// ListPendingChangeRequests returns all pending change requests for a Mission.
+func (s *Store) ListPendingChangeRequests(ctx context.Context, missionID string) ([]PlanChangeRequest, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, mission_id, reason, trigger_attempt_id, affected_tasks, added_tasks,
+			proposed_plan_json, status, reviewed_by, reviewed_at, review_reason, created_at
+		FROM plan_change_requests WHERE mission_id = ? AND status = ? ORDER BY created_at`, missionID, ChangePending)
+	if err != nil {
+		return nil, fmt.Errorf("list pending change requests: %w", err)
+	}
+	defer rows.Close()
+	var reqs []PlanChangeRequest
+	for rows.Next() {
+		var cr PlanChangeRequest
+		var affectedJSON, addedJSON string
+		var reviewedAt sql.NullInt64
+		var createdAt int64
+		if err := rows.Scan(&cr.ID, &cr.MissionID, &cr.Reason, &cr.TriggerAttemptID, &affectedJSON, &addedJSON,
+			&cr.ProposedPlanJSON, &cr.Status, &cr.ReviewedBy, &reviewedAt, &cr.ReviewReason, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan change request: %w", err)
+		}
+		_ = json.Unmarshal([]byte(affectedJSON), &cr.AffectedTasks)
+		_ = json.Unmarshal([]byte(addedJSON), &cr.AddedTasks)
+		if reviewedAt.Valid {
+			t := fromUnixMillis(reviewedAt.Int64)
+			cr.ReviewedAt = &t
+		}
+		cr.CreatedAt = fromUnixMillis(createdAt)
+		reqs = append(reqs, cr)
+	}
+	return reqs, rows.Err()
+}
+
+// SetPolicy stores a Policy for a Mission (upsert).
+func (s *Store) SetPolicy(ctx context.Context, missionID string, p Policy) error {
+	data, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshal policy: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO policies (mission_id, policy_json) VALUES (?, ?)
+		 ON CONFLICT(mission_id) DO UPDATE SET policy_json = excluded.policy_json`,
+		missionID, string(data))
+	if err != nil {
+		return fmt.Errorf("set policy: %w", err)
+	}
+	return nil
+}
+
+// GetPolicy reads a Mission's Policy, returning DefaultPolicy if none set.
+func (s *Store) GetPolicy(ctx context.Context, missionID string) (Policy, error) {
+	var data string
+	err := s.db.QueryRowContext(ctx, `SELECT policy_json FROM policies WHERE mission_id = ?`, missionID).Scan(&data)
+	if err == sql.ErrNoRows {
+		return DefaultPolicy(), nil
+	}
+	if err != nil {
+		return Policy{}, fmt.Errorf("get policy: %w", err)
+	}
+	var p Policy
+	if err := json.Unmarshal([]byte(data), &p); err != nil {
+		return Policy{}, fmt.Errorf("unmarshal policy: %w", err)
+	}
+	return p, nil
 }

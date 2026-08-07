@@ -63,3 +63,43 @@ func TestApproveSecondPlanSupersedesFirst(t *testing.T) {
 		t.Fatalf("old plan status = %q, want superseded", old.Status)
 	}
 }
+
+func TestCreateAndReviewChangeRequest(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	m, _ := store.CreateMission(ctx, CreateMissionInput{Goal: "ship feature"})
+	cr, err := store.CreateChangeRequest(ctx, PlanChangeRequest{
+		MissionID: m.ID, Reason: "need extra task", ProposedPlanJSON: `[]`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cr.Status != ChangePending {
+		t.Fatalf("status = %q, want pending", cr.Status)
+	}
+	reviewed, err := store.ReviewChangeRequest(ctx, cr.ID, ChangeApproved, "operator", "looks good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.Status != ChangeApproved || reviewed.ReviewedBy != "operator" {
+		t.Fatalf("reviewed = %+v", reviewed)
+	}
+}
+
+func TestPolicyRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	m, _ := store.CreateMission(ctx, CreateMissionInput{Goal: "ship feature"})
+	p := DefaultPolicy()
+	p.MissionConcurrency = 3
+	if err := store.SetPolicy(ctx, m.ID, p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetPolicy(ctx, m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MissionConcurrency != 3 {
+		t.Fatalf("concurrency = %d, want 3", got.MissionConcurrency)
+	}
+}
