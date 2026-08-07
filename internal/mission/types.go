@@ -233,3 +233,113 @@ func validMissionTransition(current, next MissionStatus) bool {
 		return false
 	}
 }
+
+// PlanStatus describes the lifecycle of a Plan draft.
+type PlanStatus string
+
+const (
+	PlanDraft      PlanStatus = "draft"
+	PlanApproved   PlanStatus = "approved"
+	PlanSuperseded PlanStatus = "superseded"
+)
+
+// Plan is an editable task graph draft that becomes an immutable PlanVersion on approval.
+type Plan struct {
+	ID        string
+	MissionID string
+	Version   int
+	Status    PlanStatus
+	TasksJSON string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// PlanVersion is an immutable snapshot of an approved Plan -- the only schedulable version.
+type PlanVersion struct {
+	ID        string
+	MissionID string
+	PlanID    string
+	Version   int
+	TasksJSON string
+	CreatedAt time.Time
+}
+
+// ChangeRequestStatus describes a PlanChangeRequest lifecycle.
+type ChangeRequestStatus string
+
+const (
+	ChangePending  ChangeRequestStatus = "pending"
+	ChangeApproved ChangeRequestStatus = "approved"
+	ChangeRejected ChangeRequestStatus = "rejected"
+)
+
+// PlanChangeRequest is an execution-time proposal to modify the approved Plan.
+type PlanChangeRequest struct {
+	ID               string
+	MissionID        string
+	Reason           string
+	TriggerAttemptID string
+	AffectedTasks    []string
+	AddedTasks       []TaskInput
+	ProposedPlanJSON string
+	Status           ChangeRequestStatus
+	ReviewedBy       string
+	ReviewedAt       *time.Time
+	ReviewReason     string
+	CreatedAt        time.Time
+}
+
+// Policy defines per-Mission concurrency, tool scope, budget and retry rules.
+type Policy struct {
+	MissionConcurrency int      `json:"mission_concurrency"`
+	GlobalConcurrency  int      `json:"global_concurrency"`
+	MaxRetries         int      `json:"max_retries"`
+	AllowedTools       []string `json:"allowed_tools,omitempty"`
+	AutoApproveRetries bool     `json:"auto_approve_retries"`
+}
+
+// DefaultPolicy returns a conservative default Policy for new Missions.
+func DefaultPolicy() Policy {
+	return Policy{
+		MissionConcurrency: 1,
+		GlobalConcurrency:  2,
+		MaxRetries:         2,
+	}
+}
+
+// LeaseStatus describes a WorkspaceLease lifecycle.
+type LeaseStatus string
+
+const (
+	LeaseActive   LeaseStatus = "active"
+	LeaseReleased LeaseStatus = "released"
+	LeaseExpired  LeaseStatus = "expired"
+)
+
+// WorkspaceLease grants a Task exclusive access to a worktree, branch and sandbox.
+type WorkspaceLease struct {
+	ID         string
+	TaskID     string
+	Path       string
+	Branch     string
+	SandboxID  string
+	Status     LeaseStatus
+	ExpiresAt  time.Time
+	CreatedAt  time.Time
+	ReleasedAt *time.Time
+}
+
+// AuditEvent is an immutable record of one Command execution.
+type AuditEvent struct {
+	ID             string
+	MissionID      string
+	CommandKind    string
+	Actor          string
+	Target         string
+	Reason         string
+	IdempotencyKey string
+	Result         string
+	BeforeState    string
+	AfterState     string
+	CreatedAt      time.Time
+}

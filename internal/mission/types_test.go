@@ -57,3 +57,25 @@ func TestTaskInputFields(t *testing.T) {
 		t.Fatalf("tokens = %d", in.Budget.MaxTokens)
 	}
 }
+
+func TestPlanStatusConstants(t *testing.T) {
+	if string(PlanDraft) != "draft" || string(PlanApproved) != "approved" || string(PlanSuperseded) != "superseded" {
+		t.Fatal("PlanStatus constants mismatch")
+	}
+}
+
+func TestLeaseStatusConstants(t *testing.T) {
+	if string(LeaseActive) != "active" || string(LeaseReleased) != "released" || string(LeaseExpired) != "expired" {
+		t.Fatal("LeaseStatus constants mismatch")
+	}
+}
+
+func TestPolicyDefaults(t *testing.T) {
+	p := DefaultPolicy()
+	if p.MissionConcurrency != 1 {
+		t.Fatalf("default mission concurrency = %d, want 1", p.MissionConcurrency)
+	}
+	if p.GlobalConcurrency != 2 {
+		t.Fatalf("default global concurrency = %d, want 2", p.GlobalConcurrency)
+	}
+}
