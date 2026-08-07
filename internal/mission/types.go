@@ -62,34 +62,76 @@ const (
 	TaskIndeterminate TaskStatus = "indeterminate"
 )
 
+// ContractKind describes how a Task is executed by the scheduler.
+type ContractKind string
+
+const (
+	// ContractImplementation drives a Worker to produce new artifacts.
+	ContractImplementation ContractKind = "implementation"
+	// ContractVerification drives a Worker to independently verify existing artifacts.
+	ContractVerification ContractKind = "verification"
+	// ContractIntegration drives a Worker to combine artifacts across Tasks.
+	ContractIntegration ContractKind = "integration"
+)
+
+// Budget constrains a single Task Attempt's resource usage.
+type Budget struct {
+	MaxTokens  int `json:"max_tokens"`
+	MaxTurns   int `json:"max_turns"`
+	MaxSeconds int `json:"max_seconds"`
+}
+
+// TaskInput is the Contract that drives a Worker's behavior for one Task.
+type TaskInput struct {
+	Kind         ContractKind `json:"kind"`
+	Goal         string       `json:"goal"`
+	DependsOn    []string     `json:"depends_on,omitempty"`
+	Acceptance   []string     `json:"acceptance,omitempty"`
+	AllowedTools []string     `json:"allowed_tools,omitempty"`
+	Budget       Budget       `json:"budget"`
+	MaxRetries   int          `json:"max_retries"`
+	SettingsPath string       `json:"settings_path,omitempty"`
+}
+
 // Mission is the durable unit of long-running user intent.
 type Mission struct {
-	ID        string
-	Goal      string
-	Status    MissionStatus
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                 string
+	Goal               string
+	Status             MissionStatus
+	PolicyJSON         string
+	AcceptanceContract string
+	CurrentPlanVersion string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // Task is a dependency-aware unit of work within one Mission.
 type Task struct {
-	ID        string
-	MissionID string
-	Title     string
-	Status    TaskStatus
-	DependsOn []string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID            string
+	MissionID     string
+	Title         string
+	Status        TaskStatus
+	DependsOn     []string
+	PlanVersionID string
+	ContractKind  ContractKind
+	Input         TaskInput
+	MaxRetries    int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // TaskAttempt records one Worker execution of a Task.
 type TaskAttempt struct {
-	ID        string
-	TaskID    string
-	Worker    string
-	Status    string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID         string
+	TaskID     string
+	Worker     string
+	Status     string
+	LeaseID    string
+	ExitReason string
+	StartedAt  *time.Time
+	FinishedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // Artifact is append-only Worker output associated with one execution attempt.
@@ -160,6 +202,33 @@ func validTaskTransition(current, next TaskStatus) bool {
 		return next == TaskVerifying || next == TaskFailed || next == TaskAwaitingInput || next == TaskIndeterminate
 	case TaskVerifying:
 		return next == TaskSucceeded || next == TaskFailed || next == TaskAwaitingInput
+	default:
+		return false
+	}
+}
+
+// validMissionTransition reports whether a Mission may move from current to next.
+// Terminal states (succeeded, failed, cancelled) cannot resume, while
+// needs_attention is the recovery hub for operator-driven re-entry.
+// Draft -> Planning is a one-way commitment: once planning begins, the draft
+// phase is closed and the Mission may only advance to ready or be cancelled.
+func validMissionTransition(current, next MissionStatus) bool {
+	switch current {
+	case MissionDraft:
+		return next == MissionPlanning
+	case MissionPlanning:
+		return next == MissionReady || next == MissionCancelled
+	case MissionReady:
+		return next == MissionRunning || next == MissionCancelled
+	case MissionRunning:
+		return next == MissionVerifying || next == MissionNeedsAttention ||
+			next == MissionFailed || next == MissionCancelled
+	case MissionVerifying:
+		return next == MissionSucceeded || next == MissionNeedsAttention ||
+			next == MissionFailed || next == MissionCancelled
+	case MissionNeedsAttention:
+		return next == MissionRunning || next == MissionVerifying ||
+			next == MissionFailed || next == MissionCancelled
 	default:
 		return false
 	}
