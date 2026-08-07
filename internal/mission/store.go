@@ -629,6 +629,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate missions.%s: %w", c.col, err)
 		}
 	}
+	leaseCols := []struct{ col, typ string }{
+		{"branch", "TEXT"},
+		{"sandbox_id", "TEXT"},
+	}
+	for _, c := range leaseCols {
+		if err := addColumnIfMissing(ctx, s.db, "workspace_leases", c.col, c.typ); err != nil {
+			return fmt.Errorf("migrate workspace_leases.%s: %w", c.col, err)
+		}
+	}
 	return nil
 }
 
