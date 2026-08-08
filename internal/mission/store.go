@@ -197,6 +197,10 @@ func NewStore(db *sql.DB) (*Store, error) {
 	return s, nil
 }
 
+// DB returns the underlying database connection for scheduler queries
+// that don't have dedicated Store methods yet.
+func (s *Store) DB() *sql.DB { return s.db }
+
 // CreateMission creates a draft Mission with the supplied user goal.
 func (s *Store) CreateMission(ctx context.Context, in CreateMissionInput) (Mission, error) {
 	goal := strings.TrimSpace(in.Goal)
