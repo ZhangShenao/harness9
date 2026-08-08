@@ -128,6 +128,7 @@ func (s *Scheduler) handleResult(ctx context.Context, task mission.Task, attempt
 	case "succeeded":
 		s.store.TransitionTask(ctx, task.ID, mission.TaskVerifying)
 		s.store.TransitionTask(ctx, task.ID, mission.TaskSucceeded)
+		s.store.TryCompleteMission(ctx, task.MissionID)
 	case "failed":
 		s.store.TransitionTask(ctx, task.ID, mission.TaskFailed)
 	case "indeterminate":
