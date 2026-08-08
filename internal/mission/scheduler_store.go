@@ -11,7 +11,7 @@ import (
 // satisfied, and belong to a mission with an active (approved) plan version.
 func (s *Store) ListSchedulableTasks(ctx context.Context) ([]Task, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT t.id, t.mission_id, t.title, t.status, t.created_at, t.updated_at
+		SELECT t.id, t.mission_id, t.title, t.status, t.created_at, t.updated_at, t.contract_kind
 		FROM tasks t
 		JOIN missions m ON m.id = t.mission_id
 		WHERE t.status = ? AND m.current_plan_version IS NOT NULL AND m.current_plan_version != ''
@@ -22,9 +22,18 @@ func (s *Store) ListSchedulableTasks(ctx context.Context) ([]Task, error) {
 	defer rows.Close()
 	var tasks []Task
 	for rows.Next() {
-		task, err := scanTask(rows)
-		if err != nil {
-			return nil, err
+		var task Task
+		var createdAt, updatedAt int64
+		var contractKind sql.NullString
+		if err := rows.Scan(&task.ID, &task.MissionID, &task.Title, &task.Status, &createdAt, &updatedAt, &contractKind); err != nil {
+			return nil, fmt.Errorf("scan schedulable task: %w", err)
+		}
+		task.CreatedAt = fromUnixMillis(createdAt)
+		task.UpdatedAt = fromUnixMillis(updatedAt)
+		if contractKind.Valid {
+			task.ContractKind = ContractKind(contractKind.String)
+		} else {
+			task.ContractKind = ContractImplementation
 		}
 		task.DependsOn, err = s.taskDependencies(ctx, task.ID)
 		if err != nil {
