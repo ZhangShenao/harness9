@@ -237,11 +237,15 @@ func (s *Store) ListPendingChangeRequests(ctx context.Context, missionID string)
 		var cr PlanChangeRequest
 		var affectedJSON, addedJSON string
 		var reviewedAt sql.NullInt64
+		var reviewedBy, reviewReason, triggerAttempt sql.NullString
 		var createdAt int64
-		if err := rows.Scan(&cr.ID, &cr.MissionID, &cr.Reason, &cr.TriggerAttemptID, &affectedJSON, &addedJSON,
-			&cr.ProposedPlanJSON, &cr.Status, &cr.ReviewedBy, &reviewedAt, &cr.ReviewReason, &createdAt); err != nil {
+		if err := rows.Scan(&cr.ID, &cr.MissionID, &cr.Reason, &triggerAttempt, &affectedJSON, &addedJSON,
+			&cr.ProposedPlanJSON, &cr.Status, &reviewedBy, &reviewedAt, &reviewReason, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan change request: %w", err)
 		}
+		cr.TriggerAttemptID = triggerAttempt.String
+		cr.ReviewedBy = reviewedBy.String
+		cr.ReviewReason = reviewReason.String
 		_ = json.Unmarshal([]byte(affectedJSON), &cr.AffectedTasks)
 		_ = json.Unmarshal([]byte(addedJSON), &cr.AddedTasks)
 		if reviewedAt.Valid {
