@@ -128,7 +128,7 @@ func (s *Store) GetLatestAttempt(ctx context.Context, taskID string) (TaskAttemp
 	var startedAt, finishedAt sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, task_id, worker, status, created_at, updated_at
-		FROM task_attempts WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`, taskID).
+		FROM task_attempts WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`, taskID).
 		Scan(&a.ID, &a.TaskID, &a.Worker, &a.Status, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return TaskAttempt{}, ErrNotFound
