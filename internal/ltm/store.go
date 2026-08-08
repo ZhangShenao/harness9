@@ -49,7 +49,40 @@ func NewStore(db *sql.DB) (*Store, error) {
 	if _, err := db.Exec(ltmSchema); err != nil {
 		return nil, fmt.Errorf("初始化 ltm schema: %w", err)
 	}
+	if err := migrateLTM(db); err != nil {
+		return nil, fmt.Errorf("ltm migration: %w", err)
+	}
 	return &Store{db: db, now: time.Now}, nil
+}
+
+func migrateLTM(db *sql.DB) error {
+	for _, col := range []struct{ name, typ string }{
+		{"scope", "TEXT DEFAULT 'project'"},
+		{"scope_ref", "TEXT"},
+	} {
+		exists := false
+		rows, err := db.Query(`PRAGMA table_info(long_term_memories)`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var cid int
+			var n, t string
+			var nn, pk int
+			var dflt sql.NullString
+			rows.Scan(&cid, &n, &t, &nn, &dflt, &pk)
+			if n == col.name {
+				exists = true
+			}
+		}
+		rows.Close()
+		if !exists {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE long_term_memories ADD COLUMN %s %s`, col.name, col.typ)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // 全部列，供 scanEntry 复用。
