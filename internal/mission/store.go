@@ -267,7 +267,7 @@ func (s *Store) CreateTask(ctx context.Context, in CreateTaskInput) (Task, error
 // GetTask reads a Task and its dependency IDs.
 func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
 	task, err := scanTask(s.db.QueryRowContext(ctx,
-		`SELECT id, mission_id, title, status, created_at, updated_at FROM tasks WHERE id = ?`, id))
+		`SELECT id, mission_id, title, status, contract_kind, created_at, updated_at FROM tasks WHERE id = ?`, id))
 	if err != nil {
 		return Task{}, err
 	}
@@ -282,7 +282,7 @@ func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
 // ListTasks returns a Mission's Tasks in creation order.
 func (s *Store) ListTasks(ctx context.Context, missionID string) ([]Task, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, mission_id, title, status, created_at, updated_at FROM tasks WHERE mission_id = ? ORDER BY created_at, id`, missionID)
+		`SELECT id, mission_id, title, status, contract_kind, created_at, updated_at FROM tasks WHERE mission_id = ? ORDER BY created_at, id`, missionID)
 	if err != nil {
 		return nil, fmt.Errorf("list mission tasks: %w", err)
 	}
@@ -412,7 +412,7 @@ func (s *Store) TransitionTask(ctx context.Context, id string, next TaskStatus) 
 	}
 	defer func() { _ = tx.Rollback() }()
 	current, err := scanTask(tx.QueryRowContext(ctx,
-		`SELECT id, mission_id, title, status, created_at, updated_at FROM tasks WHERE id = ?`, id))
+		`SELECT id, mission_id, title, status, contract_kind, created_at, updated_at FROM tasks WHERE id = ?`, id))
 	if err != nil {
 		return Task{}, err
 	}
@@ -441,11 +441,17 @@ type rowScanner interface {
 func scanTask(row rowScanner) (Task, error) {
 	var task Task
 	var createdAt, updatedAt int64
-	if err := row.Scan(&task.ID, &task.MissionID, &task.Title, &task.Status, &createdAt, &updatedAt); err != nil {
+	var contractKind sql.NullString
+	if err := row.Scan(&task.ID, &task.MissionID, &task.Title, &task.Status, &contractKind, &createdAt, &updatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return Task{}, ErrNotFound
 		}
 		return Task{}, fmt.Errorf("scan task: %w", err)
+	}
+	if contractKind.Valid && contractKind.String != "" {
+		task.ContractKind = ContractKind(contractKind.String)
+	} else {
+		task.ContractKind = ContractImplementation
 	}
 	task.CreatedAt = fromUnixMillis(createdAt)
 	task.UpdatedAt = fromUnixMillis(updatedAt)
