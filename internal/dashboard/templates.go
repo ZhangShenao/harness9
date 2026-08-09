@@ -56,6 +56,16 @@ pre { background:#0d1117; padding:12px; border-radius:6px; overflow-x:auto; font
 
 const indexHTML = `{{define "content"}}
 <h1>Mission Control</h1>
+
+<div class="card">
+<h2>Create Mission</h2>
+<form method="POST" action="/create-mission">
+<textarea name="goal" placeholder="Describe the mission goal..." style="width:100%;height:60px;background:#0d1117;color:var(--text);border:1px solid var(--accent);border-radius:6px;padding:8px;font-size:0.9rem;"></textarea>
+<br><br>
+<button class="btn btn-green" type="submit">Create Mission</button>
+</form>
+</div>
+
 {{if .Missions}}
 <table>
 <tr><th>ID</th><th>Goal</th><th>Status</th><th>Tasks</th></tr>
@@ -69,7 +79,7 @@ const indexHTML = `{{define "content"}}
 {{end}}
 </table>
 {{else}}
-<p class="empty">No missions yet. Use <code>/mission &lt;goal&gt;</code> in the TUI to create one.</p>
+<p class="empty">No missions yet. Create one above or use <code>/mission &lt;goal&gt;</code> in the TUI.</p>
 {{end}}
 {{end}}`
 
@@ -80,6 +90,36 @@ const detailHTML = `{{define "content"}}
 <p><strong>Status:</strong> <span class="badge {{.Mission.Status}}">{{.Mission.Status}}</span></p>
 <p><strong>Created:</strong> {{.Mission.CreatedAt.Format "2006-01-02 15:04:05"}}</p>
 </div>
+
+{{if eq .Mission.Status "planning"}}
+<h2>Submit Plan</h2>
+<div class="card">
+<form method="POST" action="/command">
+<input type="hidden" name="kind" value="submit_plan_draft">
+<input type="hidden" name="target" value="{{.Mission.ID}}">
+<input type="hidden" name="redirect" value="/missions/{{.Mission.ID}}">
+<input type="hidden" name="idempotency_key" value="submit-{{.Mission.ID}}">
+<label>Task Definitions (JSON array):</label><br>
+<textarea name="tasks_json" style="width:100%;height:120px;background:#0d1117;color:var(--text);border:1px solid var(--accent);border-radius:6px;padding:8px;font-size:0.85rem;font-family:monospace;">[{"kind":"implementation","goal":"describe the task","acceptance":["go build ./... passes"],"budget":{"max_turns":50,"max_tokens":100000},"max_retries":2}]</textarea>
+<br><br>
+<button class="btn btn-blue" type="submit">Submit Plan Draft</button>
+</form>
+</div>
+{{end}}
+
+{{if .PlanVersions}}
+<h2>Plan Versions</h2>
+<table>
+<tr><th>Version</th><th>Plan ID</th><th>Created</th></tr>
+{{range .PlanVersions}}
+<tr>
+<td>v{{.Version}}</td>
+<td>{{.PlanID}}</td>
+<td>{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+</tr>
+{{end}}
+</table>
+{{end}}
 
 <h2>Tasks</h2>
 {{if .Tasks}}
@@ -96,7 +136,23 @@ const detailHTML = `{{define "content"}}
 {{end}}
 </table>
 {{else}}
-<p class="empty">No tasks.</p>
+<p class="empty">No tasks yet.</p>
+{{end}}
+
+{{if or (eq .Mission.Status "ready") (eq .Mission.Status "running") (eq .Mission.Status "needs_attention")}}
+<div class="card">
+<h2>Add Task</h2>
+<form method="POST" action="/add-task">
+<input type="hidden" name="mission_id" value="{{.Mission.ID}}">
+<input type="text" name="title" placeholder="Task title..." style="width:60%;background:#0d1117;color:var(--text);border:1px solid var(--accent);border-radius:6px;padding:6px;">
+<select name="contract_kind" style="background:#0d1117;color:var(--text);border:1px solid var(--accent);border-radius:6px;padding:6px;">
+<option value="implementation">implementation</option>
+<option value="verification">verification</option>
+<option value="integration">integration</option>
+</select>
+<button class="btn btn-blue" type="submit">Add</button>
+</form>
+</div>
 {{end}}
 
 <h2>Commands</h2>

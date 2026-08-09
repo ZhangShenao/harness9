@@ -33,6 +33,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/missions/", s.handleMissionDetail)
 	s.mux.HandleFunc("/command", s.handleCommand)
+	s.mux.HandleFunc("/create-mission", s.handleCreateMission)
+	s.mux.HandleFunc("/add-task", s.handleAddTask)
 	s.mux.HandleFunc("/api/missions", s.handleAPIMissions)
 }
 
@@ -70,12 +72,19 @@ func (s *Server) handleMissionDetail(w http.ResponseWriter, r *http.Request) {
 	tasks, _ := s.store.ListTasks(ctx, id)
 	auditEvents, _ := s.store.ListAuditEvents(ctx, id)
 	pendingCRs, _ := s.store.ListPendingChangeRequests(ctx, id)
+	planVersions, _ := s.store.ListPlanVersions(ctx, id)
+	var draftPlan *mission.Plan
+	if pv, err := s.store.GetActivePlanVersion(ctx, id); err == nil {
+		_ = pv
+	}
 	renderPage(w, "detail", map[string]any{
-		"Title":       "Mission " + id[:8],
-		"Mission":     m,
-		"Tasks":       tasks,
-		"AuditEvents": auditEvents,
-		"PendingCRs":  pendingCRs,
+		"Title":        "Mission " + id[:8],
+		"Mission":      m,
+		"Tasks":        tasks,
+		"AuditEvents":  auditEvents,
+		"PendingCRs":   pendingCRs,
+		"PlanVersions": planVersions,
+		"DraftPlan":    draftPlan,
 	})
 }
 
@@ -107,6 +116,59 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, r.FormValue("redirect"), http.StatusFound)
+}
+
+func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	goal := strings.TrimSpace(r.FormValue("goal"))
+	if goal == "" {
+		http.Error(w, "goal is required", http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	m, err := s.store.CreateMission(ctx, mission.CreateMissionInput{Goal: goal})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.store.TransitionMission(ctx, m.ID, mission.MissionPlanning)
+	http.Redirect(w, r, "/missions/"+m.ID, http.StatusFound)
+}
+
+func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	missionID := r.FormValue("mission_id")
+	title := strings.TrimSpace(r.FormValue("title"))
+	if missionID == "" || title == "" {
+		http.Error(w, "mission_id and title are required", http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	task, err := s.store.CreateTask(ctx, mission.CreateTaskInput{MissionID: missionID, Title: title})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	contractKind := r.FormValue("contract_kind")
+	if contractKind == "" {
+		contractKind = "implementation"
+	}
+	s.store.DB().ExecContext(ctx, `UPDATE tasks SET contract_kind = ? WHERE id = ?`, contractKind, task.ID)
+	http.Redirect(w, r, "/missions/"+missionID, http.StatusFound)
 }
 
 func (s *Server) handleAPIMissions(w http.ResponseWriter, r *http.Request) {
