@@ -68,6 +68,12 @@ func main() {
 		return
 	}
 
+	// dashboard 子命令：启动 Mission Control Dashboard
+	if len(os.Args) > 1 && os.Args[1] == "dashboard" {
+		runDashboard(os.Args[2:])
+		return
+	}
+
 	versionMode := flag.Bool("version", false, "打印版本号并退出")
 	promptFile := flag.String("prompt-file", "", "从文件读取完整 prompt，非交互执行一次后退出（用于评测/CI 场景）")
 	flag.Usage = func() {
@@ -84,6 +90,7 @@ Flags:
 
 命令:
   upgrade     升级 harness9 到最新版本
+  dashboard   启动 Mission Control Dashboard（本地 Web 控制台）
 
 环境变量:
   LLM_MODEL        模型名称（默认: openai/gpt-4o-mini）

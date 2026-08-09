@@ -133,3 +133,41 @@ func newTestStore(t *testing.T) *Store {
 	}
 	return store
 }
+
+func TestStoreMigrationAddsPlanTables(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	for _, table := range []string{"plans", "plan_versions", "plan_change_requests", "policies", "audit_events"} {
+		var name string
+		err := store.db.QueryRowContext(ctx,
+			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
+		if err != nil {
+			t.Fatalf("table %s missing after migration: %v", table, err)
+		}
+	}
+}
+
+func TestStoreMigrationAddsTaskColumns(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	cols, err := store.columnNames(ctx, "tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"plan_version_id": true, "contract_kind": true,
+		"input_json": true, "budget_json": true, "max_retries": true,
+	}
+	for c := range want {
+		if !cols[c] {
+			t.Fatalf("column %s missing from tasks table", c)
+		}
+	}
+}
+
+func TestStoreMigrationIsIdempotent(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.migrate(context.Background()); err != nil {
+		t.Fatalf("second migration failed: %v", err)
+	}
+}

@@ -109,6 +109,68 @@ BEFORE UPDATE ON artifacts
 BEGIN
     SELECT RAISE(ABORT, 'artifact is immutable');
 END;
+
+CREATE TABLE IF NOT EXISTS plans (
+    id         TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    status     TEXT NOT NULL,
+    tasks_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS plan_versions (
+    id         TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL,
+    plan_id    TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    tasks_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
+    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS plan_change_requests (
+    id                 TEXT PRIMARY KEY,
+    mission_id         TEXT NOT NULL,
+    reason             TEXT NOT NULL,
+    trigger_attempt_id TEXT,
+    affected_tasks     TEXT,
+    added_tasks        TEXT,
+    proposed_plan_json TEXT NOT NULL,
+    status             TEXT NOT NULL,
+    reviewed_by        TEXT,
+    reviewed_at        INTEGER,
+    review_reason      TEXT,
+    created_at         INTEGER NOT NULL,
+    FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS policies (
+    mission_id TEXT PRIMARY KEY,
+    policy_json TEXT NOT NULL,
+    FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+    id              TEXT PRIMARY KEY,
+    mission_id      TEXT NOT NULL,
+    command_kind    TEXT NOT NULL,
+    actor           TEXT NOT NULL,
+    target          TEXT,
+    reason          TEXT,
+    idempotency_key TEXT,
+    result          TEXT NOT NULL,
+    before_state    TEXT,
+    after_state     TEXT,
+    created_at      INTEGER NOT NULL,
+    FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_mission ON audit_events(mission_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_plan_change_requests_mission ON plan_change_requests(mission_id, status);
 `
 
 // Store is the SQLite-backed source of truth for Mission Control state.
@@ -128,8 +190,16 @@ func NewStore(db *sql.DB) (*Store, error) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		return nil, fmt.Errorf("initialize mission schema: %w", err)
 	}
-	return &Store{db: db}, nil
+	s := &Store{db: db}
+	if err := s.migrate(context.Background()); err != nil {
+		return nil, fmt.Errorf("mission migration: %w", err)
+	}
+	return s, nil
 }
+
+// DB returns the underlying database connection for scheduler queries
+// that don't have dedicated Store methods yet.
+func (s *Store) DB() *sql.DB { return s.db }
 
 // CreateMission creates a draft Mission with the supplied user goal.
 func (s *Store) CreateMission(ctx context.Context, in CreateMissionInput) (Mission, error) {
@@ -197,7 +267,7 @@ func (s *Store) CreateTask(ctx context.Context, in CreateTaskInput) (Task, error
 // GetTask reads a Task and its dependency IDs.
 func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
 	task, err := scanTask(s.db.QueryRowContext(ctx,
-		`SELECT id, mission_id, title, status, created_at, updated_at FROM tasks WHERE id = ?`, id))
+		`SELECT id, mission_id, title, status, contract_kind, created_at, updated_at FROM tasks WHERE id = ?`, id))
 	if err != nil {
 		return Task{}, err
 	}
@@ -212,7 +282,7 @@ func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
 // ListTasks returns a Mission's Tasks in creation order.
 func (s *Store) ListTasks(ctx context.Context, missionID string) ([]Task, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, mission_id, title, status, created_at, updated_at FROM tasks WHERE mission_id = ? ORDER BY created_at, id`, missionID)
+		`SELECT id, mission_id, title, status, contract_kind, created_at, updated_at FROM tasks WHERE mission_id = ? ORDER BY created_at, id`, missionID)
 	if err != nil {
 		return nil, fmt.Errorf("list mission tasks: %w", err)
 	}
@@ -342,7 +412,7 @@ func (s *Store) TransitionTask(ctx context.Context, id string, next TaskStatus) 
 	}
 	defer func() { _ = tx.Rollback() }()
 	current, err := scanTask(tx.QueryRowContext(ctx,
-		`SELECT id, mission_id, title, status, created_at, updated_at FROM tasks WHERE id = ?`, id))
+		`SELECT id, mission_id, title, status, contract_kind, created_at, updated_at FROM tasks WHERE id = ?`, id))
 	if err != nil {
 		return Task{}, err
 	}
@@ -371,11 +441,17 @@ type rowScanner interface {
 func scanTask(row rowScanner) (Task, error) {
 	var task Task
 	var createdAt, updatedAt int64
-	if err := row.Scan(&task.ID, &task.MissionID, &task.Title, &task.Status, &createdAt, &updatedAt); err != nil {
+	var contractKind sql.NullString
+	if err := row.Scan(&task.ID, &task.MissionID, &task.Title, &task.Status, &contractKind, &createdAt, &updatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return Task{}, ErrNotFound
 		}
 		return Task{}, fmt.Errorf("scan task: %w", err)
+	}
+	if contractKind.Valid && contractKind.String != "" {
+		task.ContractKind = ContractKind(contractKind.String)
+	} else {
+		task.ContractKind = ContractImplementation
 	}
 	task.CreatedAt = fromUnixMillis(createdAt)
 	task.UpdatedAt = fromUnixMillis(updatedAt)
@@ -527,3 +603,103 @@ func newID() string {
 func unixMillis(t time.Time) int64 { return t.UnixMilli() }
 
 func fromUnixMillis(v int64) time.Time { return time.UnixMilli(v).UTC() }
+
+// migrate applies idempotent column additions for enhanced tables.
+func (s *Store) migrate(ctx context.Context) error {
+	taskCols := []struct{ col, typ string }{
+		{"plan_version_id", "TEXT"},
+		{"contract_kind", "TEXT DEFAULT 'implementation'"},
+		{"input_json", "TEXT"},
+		{"budget_json", "TEXT"},
+		{"max_retries", "INTEGER DEFAULT 0"},
+	}
+	for _, c := range taskCols {
+		if err := addColumnIfMissing(ctx, s.db, "tasks", c.col, c.typ); err != nil {
+			return fmt.Errorf("migrate tasks.%s: %w", c.col, err)
+		}
+	}
+	attemptCols := []struct{ col, typ string }{
+		{"lease_id", "TEXT"},
+		{"exit_reason", "TEXT"},
+		{"started_at", "INTEGER"},
+		{"finished_at", "INTEGER"},
+	}
+	for _, c := range attemptCols {
+		if err := addColumnIfMissing(ctx, s.db, "task_attempts", c.col, c.typ); err != nil {
+			return fmt.Errorf("migrate task_attempts.%s: %w", c.col, err)
+		}
+	}
+	missionCols := []struct{ col, typ string }{
+		{"policy_json", "TEXT"},
+		{"acceptance_contract", "TEXT"},
+		{"current_plan_version", "TEXT"},
+	}
+	for _, c := range missionCols {
+		if err := addColumnIfMissing(ctx, s.db, "missions", c.col, c.typ); err != nil {
+			return fmt.Errorf("migrate missions.%s: %w", c.col, err)
+		}
+	}
+	leaseCols := []struct{ col, typ string }{
+		{"branch", "TEXT"},
+		{"sandbox_id", "TEXT"},
+	}
+	for _, c := range leaseCols {
+		if err := addColumnIfMissing(ctx, s.db, "workspace_leases", c.col, c.typ); err != nil {
+			return fmt.Errorf("migrate workspace_leases.%s: %w", c.col, err)
+		}
+	}
+	return nil
+}
+
+func addColumnIfMissing(ctx context.Context, db *sql.DB, table, column, typ string) error {
+	exists, err := columnExists(ctx, db, table, column)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, typ))
+	return err
+}
+
+func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, fmt.Errorf("check column %s.%s: %w", table, column, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, fmt.Errorf("scan table_info: %w", err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func (s *Store) columnNames(ctx context.Context, table string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols[name] = true
+	}
+	return cols, rows.Err()
+}

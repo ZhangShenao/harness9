@@ -72,6 +72,7 @@ harness9 --version
 - **[AutoDev（`/autodev`）](https://zhangshenao.github.io/harness9/zh/docs/autodev)** —— 自举开发闭环：需求澄清 → Spec 确认 → 委派 dev sub-agent 编码、测试、创建 PR。
 - **[MCP 工具集成](https://zhangshenao.github.io/harness9/zh/docs/mcp)** —— 通过 `.mcp.json` 接入任意 Model Context Protocol Server，工具透明注入注册表。
 - **[网页搜索与抓取](https://zhangshenao.github.io/harness9/zh/docs/web-search)** —— `web_search`/`web_fetch` 工具内置 SSRF 防护，无需任何 API Key。
+- **[Agent OS](https://zhangshenao.github.io/harness9/zh/docs/agent-os)** -- M2 里程碑：本地多 Agent 操作系统，Mission Control + 智能路由（Fast/Deep 双车道）+ 并行 Worker 隔离 worktree + 证据驱动验收 + 本地 Dashboard 控制台。
 - **标准 ReAct 循环** —— 每个 Turn 携带完整工具列表调用一次 LLM；并发工具执行 + 自愈能力（工具错误原样回传给 LLM，触发自动重试）。
 - **双运行模式** —— 阻塞式 `Run` 与流式 `RunStream` 共享同一引擎实例。
 
