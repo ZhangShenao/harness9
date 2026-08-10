@@ -50,8 +50,9 @@ CREATE INDEX IF NOT EXISTS idx_todos_session ON session_todos(session_id);
 // Manager 持有共享 SQLite 连接，管理所有会话的生命周期。
 // 整个进程共享一个 Manager 实例。
 type Manager struct {
-	db             *sql.DB
-	toolResultsDir string // 可选，非空时 DeleteSession 级联清理
+	db                   *sql.DB
+	toolResultsDir       string // 可选，非空时 DeleteSession 级联清理
+	compactionRecordsDir string // 可选，非空时 DeleteSession 级联清理
 }
 
 // ManagerOption 配置 Manager 的可选行为。
@@ -61,6 +62,12 @@ type ManagerOption func(*Manager)
 // 设置后，DeleteSession 会删除对应 session 的 offload 子目录。
 func WithToolResultsDir(dir string) ManagerOption {
 	return func(m *Manager) { m.toolResultsDir = dir }
+}
+
+// WithCompactionRecordsDir 设置压缩记录 JSONL 文件的根目录。
+// 设置后，DeleteSession 会删除对应 session 的压缩记录文件。
+func WithCompactionRecordsDir(dir string) ManagerOption {
+	return func(m *Manager) { m.compactionRecordsDir = dir }
 }
 
 // NewManager 打开（或创建）指定路径的 SQLite 数据库，初始化 Schema。
@@ -150,6 +157,7 @@ func (m *Manager) ListSessions(ctx context.Context) ([]SessionInfo, error) {
 
 // DeleteSession 删除指定会话及其所有消息（通过 ON DELETE CASCADE）。
 // 若设置了 toolResultsDir，还会级联清理对应 session 的 offload 子目录。
+// 若设置了 compactionRecordsDir，还会级联清理对应 session 的压缩记录文件。
 func (m *Manager) DeleteSession(ctx context.Context, id string) error {
 	_, err := m.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
@@ -157,6 +165,9 @@ func (m *Manager) DeleteSession(ctx context.Context, id string) error {
 	}
 	if m.toolResultsDir != "" {
 		_ = os.RemoveAll(filepath.Join(m.toolResultsDir, id))
+	}
+	if m.compactionRecordsDir != "" {
+		_ = os.Remove(filepath.Join(m.compactionRecordsDir, id+".jsonl"))
 	}
 	return nil
 }
