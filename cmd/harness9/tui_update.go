@@ -98,7 +98,7 @@ var builtinCmds = []struct {
 
 // compactDoneMsg 是 /compact 命令异步执行成功后投递的消息。
 type compactDoneMsg struct {
-	data engine.CompactionData
+	data memory.CompactionRecord
 }
 
 // compactErrMsg 是 /compact 命令异步执行失败后投递的消息。
@@ -801,14 +801,28 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		return m, readNextEvent(m.eventCh)
 
 	case engine.EventCompaction:
-		data, _ := evt.Data.(engine.CompactionData)
-		line := dimStyle.Render(fmt.Sprintf("  ⚡ 上下文已压缩 — %s → %s tokens（%d → %d 条消息）",
+		data, _ := evt.Data.(memory.CompactionRecord)
+		tierLabel := tierLabel(data.Tier)
+		ratio := 0.0
+		if data.TokensBefore > 0 {
+			ratio = (1.0 - float64(data.TokensAfter)/float64(data.TokensBefore)) * 100
+		}
+		line1 := dimStyle.Render(fmt.Sprintf("  ⚡ 上下文压缩 [%s] %s→%s tokens（%.0f%% 压缩率）",
+			tierLabel,
 			memory.FormatTokenCount(data.TokensBefore),
 			memory.FormatTokenCount(data.TokensAfter),
-			data.MsgsBefore,
-			data.MsgsAfter,
+			ratio,
 		))
-		m.lines = append(m.lines, line)
+		var line2 string
+		if data.Tier == memory.TierEmergency {
+			line2 = dimStyle.Render(fmt.Sprintf("     ⚠ 紧急截断回退 | 保留尾部 %d 条", data.PreservedTail))
+		} else if data.Summarized > 0 {
+			line2 = dimStyle.Render(fmt.Sprintf("     %d 锚点 | %d offload | %d 条摘要 | 保留尾部 %d 条",
+				len(data.Anchors), len(data.Offloaded), data.Summarized, data.PreservedTail))
+		} else {
+			line2 = dimStyle.Render(fmt.Sprintf("     %d offload | 无摘要", len(data.Offloaded)))
+		}
+		m.lines = append(m.lines, line1, line2)
 		return m, readNextEvent(m.eventCh)
 	}
 
@@ -1953,4 +1967,19 @@ func (m tuiModel) handleMCPPanelKey(msg tea.KeyMsg) (tuiModel, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func tierLabel(tier memory.CompactionTier) string {
+	switch tier {
+	case memory.TierWarn:
+		return "Warn"
+	case memory.TierSoft:
+		return "Soft"
+	case memory.TierFull:
+		return "Full"
+	case memory.TierEmergency:
+		return "Emergency"
+	default:
+		return "Unknown"
+	}
 }

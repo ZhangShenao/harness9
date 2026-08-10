@@ -20,6 +20,7 @@ func (noopRegistry) Execute(_ context.Context, _ schema.ToolCall) schema.ToolRes
 }
 
 // fixedCompactor 是 memory.Compactor 的简单实现：始终只保留最后 N 条消息（含 system）。
+// 同时实现 RecordedCompactor 接口，返回携带 token/msg 计数的 CompactionRecord。
 type fixedCompactor struct {
 	keep int // 保留最近 keep 条非 system 消息
 }
@@ -38,11 +39,26 @@ func (c *fixedCompactor) Compact(msgs []schema.Message) []schema.Message {
 	return result
 }
 
+// CompactWithRecord 实现 memory.RecordedCompactor 接口，返回压缩审计记录。
+func (c *fixedCompactor) CompactWithRecord(msgs []schema.Message) ([]schema.Message, memory.CompactionRecord) {
+	tokensBefore := memory.EstimateTokens(msgs)
+	msgsBefore := len(msgs)
+	result := c.Compact(msgs)
+	record := memory.CompactionRecord{
+		TokensBefore: tokensBefore,
+		TokensAfter:  memory.EstimateTokens(result),
+		MsgsBefore:   msgsBefore,
+		MsgsAfter:    len(result),
+	}
+	record.FillDefaults()
+	return result, record
+}
+
 func newTestEngine(opts ...Option) *AgentEngine {
 	return NewAgentEngine(providertest.NewMock(), noopRegistry{}, "/tmp", opts...)
 }
 
-// TestCompact_NilCompactor 验证 compactor 为 nil 时，Compact 返回零值 CompactionData 且不报错。
+// TestCompact_NilCompactor 验证 compactor 为 nil 时，Compact 返回零值 CompactionRecord 且不报错。
 func TestCompact_NilCompactor(t *testing.T) {
 	sess := memory.NewMemorySession("test-nil-compactor")
 	ctx := context.Background()
@@ -63,9 +79,9 @@ func TestCompact_NilCompactor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compact returned unexpected error: %v", err)
 	}
-	// 零值 CompactionData
-	if data != (CompactionData{}) {
-		t.Errorf("expected zero CompactionData, got %+v", data)
+	// 零值 CompactionRecord：Tier=TierNone 且无 token/msg 计数
+	if data.Tier != memory.TierNone || data.TokensBefore != 0 || data.MsgsBefore != 0 {
+		t.Errorf("expected zero CompactionRecord, got %+v", data)
 	}
 	// session 历史不变
 	got, err := sess.GetMessages(ctx, 0)
@@ -77,7 +93,7 @@ func TestCompact_NilCompactor(t *testing.T) {
 	}
 }
 
-// TestCompact_NilSession 验证 session 为 nil 时，Compact 返回零值 CompactionData 且不报错。
+// TestCompact_NilSession 验证 session 为 nil 时，Compact 返回零值 CompactionRecord 且不报错。
 func TestCompact_NilSession(t *testing.T) {
 	eng := newTestEngine(WithCompactor(&fixedCompactor{keep: 2}))
 
@@ -85,15 +101,16 @@ func TestCompact_NilSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compact returned unexpected error: %v", err)
 	}
-	if data != (CompactionData{}) {
-		t.Errorf("expected zero CompactionData, got %+v", data)
+	if data.Tier != memory.TierNone || data.TokensBefore != 0 || data.MsgsBefore != 0 {
+		t.Errorf("expected zero CompactionRecord, got %+v", data)
 	}
 }
 
-// TestCompact_Normal 验证正常执行：session 历史被替换为压缩后版本，CompactionData 字段正确。
+// TestCompact_Normal 验证正常执行：session 历史被替换为压缩后版本，CompactionRecord 字段正确。
 //
 // 与真实使用场景一致：system prompt 不持久化到 session DB，
 // Compact 内部动态注入 system prompt 后交给 compactor 处理，写回时剥离 system。
+// CompactionRecord 的 MsgsBefore/MsgsAfter 包含 system prompt（与 CompactWithRecord 入参一致）。
 func TestCompact_Normal(t *testing.T) {
 	sess := memory.NewMemorySession("test-normal-compact")
 	ctx := context.Background()
@@ -117,12 +134,14 @@ func TestCompact_Normal(t *testing.T) {
 		t.Fatalf("Compact error: %v", err)
 	}
 
-	// MsgsBefore/After 均不含 system（session 不存 system）
-	if data.MsgsBefore != 4 {
-		t.Errorf("MsgsBefore: want 4, got %d", data.MsgsBefore)
+	// MsgsBefore/After 含 system prompt（CompactWithRecord 入参包含 system）
+	// 4 条 session 消息 + 1 system = 5 条
+	if data.MsgsBefore != 5 {
+		t.Errorf("MsgsBefore: want 5 (system + 4), got %d", data.MsgsBefore)
 	}
-	if data.MsgsAfter != 2 {
-		t.Errorf("MsgsAfter: want 2, got %d", data.MsgsAfter)
+	// system + 2 条保留 = 3 条
+	if data.MsgsAfter != 3 {
+		t.Errorf("MsgsAfter: want 3 (system + 2), got %d", data.MsgsAfter)
 	}
 	// token 数应减少
 	if data.TokensAfter >= data.TokensBefore {
@@ -144,7 +163,7 @@ func TestCompact_Normal(t *testing.T) {
 	}
 }
 
-// TestCompact_EmptySession 验证 session 无消息时，Compact 返回零值 CompactionData 且不报错。
+// TestCompact_EmptySession 验证 session 无消息时，Compact 返回零值 CompactionRecord 且不报错。
 func TestCompact_EmptySession(t *testing.T) {
 	sess := memory.NewMemorySession("test-empty")
 	comp := &fixedCompactor{keep: 2}
@@ -154,7 +173,7 @@ func TestCompact_EmptySession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compact error: %v", err)
 	}
-	if data != (CompactionData{}) {
-		t.Errorf("expected zero CompactionData for empty session, got %+v", data)
+	if data.Tier != memory.TierNone || data.TokensBefore != 0 || data.MsgsBefore != 0 {
+		t.Errorf("expected zero CompactionRecord for empty session, got %+v", data)
 	}
 }

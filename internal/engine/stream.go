@@ -14,6 +14,7 @@ import (
 
 	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/logfmt"
+	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/schema"
 )
 
@@ -43,8 +44,8 @@ const (
 	// Data 类型为 TokenUpdateData。
 	EventTokenUpdate EventType = "token_update"
 
-	// EventCompaction 在上下文发生有效压缩时发出（token 数减少 > 5%）。
-	// Data 类型为 CompactionData。
+	// EventCompaction 在上下文发生有效压缩时发出。
+	// Data 类型为 memory.CompactionRecord（向后兼容：CompactionData 类型保留但不再作为事件载荷）。
 	EventCompaction EventType = "compaction"
 
 	// EventApprovalRequired 表示工具执行需要人类审批。Data 类型为 ApprovalRequest。
@@ -83,7 +84,7 @@ type Event struct {
 	//   EventActionDelta  → string, EventThinkingDelta → string,
 	//   EventToolStart    → schema.ToolCall,
 	//   EventToolResult   → ToolResultData, EventDone → nil, EventError → string,
-	//   EventTokenUpdate  → TokenUpdateData, EventCompaction → CompactionData,
+	//   EventTokenUpdate  → TokenUpdateData, EventCompaction → memory.CompactionRecord,
 	//   EventSubAgent     → schema.SubAgentUpdate
 	Data any `json:"data,omitempty"`
 }
@@ -104,7 +105,9 @@ type ToolResultData struct {
 	Duration time.Duration
 }
 
-// CompactionData 是 EventCompaction 事件的载荷。
+// CompactionData 是历史遗留的压缩事件载荷类型，保留用于向后兼容。
+// EventCompaction 事件现在携带 memory.CompactionRecord（含 tier、锚点、外存条目等完整审计信息）。
+// 新代码应使用 memory.CompactionRecord。
 type CompactionData struct {
 	// TokensBefore 压缩前的估算 token 数。
 	TokensBefore int `json:"tokens_before"`
@@ -163,8 +166,8 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 					ContextWindow:   window,
 				}})
 			},
-			compaction: func(data CompactionData) {
-				sendEvent(ctx, ch, Event{Type: EventCompaction, Data: data})
+			compaction: func(record memory.CompactionRecord) {
+				sendEvent(ctx, ch, Event{Type: EventCompaction, Data: record})
 			},
 			// 审批等待使用会话级 ctx（RunStream 的外层 ctx），不受工具执行超时约束。
 			// 工具超时（toolTimeout）仅应限制工具本身的计算时间，而非人类决策时间：

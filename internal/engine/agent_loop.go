@@ -316,8 +316,8 @@ type emitter struct {
 	// 在 LLM 调用前以估算值调用；调用后若有实际用量则以实际值再次调用。
 	// tokens = token 数；window = 模型 context window（0 表示未知）。
 	tokenUpdate func(tokens, window int)
-	// compaction 在上下文发生有效压缩时调用（token 数减少 > 5%）。
-	compaction func(data CompactionData)
+	// compaction 在上下文发生有效压缩时调用。
+	compaction func(record memory.CompactionRecord)
 	// approval 是人类审批回调，注入到工具执行 context 中。
 	// RunStream 模式下通过 EventApprovalRequired 事件驱动 TUI 审批对话框；
 	// Run（阻塞）模式下留 nil，HookActionAsk 视为 Allow（向后兼容）。
@@ -346,12 +346,13 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 		tokenUpdate: func(tokens, window int) {
 			log.Print(logfmt.FormatMsg("engine", fmt.Sprintf("context tokens: ~%s", memory.FormatTokenCount(tokens))))
 		},
-		compaction: func(data CompactionData) {
+		compaction: func(record memory.CompactionRecord) {
 			log.Print(logfmt.FormatMsg("engine", fmt.Sprintf(
-				"context compacted: %s → %s tokens (%d → %d msgs)",
-				memory.FormatTokenCount(data.TokensBefore),
-				memory.FormatTokenCount(data.TokensAfter),
-				data.MsgsBefore, data.MsgsAfter,
+				"context compacted [tier %d]: %s → %s tokens (%d → %d msgs)",
+				record.Tier,
+				memory.FormatTokenCount(record.TokensBefore),
+				memory.FormatTokenCount(record.TokensAfter),
+				record.MsgsBefore, record.MsgsAfter,
 			)))
 		},
 	}
@@ -445,19 +446,12 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		toolTokens := memory.EstimateToolTokens(availableTools)
 
 		// Preflight token check: estimate tokens before and after compaction.
-		msgTokensBefore := memory.EstimateTokens(contextHistory)
-		compactedHistory := e.applyCompactionWith(comp, contextHistory)
+		compactedHistory, compactionRecord := e.applyCompactionWith(comp, contextHistory)
 		msgTokensAfter := memory.EstimateTokens(compactedHistory)
 		totalTokens := msgTokensAfter + toolTokens
 
-		// Emit EventCompaction if compaction reduced tokens by > 5%.
-		if comp != nil && msgTokensAfter < int(float64(msgTokensBefore)*0.95) {
-			em.compaction(CompactionData{
-				TokensBefore: msgTokensBefore + toolTokens,
-				TokensAfter:  totalTokens,
-				MsgsBefore:   len(contextHistory),
-				MsgsAfter:    len(compactedHistory),
-			})
+		if compactionRecord != nil && compactionRecord.Tier != memory.TierNone {
+			em.compaction(*compactionRecord)
 		}
 
 		// Report current context token usage to TUI / CLI.
@@ -584,11 +578,16 @@ func (e *AgentEngine) loadHistoryWith(ctx context.Context, userPrompt string, se
 }
 
 // applyCompactionWith 对消息列表应用压缩策略。comp 为 nil 时原样返回。
-func (e *AgentEngine) applyCompactionWith(comp memory.Compactor, msgs []schema.Message) []schema.Message {
+// 若 compactor 实现 RecordedCompactor 接口，同时返回压缩审计记录（含 tier、锚点、外存条目等）。
+func (e *AgentEngine) applyCompactionWith(comp memory.Compactor, msgs []schema.Message) ([]schema.Message, *memory.CompactionRecord) {
 	if comp == nil {
-		return msgs
+		return msgs, nil
 	}
-	return comp.Compact(msgs)
+	if rc, ok := comp.(memory.RecordedCompactor); ok {
+		result, record := rc.CompactWithRecord(msgs)
+		return result, &record
+	}
+	return comp.Compact(msgs), nil
 }
 
 // saveHistoryWith 将本次 Run 新增的消息（msgs[startLen:]）写回 sess。
