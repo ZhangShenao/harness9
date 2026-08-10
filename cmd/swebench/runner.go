@@ -353,7 +353,7 @@ func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userP
 			fmt.Fprintf(w, "\n[Tokens: %d]\n", tud.EstimatedTokens)
 
 		case engine.EventCompaction:
-			cd := evt.Data.(engine.CompactionData)
+			cd := evt.Data.(memory.CompactionRecord)
 			fmt.Fprintf(w, "\n[Compaction: %d→%d tokens, %d→%d msgs]\n",
 				cd.TokensBefore, cd.TokensAfter, cd.MsgsBefore, cd.MsgsAfter)
 

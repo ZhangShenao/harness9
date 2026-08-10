@@ -98,7 +98,7 @@ var builtinCmds = []struct {
 
 // compactDoneMsg 是 /compact 命令异步执行成功后投递的消息。
 type compactDoneMsg struct {
-	data engine.CompactionData
+	data memory.CompactionRecord
 }
 
 // compactErrMsg 是 /compact 命令异步执行失败后投递的消息。
@@ -801,8 +801,9 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		return m, readNextEvent(m.eventCh)
 
 	case engine.EventCompaction:
-		data, _ := evt.Data.(engine.CompactionData)
-		line := dimStyle.Render(fmt.Sprintf("  ⚡ 上下文已压缩 — %s → %s tokens（%d → %d 条消息）",
+		data, _ := evt.Data.(memory.CompactionRecord)
+		line := dimStyle.Render(fmt.Sprintf("  ⚡ 上下文已压缩 [tier %d] — %s → %s tokens（%d → %d 条消息）",
+			data.Tier,
 			memory.FormatTokenCount(data.TokensBefore),
 			memory.FormatTokenCount(data.TokensAfter),
 			data.MsgsBefore,
