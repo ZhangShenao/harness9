@@ -18,6 +18,13 @@ type ForceCompactor interface {
 	CompactForce(msgs []schema.Message) []schema.Message
 }
 
+// RecordedCompactor 扩展 Compactor，返回压缩记录供追踪和持久化。
+// ProgressiveCompactor 实现此接口，engine 通过类型断言检测并消费 CompactionRecord。
+type RecordedCompactor interface {
+	Compactor
+	CompactWithRecord(msgs []schema.Message) ([]schema.Message, CompactionRecord)
+}
+
 // SlidingWindowCompactor 保留最近 MaxMessages 条消息（System Prompt 固定在首位）。
 // MaxMessages 含 system 消息本身；0 或负数时使用默认值 100。
 type SlidingWindowCompactor struct {
