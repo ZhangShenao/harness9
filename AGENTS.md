@@ -33,7 +33,6 @@ harness9 是一款基于 Go 语言构建的**轻量级、功能完备、生产�
 - **Test & Eval（自动化测试与评估）**: `internal/evals/` 包；`ScriptedProvider`（确定性 LLM mock，按预设 Turn 序列返回回复，不发起真实 API 调用）+ `Assertion` 接口（Hard 断言：ToolCalled/ToolNotCalled/OutputContains/OutputExcludes/NoError/Error；Soft 断言：MaxTurns/MaxToolCalls，仅记警告不影响通过率）+ `EvalHarness`（`RunCase` 构建最小化隔离引擎 + `recordingHook` 记录工具调用轨迹 + `Suite` 批量运行）+ `SetupHermeticEnv`（清除所有 API Key，标准 Hermetic 隔离环境（密封测试，防止 eval 调用真实 API），本地与 CI 环境一致）+ `BuildReport`/`WriteJSON`/`WriteMarkdown`（JSON + Markdown 评估报告生成）；`internal/evals/dataset/` 黄金数据集（16 个用例：工具调用准确性 × 4 + Planning 完成率 × 4 + Context Engineering × 3 + Error Handling/Self-Healing × 3 + Memory 持久化 × 2）；`.github/workflows/eval.yml` CI Quality Gate（PR 触发 hermetic eval，失败则阻断合并）
 - **MCP 工具集成（Model Context Protocol）**: `internal/mcp/` 包；JSON-RPC 2.0 over stdio/HTTP；`Config`（`.mcp.json` 加载，file-not-found 静默返回空）+ `StdioTransport`（subprocess + NDJSON async reader goroutine + pending map ID 关联 + 三路 select ctx/done/response；`transport_proc_unix.go` 独立进程组 + SIGKILL 终止 npx 孤儿 node 子进程，`transport_proc_windows.go` stub 回退单进程 kill）+ `HTTPTransport`（无状态 POST）+ `Client`（initialize → notifications/initialized → tools/list → tools/call 握手与调用）+ `Manager`（并发 Start 30s per-server timeout，fail-soft，`ServerStatus` + `ToolDetails` TUI 通知链，`InjectTools` 闭包捕获避免循环变量 bug，`WithNotify` channel 回调；`Start` 始终返回 nil，失败状态通过 `Statuses()` 的 `StatusFailed` 暴露）+ `MCPToolAdapter`（实现 `BaseTool` 接口，`mcp__{server}__{tool}` 双下划线命名，对 Engine 完全透明）；TUI MCPBar（状态栏实时展示）+ `/mcp` 模态工具面板（工具列表，`e` 键 `tea.ExecProcess` 打开 `$EDITOR` 编辑 `.mcp.json`；鼠标滚轮 + ↑↓/jk 双支持）；`.mcp.json` 配置文件驱动，main.go 中异步启动不阻塞 TUI 渲染；`defer mcpMgr.Stop()` Session 级生命周期；`mcpPanelOverhead=4` 与 `contentH=m.height-4` 保持一致，确保面板撑满屏幕不遮挡对话区
 - **AutoDev（自举开发闭环）**: `skills/autodev/SKILL.md`（`/autodev` AgentSkill，三阶段：需求澄清→Spec 生成与强制确认关卡→委派 dev sub-agent）+ `.harness9/agents/dev.md`（dev sub-agent 定义：读规范→探索→实现→`go build/test` 迭代循环（≤3次）→gofmt→commit→push→`gh pr create`）；git worktree（`.autodev/<slug>/`，代码隔离）+ Docker Sandbox（执行隔离，需 `SANDBOX_IMAGE=golang:1.25-bookworm`）；零新 Go 代码，完全由 Skill 文件 + Agent 定义文件驱动，复用现有 Skills 系统、Sub-Agent 系统、Sandbox 基础设施
-- **Agent OS（本地多 Agent 操作系统）**: M2 里程碑核心交付物；统一运行时 + 升级路由器架构（Fast Lane 现有引擎不改 / Deep Lane Mission Control）；`internal/mission`（领域模型 + Store + CommandService 幂等审计）+ `internal/scheduler`（确定性调度 + ContractKind 路由 + 崩溃恢复）+ `internal/worker`（WorkerAdapter + git worktree + Contract）+ `internal/verifier`（证据验收）+ `internal/integration`（分支合并 + 联合测试）+ `internal/router`（智能路由）+ `internal/coordinator`（任务分解 + 监控）+ `internal/dashboard`（本地 Web 控制台，`harness9 dashboard`）；Memory Plane 四级作用域；详见 `docs/核心功能/agent-os.md`
 
 ### 参考框架
 
@@ -177,8 +176,7 @@ harness9/
 │       ├── tui_banner.go            # WelcomeBanner：HARNESS9 ASCII Art + bannerContent()
 │       ├── tui_test.go              # TUI Update 逻辑单元测试（含 thinking block 测试、Shell 执行测试、truncateUTF8 测试）
 │       ├── cli.go                   # 交互式 CLI REPL 实现
-│       ├── upgrade.go               # 自动升级：GitHub Releases API + SHA256 校验 + 原子替换
-│       └── dashboard.go             # Agent OS Dashboard 子命令：本地 Web 控制台
+│       └── upgrade.go               # 自动升级：GitHub Releases API + SHA256 校验 + 原子替换
 ├── internal/
 │   ├── engine/                      # Agent 核心引擎 — 标准 ReAct 主循环
 │   │   ├── agent_loop.go            # 共享 runLoop 主循环内核 + 阻塞式 Run
@@ -323,16 +321,8 @@ harness9/
 │   ├── env/                         # 环境配置
 │   │   ├── env.go                   # 零依赖 .env 文件加载器（系统变量优先）
 │   │   └── env_test.go              # 配置加载单元测试
-│   ├── logfmt/                      # 跨模块共享的块状日志格式化工具
+│   └── logfmt/                      # 跨模块共享的块状日志格式化工具
 │       ├── format.go                # 块状日志格式化（FormatMsg/ToolStart/LoopStart 等）
-│   ├── mission/                     # Agent OS - Mission Control 领域模型 + Store + CommandService
-│   ├── scheduler/                   # Agent OS - 确定性调度器 + Dispatcher + 崩溃恢复
-│   ├── worker/                      # Agent OS - WorkerAdapter + worktree + Contract
-│   ├── verifier/                    # Agent OS - 验证器（go build/vet/test Evidence）
-│   ├── integration/                 # Agent OS - 集成器（分支合并 + 联合测试）
-│   ├── router/                      # Agent OS - 智能路由器（启发式 + /mission 前缀）
-│   ├── coordinator/                 # Agent OS - Coordinator（分解 + 监控）
-│   └── dashboard/                   # Agent OS - 本地 Web 控制台
 │       └── format_test.go           # 格式化函数单元测试
 ├── skills/                          # Agent Skills（与项目一起提交，用户可复制使用）
 │   ├── autodev/
@@ -346,7 +336,6 @@ harness9/
 ├── docs/
 │   ├── 核心功能/
 │   │   ├── autodev.md               # AutoDev 自举开发技术方案
-│   │   ├── agent-os.md              # Agent OS：本地多 Agent 操作系统
 │   │   ├── tui.md                   # TUI 交互界面实现原理
 │   │   ├── cli.md                   # CLI 使用指南
 │   │   ├── agent-skills.md          # Agent Skills 设计原理
@@ -445,18 +434,9 @@ harness9/
 | **evals** | 自动化评估框架：`ScriptedProvider`（确定性 mock）、`Assertion`（Hard/Soft 断言，8 种实现）、`RunCase`/`Suite`（最小化隔离引擎 + `recordingHook`）、`SetupHermeticEnv`（Hermetic CI 隔离）、`BuildReport`/`WriteJSON`/`WriteMarkdown`（评估报告）；`dataset/` 黄金数据集 16 用例（tool_calling/planning/context/error_handling/memory）；`.github/workflows/eval.yml` Quality Gate | ✅ |
 | **mcp** | MCP Client 集成：`Config`（`.mcp.json` 加载，file-not-found 静默返回空）、`StdioTransport`（subprocess + NDJSON async reader goroutine + pending map ID 关联 + 三路 select）、`HTTPTransport`（无状态 POST）、`Client`（initialize/notifications-initialized/tools-list/tools-call）、`Manager`（并发 Start 30s per-server timeout fail-soft、`ServerStatus`+`ToolDetails` TUI 通知、`InjectTools` 无循环变量 bug 闭包捕获、`WithNotify` channel 回调）；`MCPToolAdapter` 实现 `BaseTool` 接口、`mcp__{server}__{tool}` 双下划线命名、对 Engine 完全透明；TUI MCPBar + `/mcp` 模态面板（`e` 键 `tea.ExecProcess` 编辑配置） | ✅ |
 | **autodev** | 自举开发闭环：`skills/autodev/SKILL.md`（`/autodev` AgentSkill，三阶段工作流：需求澄清→Spec 强制确认→委派）+ `.harness9/agents/dev.md`（dev sub-agent：读规范→探索→实现→go build/test 循环≤3次→gofmt→commit→push→gh pr create）；git worktree（`.autodev/<slug>/`）+ Docker Sandbox（`SANDBOX_IMAGE=golang:1.25-bookworm`）；零新 Go 代码，复用 Skills/Sub-Agent/Sandbox 基础设施 | ✅ |
-| **mission** | Agent OS Mission Control：领域模型 + Store + CommandService（幂等+审计）+ Plan 版本化 + Mission 自动完成 | ✅ |
-| **scheduler** | Agent OS 调度器：确定性 LLM-free 调度循环 + ContractKind 路由 + 崩溃恢复 | ✅ |
-| **worker** | Agent OS Worker：WorkerAdapter + git worktree + ImplementationContract + ParseResult | ✅ |
-| **verifier** | Agent OS 验证器：go build/vet/test 证据产出 + 自定义 checks | ✅ |
-| **integration** | Agent OS 集成器：分支合并 + 联合测试 + Evidence 产出 | ✅ |
-| **router** | Agent OS 路由器：启发式信号 + `/mission` 前缀 + 默认 Fast | ✅ |
-| **coordinator** | Agent OS 协调器：DecomposeGoal + CreateTaskFromPlan + Monitor | ✅ |
-| **dashboard** | Agent OS Dashboard：本地 Web 控制台 + Mission 创建/编辑/审批 + JSON API | ✅ |
 | **provider/providertest** | 测试基础设施（mock provider），不进入生产二进制 | ✅ |
 
 > **Roadmap（后续方向）**：
-> - **Agent OS 后续切片**：LLM triage 路由（S4 增强）、TUI Mission 视图（S5 扩展）、SWE-bench/Terminal-Bench Mission 级回归门（S7 增强）、OTEL Mission trace（harness9.mission -> task -> attempt -> llm/tool）。
 > - **短期记忆**：FTS5 全文会话搜索（P3，跨会话检索历史对话消息，区别于 LTM 对记忆条目的检索）。
 > - **Long-Term Memory Phase 3**：向量嵌入语义检索（`Embedder`，接入 Ollama / OpenAI Embeddings）、Dreaming 巩固（`Consolidator`，cron 批量晋升）、外部记忆提供者（`Provider`，接入 Mem0 / Honcho）、基于 `StaleCandidates` 的陈旧记忆自动清理。
 
