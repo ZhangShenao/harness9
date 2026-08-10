@@ -45,7 +45,6 @@ cd /your/project && harness9
 # See all CLI flags
 harness9 --help
 
-n# Start the Mission Control Dashboard (local web GUI)nharness9 dashboard
 # Print the version
 harness9 --version
 ```
@@ -73,7 +72,6 @@ Each feature below links to its full technical writeup on the [documentation sit
 - **[AutoDev (`/autodev`)](https://zhangshenao.github.io/harness9/docs/autodev)** — a self-hosted development loop: clarify requirements → confirm a spec → delegate to a dev sub-agent that codes, tests, and opens the PR.
 - **[MCP integration](https://zhangshenao.github.io/harness9/docs/mcp)** — connect any Model Context Protocol server via `.mcp.json`; tools appear transparently in the registry.
 - **[Web search & fetch](https://zhangshenao.github.io/harness9/docs/web-search)** — `web_search`/`web_fetch` tools with SSRF hardening, no API key required.
-- **[Agent OS](https://zhangshenao.github.io/harness9/docs/agent-os)** - M2 milestone: local multi-agent operating system with Mission Control, smart routing (Fast/Deep lane), parallel workers in isolated worktrees, evidence-driven verification, and a local Dashboard GUI.
 - **Standard ReAct loop** — one LLM call per turn with the full tool list; concurrent tool execution and self-healing (tool errors round-trip back to the LLM as observations, triggering automatic retries).
 - **Dual run modes** — blocking `Run` and streaming `RunStream`, sharing the same engine instance.
 
@@ -107,14 +105,6 @@ Each feature below links to its full technical writeup on the [documentation sit
 | **Evals** | Automated evaluation framework, golden dataset, CI quality gate. |
 | **MCP** | Model Context Protocol client integration, transparent tool injection. |
 | **AutoDev** | Self-hosted development loop (`/autodev` skill + dev sub-agent). |
-| **Mission** | Agent OS: Mission/Plan/Task domain model, Store, CommandService (idempotent + audited). |
-| **Scheduler** | Agent OS: deterministic LLM-free dispatch loop, ContractKind routing, crash recovery. |
-| **Worker** | Agent OS: WorkerAdapter + git worktree + ImplementationContract. |
-| **Verifier** | Agent OS: independent go build/vet/test evidence production. |
-| **Integration** | Agent OS: branch merge + joint test + evidence. |
-| **Router** | Agent OS: smart routing (heuristic + `/mission` prefix). |
-| **Coordinator** | Agent OS: task decomposition + monitoring. |
-| **Dashboard** | Agent OS: local web console (Mission CRUD + audit trail). |
 | **Env** | Zero-dependency `.env` loader. |
 
 ---

@@ -26,8 +26,8 @@ type Entry struct {
 	Title      string    `json:"title"`
 	Content    string    `json:"content"`
 	Category   Category  `json:"category,omitempty"`
-	Importance int       `json:"importance"`
-	Signature  string    `json:"-"`
+	Importance int       `json:"importance"` // 0-10，决定精华排序与陈旧识别
+	Signature  string    `json:"-"`          // SHA256(normalize(content))，用于去重
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	LastUsedAt time.Time `json:"last_used_at"`
@@ -35,8 +35,6 @@ type Entry struct {
 	TTLDays    int       `json:"ttl_days,omitempty"`
 	Disabled   bool      `json:"-"`
 	Tags       []string  `json:"tags,omitempty"`
-	Scope      string    `json:"scope,omitempty"`
-	ScopeRef   string    `json:"scope_ref,omitempty"`
 }
 
 // Signature 计算内容的去重指纹：SHA256(normalize(content))。
