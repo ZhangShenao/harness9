@@ -207,9 +207,11 @@ Flags:
 		log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("获取 home 目录失败: %v", err)))
 	}
 	toolResultsDir := filepath.Join(workDir, ".harness9", "tool_results")
+	compactionRecordsDir := filepath.Join(homeDir, ".harness9", "compaction_records")
 	mgr, err := memory.NewManager(
 		filepath.Join(homeDir, ".harness9", "sessions.db"),
 		memory.WithToolResultsDir(toolResultsDir),
+		memory.WithCompactionRecordsDir(compactionRecordsDir),
 	)
 	if err != nil {
 		log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("初始化 Memory Manager 失败: %v", err)))
@@ -369,7 +371,7 @@ Flags:
 			return p, provider.GetModelLimits(model).ContextTokens, nil
 		},
 		CompactorFor: func(p provider.LLMProvider, ctxWin int) memory.Compactor {
-			return memory.NewSummarizationCompactor(p, ctxWin)
+			return memory.NewProgressiveCompactor(p, ctxWin)
 		},
 		BaseCtx: ctx,
 	})
@@ -388,11 +390,18 @@ Flags:
 	}
 	hookReg := hooks.NewHookRegistry(registry, mainHooks...)
 
-	// SummarizationCompactor 使用同一 LLM 生成摘要，内置 TokenBudgetCompactor 作为错误回退。
+	// ProgressiveCompactor 使用同一 LLM 生成摘要与锚点，内置 TokenBudgetCompactor 作为紧急回退。
 	// 注入长期记忆 Extractor：压缩前从 head 消息提取持久事实（fail-open）。
-	compactor := memory.NewSummarizationCompactor(llm, modelLimits.ContextTokens,
-		memory.WithTodoInjector(todoStore),
-		memory.WithMemoryExtractor(ltm.NewExtractor(llm, ltmStore)),
+	// 注入 RecordStore：压缩记录持久化到 JSONL 文件供审计。
+	// 注入 Offloader：压缩时将大 tool_result 写入文件系统，context 仅保留占位符。
+	recordStore := memory.NewFileRecordStore(compactionRecordsDir)
+	compactionOffloader := memory.NewCompactionOffloader(workDir, sess.SessionID())
+	compactor := memory.NewProgressiveCompactor(llm, modelLimits.ContextTokens,
+		memory.WithProgressiveTodoInjector(todoStore),
+		memory.WithProgressiveMemoryExtractor(ltm.NewExtractor(llm, ltmStore)),
+		memory.WithProgressiveRecordStore(recordStore),
+		memory.WithProgressiveOffloader(compactionOffloader),
+		memory.WithProgressiveSessionID(sess.SessionID()),
 	)
 
 	// OTELEngineObserver：为 interaction/turn 创建 OTEL Span
