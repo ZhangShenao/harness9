@@ -226,15 +226,35 @@ COMMIT
 
 ## 6. 压缩策略
 
-harness9 提供三种压缩策略，按优先级从高到低排列：
+harness9 提供四种压缩策略，按优先级从高到低排列：
 
 | 策略 | 文件 | 默认 | 适用场景 |
 |------|------|:----:|---------|
-| `SummarizationCompactor` | `summarization.go` | ✅ | 长任务、信息密集型对话，语义保留最佳 |
+| `ProgressiveCompactor` | `progressive_compactor.go` | ✅ | 分层渐进压缩，结构化 Anchor + Offload + 全链路追踪 |
+| `SummarizationCompactor` | `summarization.go` | — | 经典 LLM 摘要压缩（可选回退） |
 | `TokenBudgetCompactor` | `compaction.go` | — | Provider 不可用时的自动回退策略 |
 | `SlidingWindowCompactor` | `compaction.go` | — | 快速原型、成本极度敏感场景 |
 
-### 6.1 SummarizationCompactor（LLM 摘要压缩，默认）
+### 6.0 ProgressiveCompactor（分层渐进压缩，默认）
+
+`ProgressiveCompactor` 是 harness9 默认的上下文压缩策略，提供四层渐进式压缩：
+
+| 层级 | 阈值 | 行为 |
+|------|------|------|
+| TierWarn | 60% | 仅 offload head 中大 tool_result，不摘要 |
+| TierSoft | 70% | offload + 摘要最旧 1/2 head + anchor 提取 |
+| TierFull | 80% | offload + 摘要全 head + anchor 提取 |
+| TierEmergency | 95% | 强制截断回退（TokenBudgetCompactor） |
+
+核心特性：
+- **压缩时 Offload**：head 中超过 4000 字符的 tool_result 写入文件系统，context 仅保留占位符引用
+- **结构化 Anchor**：五类锚点（用户意图/执行进度/关键决策/已尝试方案/下一步）保证关键信息不丢失
+- **全链路追踪**：CompactionRecord 记录保留/压缩/offload 细节，持久化到 JSONL 文件
+- **增量更新**：通过 Compactor 内部状态追踪上次摘要，实现跨轮增量合并
+
+接口实现：`Compactor` + `ForceCompactor` + `RecordedCompactor`
+
+### 6.1 SummarizationCompactor（LLM 摘要压缩，可选）
 
 `SummarizationCompactor` 调用 LLM 将旧消息压缩为结构化摘要，在语义保留方面显著优于截断策略。
 
