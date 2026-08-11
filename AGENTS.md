@@ -601,6 +601,22 @@ go test ./internal/evals/... ./internal/evals/dataset/... -v
 
 当前黄金数据集：16 个用例，覆盖 tool_calling（4）/ planning（4）/ memory（2）/ context（3）/ error_handling（3）。新 feature 只能**增加**用例，不能删除或降低覆盖率。
 
+### 5.9 文档双语规范
+
+**核心功能文档必须同时维护中英文双语版本。**
+
+| 中文路径 | 英文路径 | 说明 |
+|---------|---------|------|
+| `docs/核心功能/<name>.md` | `docs/core-features-en/<name>.md` | 文件名一一对应 |
+
+**强制要求：**
+- 在 `docs/核心功能/` 下新增或修改任何 `.md` 文件时，**必须同步创建或更新** `docs/core-features-en/` 下的同名英文版本
+- 英文版本不是机器翻译，而是独立编写的技术文档，内容与中文版对齐但符合英文技术写作惯例
+- `website/scripts/sync-docs.mjs` 依赖两个目录的文件名一一对应关系，缺失英文版本会导致官网英文 locale 缺少该页面
+- 这是 Definition of Done 的一部分：未生成英文文档的功能不算完成
+
+**自动化保障：** 执行 `/sync-docs` 命令自动扫描并补全缺失或过期的英文文档（详见 `.opencode/commands/sync-docs.md`）。
+
 ---
 
 ## 6. 特殊约束
