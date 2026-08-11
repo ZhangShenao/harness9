@@ -12,6 +12,7 @@ harness9 核心团队的技术深度文章，聚焦架构决策、工程实现�
 
 | 文章 | 日期 | 标签 |
 |------|------|------|
+| [上下文压缩不是删历史 — harness9 怎样让 Agent 一直记得要做什么](/zh/blog/progressive-context-compaction/) | 2026-08-11 | `harness9` `agent` `golang` `context` `compaction` `memory` |
 | [M1 完成之后：harness9 为什么要走向本地 Agent OS](/zh/blog/m1-to-local-agent-os/) | 2026-07-29 | `harness9` `agent` `golang` `milestone` `local-agent-os` `multi-agent` |
 | [Benchmark 不只测分数 — harness9 如何用轨迹驱动迭代](/zh/blog/benchmark-driven-iteration/) | 2026-07-24 | `harness9` `agent` `golang` `benchmark` `swe-bench` `terminal-bench` |
 | [Observability：给 Agent 装一台看清内部运转的望远镜](/zh/blog/observability/) | 2026-07-20 | `harness9` `agent` `golang` `observability` `opentelemetry` `langfuse` |
