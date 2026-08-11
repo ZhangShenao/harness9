@@ -635,16 +635,7 @@ go test ./internal/evals/... ./internal/evals/dataset/... -v
 - `website/scripts/sync-docs.mjs` 依赖两个目录的文件名一一对应关系，缺失英文版本会导致官网英文 locale 缺少该页面
 - 这是 Definition of Done 的一部分：未生成英文文档的功能不算完成
 
-**检查清单（提交前）：**
-```bash
-# 检查中文文档是否有对应的英文版本
-for f in docs/核心功能/*.md; do
-  name=$(basename "$f")
-  if [ ! -f "docs/core-features-en/$name" ]; then
-    echo "MISSING English version: docs/core-features-en/$name"
-  fi
-done
-```
+**自动化保障：** 执行 `/sync-docs` 命令自动扫描并补全缺失或过期的英文文档（详见 `.opencode/commands/sync-docs.md`）。
 
 ---
 
