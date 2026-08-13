@@ -512,7 +512,7 @@ Generate(ctx context.Context, messages []schema.Message, availableTools []schema
 - **OpenAI (non-streaming)**: extracted from `resp.Usage.PromptTokens` / `resp.Usage.CompletionTokens`
 - **OpenAI (streaming)**: sets `StreamOptions.IncludeUsage = true` on the request, extracted from `Usage.PromptTokens` in the final chunk
 - **Anthropic (non-streaming)**: extracted from `resp.Usage.InputTokens` / `resp.Usage.OutputTokens`
-- **Anthropic (streaming)**: extracted from `Message.Usage.InputTokens` in the `message_start` event
+- **Anthropic (streaming)**: `InputTokens` extracted from `Message.Usage.InputTokens` in the `message_start` event; cumulative `OutputTokens` extracted from `Usage.OutputTokens` in the trailing `message_delta` event
 - **Mock Provider**: returns `nil` (test stubs do not simulate the API call)
 
 **Update timing in the engine:**

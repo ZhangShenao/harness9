@@ -163,14 +163,19 @@ Flags:
 
 	// SandboxBar 通知 channel 必须在 Create 之前创建并注册，
 	// 否则 Create 内部触发的 notify() 因 onUpdate==nil 而丢失，TUI 永远不会收到初始状态。
-	sandboxNotifyCh := make(chan []sandbox.SandboxInfo, 8)
+	// 仅在 Sandbox 启用时才创建并传给 TUI：禁用时保持 nil，
+	// 使 TUI 的 waitSandboxUpdate 不会在无发送方的 channel 上永久阻塞（goroutine 泄漏）。
+	var sandboxNotifyCh <-chan []sandbox.SandboxInfo
 
 	if sandboxCfg.Enabled {
+		// 内部使用可写 channel，仅将只读方向（<-chan）传给 TUI，避免 TUI 误写。
+		sandboxCh := make(chan []sandbox.SandboxInfo, 8)
+		sandboxNotifyCh = sandboxCh
 		sandboxMgr = sandbox.NewManager(sandboxCfg)
 		// WithUpdateNotify 必须在 Create 之前调用，确保初始创建通知能送达 TUI
 		sandboxMgr.WithUpdateNotify(func(infos []sandbox.SandboxInfo) {
 			select {
-			case sandboxNotifyCh <- infos:
+			case sandboxCh <- infos:
 			default: // 丢弃：buffer 满时 TUI 仍持有旧快照，下次更新会覆盖
 			}
 		})
@@ -262,7 +267,9 @@ Flags:
 
 	// ---- MCP 接线 ----
 	// 加载 .mcp.json 配置（文件不存在时静默返回空配置）。
-	mcpNotifyCh := make(chan []mcppkg.ServerStatus, 8)
+	// 与 sandboxNotifyCh 同理：仅在配置了 MCP Server 时才创建通知 channel 并传给 TUI，
+	// 未配置时保持 nil，避免 waitMCPUpdate 在无发送方的 channel 上永久阻塞。
+	var mcpNotifyCh <-chan []mcppkg.ServerStatus
 	mcpCfgPath := filepath.Join(workDir, ".mcp.json")
 	mcpCfg, mcpCfgErr := mcppkg.LoadConfig(mcpCfgPath)
 	if mcpCfgErr != nil {
@@ -270,10 +277,12 @@ Flags:
 	}
 	var mcpMgr *mcppkg.Manager
 	if len(mcpCfg.Servers) > 0 {
+		mcpCh := make(chan []mcppkg.ServerStatus, 8)
+		mcpNotifyCh = mcpCh
 		mcpMgr = mcppkg.NewManager(mcpCfg)
 		mcpMgr.WithNotify(func(statuses []mcppkg.ServerStatus) {
 			select {
-			case mcpNotifyCh <- statuses:
+			case mcpCh <- statuses:
 			default:
 			}
 		})

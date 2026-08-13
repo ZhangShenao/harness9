@@ -125,8 +125,8 @@ func (b *DefaultPromptBuilder) Build() string {
 				"当工具输出超过阈值时，完整内容会自动保存到文件系统，context 中仅显示路径引用和预览。\n"+
 				"如需查看完整输出，使用 read_file 工具并指定 offset/limit 参数分页读取：\n"+
 				"- offset：起始字节位置（默认 0）\n"+
-				"- limit：读取字节数（默认 4096）\n"+
-				"示例：read_file({\"path\": \".harness9/tool_results/{sessionID}/{toolCallID}.txt\", \"offset\": 4096, \"limit\": 4096})",
+				"- limit：读取字节数（默认 8192，即 read_file 工具的 maxReadLen）\n"+
+				"示例：read_file({\"path\": \".harness9/tool_results/{sessionID}/{toolCallID}.txt\", \"offset\": 8192, \"limit\": 8192})",
 		)
 	}
 

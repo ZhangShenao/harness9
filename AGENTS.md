@@ -27,10 +27,10 @@ harness9 是一款基于 Go 语言构建的**轻量级、功能完备、生产�
 - **Shell 执行（`!` 前缀）**: 输入框以 `!` 开头进入 Shell 模式，命令通过 `bash -c` 异步执行（30s 超时），输出 inline 追加到对话流，并在下次 LLM dispatch 时前置注入为上下文；已知交互式命令（vim/ssh 等）自动拦截
 - **Human-in-the-Loop 权限控制**: HookDecision（allow/deny/ask）三级决策 + DangerHook（19 条高危模式）+ PermissionHook（JSON 白名单，按需重载）+ 敏感路径硬保护（~/.ssh、~/.aws 等）+ TUI 五选项审批对话框 + PermissionMode 枚举
 - **Long-Term Memory（跨会话长期记忆）**: `internal/ltm/` 包；SQLite `long_term_memories` + standalone FTS5 `memories_fts`，复用 `state.db` 连接；MEMORY.md 物化视图（top-N 有界注入，≤5KB，规避 token bomb）+ `memory_search` 按需 FTS5 检索；三路触发：显式 `memory_write`/`memory_search` 工具 + 压缩前 `Extractor`（LLM 提取，fail-open）+ `WithMemoryNudge`（每 N 轮注入提示，防御性副本，不持久化）；SHA256 内容签名去重 + TTL 过期 + 软删除（signature=NULL 释放槽位）+ 命中强化（use_count/last_used_at）+ 陈旧识别（`StaleCandidates`）；Phase 3 接缝：Provider/Embedder/Consolidator 接口 + noopProvider
-- **Sandbox（Docker 容器级隔离）**: `internal/sandbox/` 包；`Environment` 接口（LocalEnvironment 进程级 / DockerEnvironment 容器级）+ `Container` 五状态生命周期（Pending→Running→Stopping→Terminated/Failed）+ `Manager`（Create/Destroy/DestroyAll/ReapOrphans/ListAll，并发安全）；工具透明路由（bash 命令通过 docker exec 进容器，文件工具通过 bind mount 共享 workDir）；安全加固：`--cap-drop all` + `--cap-add DAC_OVERRIDE/SETUID/SETGID`（包管理器所需最小能力）+ `--security-opt no-new-privileges:true` + `--pids-limit 256` + tmpfs nosuid/noexec/nodev；Agent 级隔离（主 Agent 和每个 Sub-Agent 各自拥有独立容器）；TUI SandboxBar 实时展示状态（颜色编码）；`label=harness9=1` 标记 + 启动时孤儿回收；`SANDBOX_ENABLED=true` 启用，关闭时行为与引入前完全一致（向后兼容）
+- **Sandbox（Docker 容器级隔离）**: `internal/sandbox/` 包；`Environment` 接口（LocalEnvironment 进程级 / DockerEnvironment 容器级）+ `Container` 五状态生命周期（Pending→Running→Stopping→Terminated/Failed）+ `Manager`（Create/Destroy/DestroyAll/ReapOrphans/ListAll，并发安全）；工具透明路由（bash 命令通过 docker exec 进容器，文件工具通过 bind mount 共享 workDir）；安全加固：`--cap-drop all` + `--cap-add DAC_OVERRIDE/SETUID/SETGID`（包管理器所需最小能力）+ `--security-opt no-new-privileges:true` + `--pids-limit 256` + tmpfs nosuid/noexec/nodev；Agent 级隔离（主 Agent 和每个 Sub-Agent 各自拥有独立容器）；TUI SandboxBar 实时展示状态（颜色编码）；`label=harness9=1` 标记 + 启动时孤儿回收；`SANDBOX_ENABLED=false` 时关闭（默认启用，Docker 不可用自动降级为本地进程模式），关闭时行为与引入前完全一致（向后兼容）
 - **Observability（OpenTelemetry 可观测性）**: `internal/observability/` 包；三条非侵入式接入路径——`OTELEngineObserver`（实现 `EngineObserver` 接口，管理 Interaction Span + Turn Span）+ `TracingProvider`（包装 `LLMProvider`，为每次 LLM 调用创建 Span + Token Metrics）+ `ObservabilityHook`（实现 `ToolHook`，为每次工具调用创建 Span）；Span 四层嵌套：`harness9.interaction → harness9.turn → harness9.llm_request / harness9.tool`；6 个关键 Metrics（LLM 延迟/Token 消耗/工具调用次数/工具执行耗时/Turn 总数）；`langfuse.trace.input`（trace 根节点 prompt）/ `langfuse.observation.input/output`（observation 层 LLM 消息与回复 + 工具参数与结果）/ `gen_ai.usage.*`（Token 用量，Langfuse 自动换算费用）；非法 UTF-8 字节自动净化，防止 OTLP 序列化失败；三种 Exporter：`noop`（默认零开销）/ `stdout`（开发调试）/ `otlp`（生产接入 Langfuse / Grafana / Jaeger）；通过环境变量 `OTEL_ENABLED` / `OTEL_EXPORTER_TYPE` / `OTEL_EXPORTER_OTLP_ENDPOINT` 驱动，默认关闭向后兼容
 - **网页搜索与抓取**: `internal/tools/web_search.go` / `web_fetch.go` / `web_safety.go` / `web_content.go`；`web_search` 工具（DuckDuckGo HTML 端点 POST，无 API Key，20s 超时 + 10s dial 超时，`golang.org/x/net/html` DOM 解析，`decodeUDDG` 还原真实 URL）+ `web_fetch` 工具（HTTP GET，15s 超时，5 次重定向上限，`text/html` → `go-readability` 提取主内容 → `html-to-markdown` 转 Markdown，`text/*` → 原始文本，其他 → 不支持提示）；`isSafeURL` 共享 SSRF 安全门（scheme + userinfo + DNS 解析 + 9 个 IP 段检查（含 IPv6 ULA `fc00::/7` 和链路本地 `fe80::/10`）+ IPv4-mapped IPv6 规范化 + IPv6 loopback，DNS 失败 fail-closed，重定向链每跳复检）；`DefaultPromptBuilder` 实时注入 `当前日期：YYYY-MM-DD`，防止 LLM 因训练截止日期偏差产生陈旧搜索词；主 Agent + 所有 Sub-Agent 均可使用，零额外配置
-- **Test & Eval（自动化测试与评估）**: `internal/evals/` 包；`ScriptedProvider`（确定性 LLM mock，按预设 Turn 序列返回回复，不发起真实 API 调用）+ `Assertion` 接口（Hard 断言：ToolCalled/ToolNotCalled/OutputContains/OutputExcludes/NoError/Error；Soft 断言：MaxTurns/MaxToolCalls，仅记警告不影响通过率）+ `EvalHarness`（`RunCase` 构建最小化隔离引擎 + `recordingHook` 记录工具调用轨迹 + `Suite` 批量运行）+ `SetupHermeticEnv`（清除所有 API Key，标准 Hermetic 隔离环境（密封测试，防止 eval 调用真实 API），本地与 CI 环境一致）+ `BuildReport`/`WriteJSON`/`WriteMarkdown`（JSON + Markdown 评估报告生成）；`internal/evals/dataset/` 黄金数据集（16 个用例：工具调用准确性 × 4 + Planning 完成率 × 4 + Context Engineering × 3 + Error Handling/Self-Healing × 3 + Memory 持久化 × 2）；`.github/workflows/eval.yml` CI Quality Gate（PR 触发 hermetic eval，失败则阻断合并）
+- **Test & Eval（自动化测试与评估）**: `internal/evals/` 包；`ScriptedProvider`（确定性 LLM mock，按预设 Turn 序列返回回复，不发起真实 API 调用）+ `Assertion` 接口（Hard 断言：ToolCalled/ToolNotCalled/OutputContains/OutputExcludes/NoError/Error；Soft 断言：MaxTurns/MaxToolCalls，仅记警告不影响通过率）+ `EvalHarness`（`RunCase` 构建最小化隔离引擎 + `recordingHook` 记录工具调用轨迹 + `Suite` 批量运行）+ `SetupHermeticEnv`（清除所有 API Key，标准 Hermetic 隔离环境（密封测试，防止 eval 调用真实 API），本地与 CI 环境一致）+ `BuildReport`/`WriteJSON`/`WriteMarkdown`（JSON + Markdown 评估报告生成）；`internal/evals/dataset/` 黄金数据集（22 个用例：工具调用准确性 × 6 + Planning 完成率 × 4 + Context Engineering × 4 + Error Handling/Self-Healing × 3 + Memory 持久化 × 2 + Context Compaction × 3）；`.github/workflows/eval.yml` CI Quality Gate（PR 触发 hermetic eval，失败则阻断合并）
 - **MCP 工具集成（Model Context Protocol）**: `internal/mcp/` 包；JSON-RPC 2.0 over stdio/HTTP；`Config`（`.mcp.json` 加载，file-not-found 静默返回空）+ `StdioTransport`（subprocess + NDJSON async reader goroutine + pending map ID 关联 + 三路 select ctx/done/response；`transport_proc_unix.go` 独立进程组 + SIGKILL 终止 npx 孤儿 node 子进程，`transport_proc_windows.go` stub 回退单进程 kill）+ `HTTPTransport`（无状态 POST）+ `Client`（initialize → notifications/initialized → tools/list → tools/call 握手与调用）+ `Manager`（并发 Start 30s per-server timeout，fail-soft，`ServerStatus` + `ToolDetails` TUI 通知链，`InjectTools` 闭包捕获避免循环变量 bug，`WithNotify` channel 回调；`Start` 始终返回 nil，失败状态通过 `Statuses()` 的 `StatusFailed` 暴露）+ `MCPToolAdapter`（实现 `BaseTool` 接口，`mcp__{server}__{tool}` 双下划线命名，对 Engine 完全透明）；TUI MCPBar（状态栏实时展示）+ `/mcp` 模态工具面板（工具列表，`e` 键 `tea.ExecProcess` 打开 `$EDITOR` 编辑 `.mcp.json`；鼠标滚轮 + ↑↓/jk 双支持）；`.mcp.json` 配置文件驱动，main.go 中异步启动不阻塞 TUI 渲染；`defer mcpMgr.Stop()` Session 级生命周期；`mcpPanelOverhead=4` 与 `contentH=m.height-4` 保持一致，确保面板撑满屏幕不遮挡对话区
 - **AutoDev（自举开发闭环）**: `skills/autodev/SKILL.md`（`/autodev` AgentSkill，三阶段：需求澄清→Spec 生成与强制确认关卡→委派 dev sub-agent）+ `.harness9/agents/dev.md`（dev sub-agent 定义：读规范→探索→实现→`go build/test` 迭代循环（≤3次）→gofmt→commit→push→`gh pr create`）；git worktree（`.autodev/<slug>/`，代码隔离）+ Docker Sandbox（执行隔离，需 `SANDBOX_IMAGE=golang:1.25-bookworm`）；零新 Go 代码，完全由 Skill 文件 + Agent 定义文件驱动，复用现有 Skills 系统、Sub-Agent 系统、Sandbox 基础设施
 
@@ -168,15 +168,24 @@ harness9 是一款基于 Go 语言构建的**轻量级、功能完备、生产�
 ```
 harness9/
 ├── cmd/
-│   └── harness9/
-│       ├── main.go                  # 程序入口：TUI（TTY）/ CLI（管道）；--version / --help flag；upgrade 子命令分发
-│       ├── tui.go                   # TUI 核心：tuiModel struct、样式变量、Init、RunTUI
-│       ├── tui_update.go            # Update 逻辑：事件处理、键盘、滚动、Tab 补全、Markdown 渲染、Thinking 块、Shell 执行
-│       ├── tui_view.go              # View 渲染：renderConversation/ToolProgress/StatusBar/Input/Footer
-│       ├── tui_banner.go            # WelcomeBanner：HARNESS9 ASCII Art + bannerContent()
-│       ├── tui_test.go              # TUI Update 逻辑单元测试（含 thinking block 测试、Shell 执行测试、truncateUTF8 测试）
-│       ├── cli.go                   # 交互式 CLI REPL 实现
-│       └── upgrade.go               # 自动升级：GitHub Releases API + SHA256 校验 + 原子替换
+│   ├── harness9/
+│   │   ├── main.go                  # 程序入口：TUI（TTY）/ CLI（管道）；--version / --help flag；upgrade 子命令分发
+│   │   ├── tui.go                   # TUI 核心：tuiModel struct、样式变量、Init、RunTUI
+│   │   ├── tui_update.go            # Update 逻辑：事件处理、键盘、滚动、Tab 补全、Markdown 渲染、Thinking 块、Shell 执行
+│   │   ├── tui_view.go              # View 渲染：renderConversation/ToolProgress/StatusBar/Input/Footer
+│   │   ├── tui_banner.go            # WelcomeBanner：HARNESS9 ASCII Art + bannerContent()
+│   │   ├── tui_test.go              # TUI Update 逻辑单元测试（含 thinking block 测试、Shell 执行测试、truncateUTF8 测试）
+│   │   ├── cli.go                   # 交互式 CLI REPL 实现
+│   │   └── upgrade.go               # 自动升级：GitHub Releases API + SHA256 校验 + 原子替换
+│   ├── swebench/                    # SWE-bench Lite benchmark runner（评估真实 Issue 修复能力）
+│   │   ├── main.go                  # CLI 入口：--dataset / --work-dir / --instance 等 flag
+│   │   ├── dataset.go               # SWE-bench 数据集加载与实例解析（HuggingFace JSON）
+│   │   ├── runner.go                # 运行器：构建隔离引擎 + 执行修复 + 收集轨迹
+│   │   ├── prompt.go                # 实例 prompt 组装（注入 repo 结构 / 问题描述 / patch 提示）
+│   │   └── report.go                # 评分与报告生成（apply_patch 校验 + 汇总输出）
+│   └── starhistory/                 # GitHub Star History 图表生成（写入本地 SVG）
+│       ├── main.go                  # CLI 入口：仓库名 / 输出路径 / 颜色参数
+│       └── render.go                # SVG 渲染：时间序列曲线 + 标注 + 主题
 ├── internal/
 │   ├── engine/                      # Agent 核心引擎 — 标准 ReAct 主循环
 │   │   ├── agent_loop.go            # 共享 runLoop 主循环内核 + 阻塞式 Run
@@ -226,6 +235,10 @@ harness9/
 │   │   ├── mem_session.go           # MemorySession：纯内存实现（测试用）
 │   │   ├── compaction.go            # Compactor 接口 + TokenBudgetCompactor + SlidingWindowCompactor
 │   │   ├── summarization.go         # SummarizationCompactor：LLM 摘要压缩 + Summarizer 接口 + 增量更新；MemoryExtractor 接口 + WithMemoryExtractor
+│   │   ├── progressive_compactor.go # ProgressiveCompactor：按 token 占用比例分级压缩（Warn/Soft/Full/Emergency）+ RecordedCompactor
+│   │   ├── anchor.go                # Anchor 类型 + ParseAnchorsAndSummary + MergeAnchors（五类结构化锚点系统）
+│   │   ├── compaction_offloader.go  # CompactionOffloader：压缩期超大 tool_result 外存到文件系统
+│   │   ├── record_store.go          # CompactionRecord + CompactionTier + FileRecordStore（JSONL 压缩审计持久化）
 │   │   ├── token.go                 # EstimateTokens/EstimateToolTokens（字符数÷4 估算）+ FormatTokenCount
 │   │   ├── sqlite_session_test.go   # SQLiteSession 集成测试
 │   │   ├── mem_session_test.go      # MemorySession 单元测试
@@ -247,6 +260,7 @@ harness9/
 │   │   ├── interface.go             # LLMProvider 接口定义（Generate + GenerateStream）
 │   │   ├── openai.go                # OpenAI 兼容 API 适配器（支持 OpenRouter / Azure）；WithIncludeReasoning + extractReasoningContent
 │   │   ├── anthropic.go             # Anthropic 兼容 API 适配器（Messages API）；WithThinkingBudget（extended thinking）
+│   │   ├── model_limits.go          # 已知模型上下文窗口注册表 + GetModelLimits（剥离前缀，未知回退 256K）
 │   │   ├── tool_call_accumulator.go # OpenAI/Anthropic 共享的流式工具调用累积器
 │   │   ├── anthropic_thinking_test.go # WithThinkingBudget 单元测试（含 clamp 测试）
 │   │   ├── openai_reasoning_test.go # WithIncludeReasoning + extractReasoningContent + auto-detect 测试
@@ -262,13 +276,14 @@ harness9/
 │   │   ├── safe_path.go             # 共享路径沙箱校验（防 Path Traversal 攻击）
 │   │   ├── path_locker.go           # 路径级 RWMutex + 引用计数，并发文件操作保护
 │   │   ├── bash.go                  # bash 工具（Shell 命令执行，YOLO 哲学）
-│   │   ├── read_file.go             # read_file 工具（沙箱保护，offset/limit 分页，4096 字节默认上限）
+│   │   ├── read_file.go             # read_file 工具（沙箱保护，offset/limit 分页，8192 字节默认上限）
 │   │   ├── write_file.go            # write_file 工具（沙箱保护，Auto-Mkdir）
 │   │   ├── edit_file.go             # edit_file 工具（多级模糊匹配文件编辑，沙箱保护）
 │   │   ├── todo_write.go            # todo_write 工具（读写 TodoStore + 状态转换校验 + WithPlanWriter 注入）
 │   │   ├── todo_write_test.go       # todo_write 工具单元测试（含状态校验测试）
 │   │   ├── memory_write.go          # memory_write 工具（add/update[merge]/remove 三动作 + Precis 重建）
 │   │   ├── memory_search.go         # memory_search 工具（FTS5 全文检索 + 命中强化）
+│   │   ├── mcp_adapter.go           # MCPToolAdapter：MCP 工具包装为 BaseTool（mcp__{server}__{tool} 命名 + SanitizeMCPName）
 │   │   ├── web_safety.go            # SSRF 防护（isSafeURL：scheme/userinfo/DNS/9 个 IP 段检查，含 IPv6 ULA/链路本地）
 │   │   ├── web_safety_test.go       # 19 个用例（IP 段 / scheme / DNS fail-closed / IPv6 loopback / ULA / 链路本地）
 │   │   ├── web_content.go           # HTML→Markdown 管线（go-readability + html-to-markdown + tokenizer fallback，UTF-8 安全截断）
@@ -292,6 +307,7 @@ harness9/
 │   │   ├── observer.go              # OTELEngineObserver：Interaction Span + Turn Span
 │   │   ├── provider.go              # TracingProvider：LLM Request Span + Token Metrics
 │   │   ├── hook.go                  # ObservabilityHook：Tool Execution Span + Tool Metrics
+│   │   ├── helpers.go               # truncateAttr / serializeMessages / serializeOutput（Span 属性净化与序列化）
 │   │   └── *_test.go                # 各组件单元测试（noop tracer）
 │   ├── evals/                       # 自动化评估框架 — Test & Eval
 │   │   ├── provider.go              # ScriptedProvider：确定性 LLM mock（按脚本序列返回回复）
@@ -299,12 +315,13 @@ harness9/
 │   │   ├── harness.go               # RunCase / Suite / recordingHook / extractFinalOutput
 │   │   ├── testenv.go               # SetupHermeticEnv：标准 Hermetic 隔离环境（清除 API Key，禁止真实 LLM 调用）
 │   │   ├── report.go                # BuildReport / WriteJSON / WriteMarkdown（评估报告生成）
-│   │   └── dataset/                 # 黄金数据集（go test 可直接运行，16 个用例）
-│   │       ├── tool_calling_test.go # 工具调用准确性（4 用例：bash/read_file/write+read/纯对话）
+│   │   └── dataset/                 # 黄金数据集（go test 可直接运行，22 个用例）
+│   │       ├── tool_calling_test.go # 工具调用准确性（6 用例：bash/read_file/write+read/L4 模糊匹配/并行工具/纯对话）
 │   │       ├── planning_test.go     # Planning 完成率（4 用例：生成计划/不写文件/先规划后执行/只读探索）
 │   │       ├── memory_test.go       # Memory 持久化（2 用例：memory_write/memory_search）
-│   │       ├── context_test.go      # Context Engineering（3 用例：多步工具链/多轮对话/工具错误观察）
-│   │       └── error_handling_test.go # Error Handling（3 用例：工具失败降级/写入失败停止/MaxTurns 保护）
+│   │       ├── context_test.go      # Context Engineering（4 用例：多步工具链/多轮对话/工具错误观察/停滞 nudge）
+│   │       ├── error_handling_test.go # Error Handling（3 用例：工具失败降级/写入失败停止/MaxTurns 保护）
+│   │       └── compaction_test.go   # Context Compaction（3 用例：锚点保留/offload 检索/渐进式分层压缩）
 │   ├── mcp/                         # MCP Client 集成 — 外部工具服务器接入
 │   │   ├── config.go                # ServerConfig + Config 类型 + LoadConfig（读 .mcp.json，file-not-found 静默返回空）
 │   │   ├── transport.go             # Transport 接口 + StdioTransport（subprocess + NDJSON async reader goroutine + pending map + 三路 select）+ HTTPTransport
@@ -321,6 +338,12 @@ harness9/
 │   ├── env/                         # 环境配置
 │   │   ├── env.go                   # 零依赖 .env 文件加载器（系统变量优先）
 │   │   └── env_test.go              # 配置加载单元测试
+│   ├── permission/                  # 工具权限规则系统（JSON 配置驱动）
+│   │   ├── rules.go                 # Rules：有序规则列表 + Evaluate/matchPattern（glob 匹配）+ LoadRules/SaveRules
+│   │   └── hook.go                  # Hook：实现 hooks.ToolHook（NewHook 内存 / NewFileHook 每次调用重载配置文件）
+│   ├── mission/                     # Mission Control 持久化领域（协调长期运行的 Agent 工作，不依赖单个会话）
+│   │   ├── types.go                 # MissionStatus/TaskStatus 枚举 + Mission/Task/TaskAttempt/Artifact/Evidence 类型 + validTaskTransition
+│   │   └── store.go                 # Store：SQLite 事实源（CreateMission/CreateTask/TransitionTask/AddArtifact/AddEvidence，含依赖就绪排队与不可变触发器）
 │   └── logfmt/                      # 跨模块共享的块状日志格式化工具
 │       ├── format.go                # 块状日志格式化（FormatMsg/ToolStart/LoopStart 等）
 │       └── format_test.go           # 格式化函数单元测试
@@ -429,9 +452,11 @@ harness9/
 | **tools** | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file / todo_write / memory_write（add/update/remove + Precis 重建）/ memory_search（FTS5 检索 + 命中强化）/ web_search（DuckDuckGo，无 API Key）/ web_fetch（go-readability + html-to-markdown，Markdown 输出））+ 路径沙箱（safe_path.go）+ SSRF 防护（web_safety.go） | ✅ |
 | **env** | 零依赖 `.env` 配置加载器（系统变量优先） | ✅ |
 | **logfmt** | 跨模块共享的块状日志渲染（FormatMsg/ToolStart/LoopStart 等 11 个格式函数） | ✅ |
-| **sandbox** | Docker 容器级 Sandbox：Environment 接口（LocalEnvironment 进程级 / DockerEnvironment 容器级）、Container 五状态机（Pending/Running/Stopping/Terminated/Failed）、Manager（Create/Destroy/DestroyAll/ReapOrphans/ListAll，并发安全）、工具透明路由（bash via docker exec，文件 via bind mount）、安全加固（cap-drop all + security-opt no-new-privileges + pids-limit + tmpfs）、Agent 级隔离（主 Agent + 每个 Sub-Agent 独立容器）、TUI SandboxBar、孤儿容器回收、向后兼容（`SANDBOX_ENABLED=true` 才启用） | ✅ |
+| **sandbox** | Docker 容器级 Sandbox：Environment 接口（LocalEnvironment 进程级 / DockerEnvironment 容器级）、Container 五状态机（Pending/Running/Stopping/Terminated/Failed）、Manager（Create/Destroy/DestroyAll/ReapOrphans/ListAll，并发安全）、工具透明路由（bash via docker exec，文件 via bind mount）、安全加固（cap-drop all + security-opt no-new-privileges + pids-limit + tmpfs）、Agent 级隔离（主 Agent + 每个 Sub-Agent 独立容器）、TUI SandboxBar、孤儿容器回收、向后兼容（默认启用，`SANDBOX_ENABLED=false` 才关闭，行为与引入前完全一致） | ✅ |
 | **observability** | OpenTelemetry 可观测层：`Config`/`Setup`（noop/stdout/otlp 三种 Exporter）、`OTELEngineObserver`（Interaction + Turn Span）、`TracingProvider`（LLM Request Span + Token Metrics）、`ObservabilityHook`（Tool Execution Span + Tool Metrics）；默认 noop 零开销，`OTEL_ENABLED=true` 激活 | ✅ |
-| **evals** | 自动化评估框架：`ScriptedProvider`（确定性 mock）、`Assertion`（Hard/Soft 断言，8 种实现）、`RunCase`/`Suite`（最小化隔离引擎 + `recordingHook`）、`SetupHermeticEnv`（Hermetic CI 隔离）、`BuildReport`/`WriteJSON`/`WriteMarkdown`（评估报告）；`dataset/` 黄金数据集 16 用例（tool_calling/planning/context/error_handling/memory）；`.github/workflows/eval.yml` Quality Gate | ✅ |
+| **evals** | 自动化评估框架：`ScriptedProvider`（确定性 mock）、`Assertion`（Hard/Soft 断言，8 种实现）、`RunCase`/`Suite`（最小化隔离引擎 + `recordingHook`）、`SetupHermeticEnv`（Hermetic CI 隔离）、`BuildReport`/`WriteJSON`/`WriteMarkdown`（评估报告）；`dataset/` 黄金数据集 22 用例（tool_calling/planning/context/error_handling/memory/compaction）；`.github/workflows/eval.yml` Quality Gate | ✅ |
+| **permission** | 工具权限规则系统（JSON 配置驱动）：`Rules`（有序规则列表，glob 模式匹配，无匹配默认 ask）、`LoadRules`/`SaveRules`（配置文件重载，TUI "总是允许"动态生效）、`Hook`（实现 hooks.ToolHook，`NewHook` 内存 / `NewFileHook` 每次调用重载） | ✅ |
+| **mission** | Mission Control 持久化领域：`MissionStatus`/`TaskStatus` 枚举 + `Mission`/`Task`/`TaskAttempt`/`Artifact`/`Evidence` 类型 + `validTaskTransition` 状态机校验；`Store`（SQLite 事实源：CreateMission/CreateTask/TransitionTask/AddArtifact/AddEvidence，依赖就绪自动排队 + evidence/artifact 不可变触发器 + workspace lease 唯一索引） | ✅ |
 | **mcp** | MCP Client 集成：`Config`（`.mcp.json` 加载，file-not-found 静默返回空）、`StdioTransport`（subprocess + NDJSON async reader goroutine + pending map ID 关联 + 三路 select）、`HTTPTransport`（无状态 POST）、`Client`（initialize/notifications-initialized/tools-list/tools-call）、`Manager`（并发 Start 30s per-server timeout fail-soft、`ServerStatus`+`ToolDetails` TUI 通知、`InjectTools` 无循环变量 bug 闭包捕获、`WithNotify` channel 回调）；`MCPToolAdapter` 实现 `BaseTool` 接口、`mcp__{server}__{tool}` 双下划线命名、对 Engine 完全透明；TUI MCPBar + `/mcp` 模态面板（`e` 键 `tea.ExecProcess` 编辑配置） | ✅ |
 | **autodev** | 自举开发闭环：`skills/autodev/SKILL.md`（`/autodev` AgentSkill，三阶段工作流：需求澄清→Spec 强制确认→委派）+ `.harness9/agents/dev.md`（dev sub-agent：读规范→探索→实现→go build/test 循环≤3次→gofmt→commit→push→gh pr create）；git worktree（`.autodev/<slug>/`）+ Docker Sandbox（`SANDBOX_IMAGE=golang:1.25-bookworm`）；零新 Go 代码，复用 Skills/Sub-Agent/Sandbox 基础设施 | ✅ |
 | **provider/providertest** | 测试基础设施（mock provider），不进入生产二进制 | ✅ |
@@ -553,11 +578,12 @@ func (t *XxxTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 
 | 功能维度 | 对应 dataset 文件 | 核心验证点 |
 |---------|----------------|-----------|
-| Tool Calling | `tool_calling_test.go` | 工具被调用、工具不被调用、多工具顺序调用 |
+| Tool Calling | `tool_calling_test.go` | 工具被调用、工具不被调用、多工具顺序/并行调用 |
 | Planning | `planning_test.go` | todo_write 生成计划、Plan Mode 不写文件、先规划后执行 |
 | Memory | `memory_test.go` | memory_write/memory_search 工具调用 |
 | Context Engineering | `context_test.go` | 多轮工具链、工具结果被观察后调整行为 |
 | Error Handling | `error_handling_test.go` | 工具失败后 self-healing、MaxTurns 受控终止 |
+| Context Compaction | `compaction_test.go` | 压缩后锚点保留、offload 检索、渐进式分层压缩 |
 
 **编写用例的强制要求**
 
@@ -599,7 +625,7 @@ go test ./internal/evals/... ./internal/evals/dataset/... -v
 # 见 .github/workflows/eval.yml —— eval 失败则阻断合并
 ```
 
-当前黄金数据集：16 个用例，覆盖 tool_calling（4）/ planning（4）/ memory（2）/ context（3）/ error_handling（3）。新 feature 只能**增加**用例，不能删除或降低覆盖率。
+当前黄金数据集：22 个用例，覆盖 tool_calling（6）/ planning（4）/ memory（2）/ context（4）/ error_handling（3）/ compaction（3）。新 feature 只能**增加**用例，不能删除或降低覆盖率。
 
 ### 5.9 文档双语规范
 
@@ -651,7 +677,7 @@ Provider 实现者需注意：`convertMessages()` 方法应负责将 `schema.Mes
 
 #### 工具结果的截断
 - 日志输出截断至 512 字节（`maxLogOutputLen`）
-- `read_file` 工具截断至 4096 字节
+- `read_file` 工具截断至 8192 字节
 - 截断时应在返回文本末尾添加明确的截断标记
 
 ### 6.3 引擎约束

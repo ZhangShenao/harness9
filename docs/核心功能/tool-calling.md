@@ -335,7 +335,7 @@ func safePath(workDir, inputPath string) (string, error)
 | 名称 | `read_file` |
 | 参数 | `path` (string, 必需) — 相对工作区的文件路径 |
 | 输出 | 文件内容文本 |
-| 截断策略 | 超过 `maxReadLen = 4096` 字节时截断并附加提示信息 |
+| 截断策略 | 超过 `maxReadLen = 8192` 字节时截断并附加提示信息 |
 
 **安全措施**：
 - 路径通过共享 `safePath` 校验（沙箱边界 / Sandbox Boundary）

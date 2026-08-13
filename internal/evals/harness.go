@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/harness9/internal/engine"
@@ -129,11 +130,17 @@ type recordingHook struct {
 	// names 是外部传入的切片指针，所有 BeforeExecute 调用均追加到此切片。
 	// 使用指针而非直接持有切片，确保 goroutine 中的 append 反映到外部变量。
 	names *[]string
+	// mu 保护 names 切片：引擎在同一 Turn 内并发执行多个工具调用时，
+	// 各工具 goroutine 会并发进入 BeforeExecute，若无锁保护则发生切片并发写竞争
+	// （go test -race 可复现）。顺序无严格要求，此处仅保证写入原子性。
+	mu sync.Mutex
 }
 
 // BeforeExecute 记录工具调用名称，始终返回 HookActionAllow（不拦截任何工具）。
 func (h *recordingHook) BeforeExecute(ctx context.Context, tc schema.ToolCall) (context.Context, hooks.HookDecision, error) {
+	h.mu.Lock()
 	*h.names = append(*h.names, tc.Name)
+	h.mu.Unlock()
 	return ctx, hooks.Allow(), nil
 }
 

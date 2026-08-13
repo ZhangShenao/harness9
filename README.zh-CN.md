@@ -67,7 +67,7 @@ harness9 --version
 - **[文件系统能力](https://zhangshenao.github.io/harness9/zh/docs/file-system)** —— OffloadHook 把超大工具输出转存到磁盘，FilePlanWriter 把计划持久化为 markdown。
 - **[Sub-Agent 子代理委派](https://zhangshenao.github.io/harness9/zh/docs/sub-agent)** —— 把边界清晰的子任务委派给受限工具集的独立子代理。
 - **[Observability](https://zhangshenao.github.io/harness9/zh/docs/eval)** —— OpenTelemetry Span + Metrics 贯穿引擎、LLM 调用与工具执行，开箱支持接入 Langfuse/Grafana/Jaeger。
-- **[Test & Eval](https://zhangshenao.github.io/harness9/zh/docs/eval)** —— 确定性 `ScriptedProvider` + 断言体系 + 16 用例黄金数据集，CI 质量门禁。
+- **[Test & Eval](https://zhangshenao.github.io/harness9/zh/docs/eval)** —— 确定性 `ScriptedProvider` + 断言体系 + 22 用例黄金数据集，CI 质量门禁。
 - **[Sandbox](https://zhangshenao.github.io/harness9/zh/docs/sandbox)** —— 默认在加固过的 Docker 容器内执行所有工具调用，Docker 不可用时自动降级为本地执行。
 - **[AutoDev（`/autodev`）](https://zhangshenao.github.io/harness9/zh/docs/autodev)** —— 自举开发闭环：需求澄清 → Spec 确认 → 委派 dev sub-agent 编码、测试、创建 PR。
 - **[MCP 工具集成](https://zhangshenao.github.io/harness9/zh/docs/mcp)** —— 通过 `.mcp.json` 接入任意 Model Context Protocol Server，工具透明注入注册表。

@@ -4,7 +4,7 @@ harness9 的质量保障体系由三个相互独立但协同工作的子系统�
 
 ```
 开发阶段 ──→ Test（确定性测试）      ScriptedProvider + Assertion
-CI 阶段  ──→ Eval（黄金数据集评估）  16 个用例 + Quality Gate
+CI 阶段  ──→ Eval（黄金数据集评估）  22 个用例 + Quality Gate
 生产阶段 ──→ Observability（追踪）  OTEL Traces + Metrics → Langfuse
 ```
 
@@ -33,7 +33,7 @@ CI 阶段  ──→ Eval（黄金数据集评估）  16 个用例 + Quality Gat
                          │
           ┌──────────────▼──────────────┐
           │   Eval（评估）               │  ← CI/CD：黄金数据集 Quality Gate
-          │   量化 Agent 能力边界        │    16 个用例，PR 触发，失败阻断合并
+          │   量化 Agent 能力边界        │    22 个用例，PR 触发，失败阻断合并
           └──────────────┬──────────────┘
                          │
           ┌──────────────▼──────────────┐
@@ -191,13 +191,15 @@ func TestMyFeature(t *testing.T) {
 
 ## 三、Eval 子系统：黄金数据集
 
-### 3.1 当前黄金数据集（16 个用例）
+### 3.1 当前黄金数据集（22 个用例）
 
 | 类别 | 用例 | 验证目标 |
 |------|------|---------|
 | `tool_calling` | `bash_basic` | bash 工具被正确调用 |
 | `tool_calling` | `read_file` | read_file 工具被正确调用 |
 | `tool_calling` | `write_then_read` | 多工具顺序调用（write → read） |
+| `tool_calling` | `edit_file_fuzzy_indent` | 缩进不一致时 edit_file L4 模糊匹配端到端不破坏循环 |
+| `tool_calling` | `parallel_tools` | 同一 Turn 并行调用多工具，结果均被记录（`-race` 下兼为并发竞争回归） |
 | `tool_calling` | `no_tool_conversation` | 纯对话不触发工具调用 |
 | `planning` | `plan_generated` | todo_write 写入计划 |
 | `planning` | `no_write_in_plan_mode` | 规划阶段不调用 write_file/edit_file |
@@ -206,16 +208,20 @@ func TestMyFeature(t *testing.T) {
 | `context` | `sequential_tool_chain` | 多步工具调用依赖上一步 Observation |
 | `context` | `multi_turn_conversation` | 多轮纯对话连贯性 |
 | `context` | `tool_error_observation` | 工具失败 Observation 驱动 LLM 改变策略 |
+| `context` | `stall_nudge_preserves_loop` | WithStallNudge 注入提示不破坏 ReAct 循环正确性 |
 | `error_handling` | `bash_fallback_on_error` | 工具失败后 LLM 切换替代方案（Self-Healing） |
 | `error_handling` | `write_failure_graceful_stop` | 写入失败后优雅降级不重试 |
 | `error_handling` | `max_turns_protection` | MaxTurns 触发引擎受控终止（不 panic） |
 | `memory` | `write_memory` | memory_write 工具被调用 |
 | `memory` | `search_memory` | memory_search 工具被调用 |
+| `compaction` | `anchor_preservation` | 压缩后 LLM 仍能回答关于用户意图的问题（锚点保留） |
+| `compaction` | `offload_retrieval` | 压缩后 LLM 可通过工具检索 offloaded 内容 |
+| `compaction` | `progressive_tiers` | 大量对话压缩后 LLM 行为仍连贯（渐进式分层） |
 
 ### 3.2 运行 Eval
 
 ```bash
-# 运行全量黄金数据集（16 个用例，无需 API Key）
+# 运行全量黄金数据集（22 个用例，无需 API Key）
 go test ./internal/evals/... ./internal/evals/dataset/... -v
 
 # 只运行特定类别
@@ -224,6 +230,7 @@ go test ./internal/evals/dataset/... -v -run TestPlanning
 go test ./internal/evals/dataset/... -v -run TestContextEngineering
 go test ./internal/evals/dataset/... -v -run TestErrorHandling
 go test ./internal/evals/dataset/... -v -run TestMemory
+go test ./internal/evals/dataset/... -v -run TestCompaction
 
 # 生成 JSON + Markdown 报告
 results := suite.Run(ctx)
@@ -239,7 +246,7 @@ Feature 开发完成后，**必须**在 `internal/evals/dataset/` 下新增对�
 - 每个功能至少覆盖**正向用例**（功能正常工作）和**反向用例**（约束被正确执行）
 - `SetupHermeticEnv` 首行调用，`NoErrorAssertion` 或 `ErrorAssertion` 必选
 - 扩展数据集只需新增 `_test.go` 文件，无需修改框架代码
-- 当前 16 个用例是 baseline，只能增加，不能删除或降低覆盖率
+- 当前 22 个用例是 baseline，只能增加，不能删除或降低覆盖率
 
 ---
 

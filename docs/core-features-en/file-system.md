@@ -115,8 +115,8 @@ To support the LLM retrieving offload files in segments, the `read_file` tool ad
 ```json
 {
   "path": "relative or absolute path",
-  "offset": 4096,   // starting byte (optional, default 0)
-  "limit": 4096     // number of bytes to read (optional, default 4096)
+  "offset": 8192,   // starting byte (optional, default 0)
+  "limit": 8192     // number of bytes to read (optional, default 8192 = read_file's maxReadLen)
 }
 ```
 
@@ -136,8 +136,8 @@ To support the LLM retrieving offload files in segments, the `read_file` tool ad
 When a tool's output exceeds the threshold, the full content is automatically saved to the file system, and only a path reference and preview are shown in context.
 To view the full output, use the read_file tool with offset/limit parameters for paginated reading:
 - offset: starting byte position (default 0)
-- limit: number of bytes to read (default 4096)
-Example: read_file({"path": "/path/to/offload/file.txt", "offset": 4096, "limit": 4096})
+- limit: number of bytes to read (default 8192)
+Example: read_file({"path": "/path/to/offload/file.txt", "offset": 8192, "limit": 8192})
 ```
 
 ---

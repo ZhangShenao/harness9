@@ -115,8 +115,8 @@ type OffloadHook struct {
 ```json
 {
   "path": "相对或绝对路径",
-  "offset": 4096,   // 起始字节（可选，默认 0）
-  "limit": 4096     // 读取字节数（可选，默认 4096）
+  "offset": 8192,   // 起始字节（可选，默认 0）
+  "limit": 8192     // 读取字节数（可选，默认 8192，即 read_file 的 maxReadLen）
 }
 ```
 
@@ -136,8 +136,8 @@ type OffloadHook struct {
 当工具输出超过阈值时，完整内容会自动保存到文件系统，context 中仅显示路径引用和预览。
 如需查看完整输出，使用 read_file 工具并指定 offset/limit 参数分页读取：
 - offset：起始字节位置（默认 0）
-- limit：读取字节数（默认 4096）
-示例：read_file({"path": "/path/to/offload/file.txt", "offset": 4096, "limit": 4096})
+- limit：读取字节数（默认 8192）
+示例：read_file({"path": "/path/to/offload/file.txt", "offset": 8192, "limit": 8192})
 ```
 
 ---
