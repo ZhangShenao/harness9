@@ -181,11 +181,16 @@ func (p *AnthropicProvider) GenerateStream(ctx context.Context, msgs []schema.Me
 			switch event.Type {
 			case "message_start":
 				// message_start 携带本次请求的实际 InputTokens（在响应开始时即可获得）。
+				// OutputTokens 此时仍为 0——输出 token 只在 message_delta 事件（流末尾）才被填充。
 				ms := event.AsMessageStart()
-				actualUsage = &schema.Usage{
-					InputTokens:  int(ms.Message.Usage.InputTokens),
-					OutputTokens: int(ms.Message.Usage.OutputTokens),
-				}
+				actualUsage = applyStreamUsage(actualUsage, ms.Message.Usage.InputTokens, ms.Message.Usage.OutputTokens)
+
+			case "message_delta":
+				// message_delta 在流末尾（所有 content 增量之后）上报累计的 OutputTokens。
+				// 不处理此事件会导致流式场景下 actualUsage.OutputTokens 恒为 0，
+				// 使 TUI 的 token 用量展示与实际不符。
+				md := event.AsMessageDelta()
+				actualUsage = applyStreamUsage(actualUsage, md.Usage.InputTokens, md.Usage.OutputTokens)
 
 			case "content_block_start":
 				cb := event.AsContentBlockStart()
@@ -339,6 +344,28 @@ func (p *AnthropicProvider) convertTools(availableTools []schema.ToolDefinition)
 		anthropicTools = append(anthropicTools, anthropic.ToolUnionParam{OfTool: &tp})
 	}
 	return anthropicTools, nil
+}
+
+// applyStreamUsage 将单个流式事件携带的 token 用量合并进 actualUsage，返回更新后的用量。
+//
+// 覆盖 Anthropic 流式中的两种用法来源：
+//   - message_start：携带 InputTokens（OutputTokens 此时恒为 0）
+//   - message_delta：流末尾上报累计 OutputTokens（InputTokens 字段为 0）
+//
+// 合并规则：仅当某字段 > 0 时才覆盖（message_delta 场景下保留 message_start
+// 已记录的 InputTokens）。actualUsage 为 nil 时新建，供 StreamChunkDone 携带。
+// 独立为纯函数便于单元测试，无需构造 SDK 流式事件对象。
+func applyStreamUsage(actualUsage *schema.Usage, inputTokens, outputTokens int64) *schema.Usage {
+	if actualUsage == nil {
+		actualUsage = &schema.Usage{}
+	}
+	if inputTokens > 0 {
+		actualUsage.InputTokens = int(inputTokens)
+	}
+	if outputTokens > 0 {
+		actualUsage.OutputTokens = int(outputTokens)
+	}
+	return actualUsage
 }
 
 // extractMessage 从 Anthropic SDK 的 ContentBlockUnion 切片中提取 schema.Message。

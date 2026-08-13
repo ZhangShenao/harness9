@@ -11,7 +11,7 @@ import (
 	"github.com/harness9/internal/schema"
 )
 
-// TestToolCalling 运行工具调用准确性评估（5 个黄金用例）。
+// TestToolCalling 运行工具调用准确性评估（6 个黄金用例）。
 func TestToolCalling(t *testing.T) {
 	evals.SetupHermeticEnv(t)
 
@@ -123,6 +123,29 @@ func TestToolCalling(t *testing.T) {
 				&evals.ToolNotCalledAssertion{ToolName: "write_file"},
 				&evals.OutputContainsAssertion{Expected: "harness9"},
 				&evals.NoErrorAssertion{},
+			},
+		},
+		// 用例6：同一 Turn 内并行调用两个工具。
+		// 引擎会并发执行这两个工具调用（preallocated slice + index write 保证结果顺序），
+		// 该用例在 go test -race 下同时是 recordingHook 并发写竞争的回归测试。
+		{
+			ID:       "tool_calling/parallel_tools",
+			Category: "tool_calling",
+			Prompt:   "同时运行 ls 和 pwd 两个命令，汇报结果。",
+			Provider: evals.NewScriptedProvider(
+				evals.ScriptedTurn{
+					ToolCalls: []schema.ToolCall{
+						evals.MakeToolCall("tc1", "bash", `{"command":"ls"}`),
+						evals.MakeToolCall("tc2", "bash", `{"command":"pwd"}`),
+					},
+				},
+				evals.ScriptedTurn{Text: "已同时执行两个命令。"},
+			),
+			Assertions: []evals.Assertion{
+				// 两个并行工具调用都必须被记录（MinTimes=2 验证并发记录不丢项）
+				&evals.ToolCalledAssertion{ToolName: "bash", MinTimes: 2},
+				&evals.NoErrorAssertion{},
+				&evals.MaxTurnsAssertion{Max: 3},
 			},
 		},
 	}

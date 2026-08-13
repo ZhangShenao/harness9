@@ -335,7 +335,7 @@ Implementation highlights:
 | Name | `read_file` |
 | Parameters | `path` (string, required) — file path relative to the workspace |
 | Output | File content text |
-| Truncation policy | Truncated with an appended notice when exceeding `maxReadLen = 4096` bytes |
+| Truncation policy | Truncated with an appended notice when exceeding `maxReadLen = 8192` bytes |
 
 **Security measures**:
 - The path is validated through the shared `safePath` (Sandbox Boundary)

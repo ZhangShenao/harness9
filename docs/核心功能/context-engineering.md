@@ -532,7 +532,7 @@ Generate(ctx context.Context, messages []schema.Message, availableTools []schema
 - **OpenAI（非流式）**：从 `resp.Usage.PromptTokens` / `resp.Usage.CompletionTokens` 提取
 - **OpenAI（流式）**：请求时设置 `StreamOptions.IncludeUsage = true`，从末尾 chunk 的 `Usage.PromptTokens` 提取
 - **Anthropic（非流式）**：从 `resp.Usage.InputTokens` / `resp.Usage.OutputTokens` 提取
-- **Anthropic（流式）**：从 `message_start` 事件的 `Message.Usage.InputTokens` 提取
+- **Anthropic（流式）**：`message_start` 事件提取 `Message.Usage.InputTokens`；流末尾 `message_delta` 事件提取累计 `Usage.OutputTokens`
 - **Mock Provider**：返回 `nil`（测试桩不模拟 API 调用）
 
 **引擎中的更新时序：**

@@ -4,7 +4,7 @@ harness9's quality assurance system consists of three mutually independent but c
 
 ```
 Development stage ──→ Test (deterministic testing)      ScriptedProvider + Assertion
-CI stage           ──→ Eval (golden dataset evaluation)  16 cases + Quality Gate
+CI stage           ──→ Eval (golden dataset evaluation)  22 cases + Quality Gate
 Production stage   ──→ Observability (tracing)           OTEL Traces + Metrics → Langfuse
 ```
 
@@ -33,7 +33,7 @@ Traditional software unit testing assumes: given the same input, you always get 
                              │
           ┌───────────────────▼──────────────────┐
           │ Eval                                 │  ← CI/CD: golden dataset Quality Gate
-          │ Quantify Agent capability boundaries │    16 cases, PR-triggered, failure blocks merge
+          │ Quantify Agent capability boundaries │    22 cases, PR-triggered, failure blocks merge
           └───────────────────┬──────────────────┘
                              │
           ┌───────────────────▼──────────────────┐
@@ -192,13 +192,15 @@ func TestMyFeature(t *testing.T) {
 
 ## III. Eval Subsystem: Golden Dataset
 
-### 3.1 Current Golden Dataset (16 cases)
+### 3.1 Current Golden Dataset (22 cases)
 
 | Category | Case | Verification target |
 |------|------|---------|
 | `tool_calling` | `bash_basic` | bash tool is correctly called |
 | `tool_calling` | `read_file` | read_file tool is correctly called |
 | `tool_calling` | `write_then_read` | Multiple tools called in sequence (write → read) |
+| `tool_calling` | `edit_file_fuzzy_indent` | edit_file L4 fuzzy match with mismatched indentation works end-to-end without breaking the loop |
+| `tool_calling` | `parallel_tools` | Multiple tools called in parallel in the same Turn, all recorded (also a regression test for the concurrent race under `-race`) |
 | `tool_calling` | `no_tool_conversation` | Pure conversation does not trigger a tool call |
 | `planning` | `plan_generated` | todo_write writes a plan |
 | `planning` | `no_write_in_plan_mode` | write_file/edit_file are not called during the planning stage |
@@ -207,16 +209,20 @@ func TestMyFeature(t *testing.T) {
 | `context` | `sequential_tool_chain` | Multi-step tool calls depend on the previous step's Observation |
 | `context` | `multi_turn_conversation` | Multi-turn pure-conversation coherence |
 | `context` | `tool_error_observation` | Tool failure Observation drives the LLM to change strategy |
+| `context` | `stall_nudge_preserves_loop` | WithStallNudge injected hint does not break ReAct loop correctness |
 | `error_handling` | `bash_fallback_on_error` | LLM switches to an alternative approach after a tool failure (Self-Healing) |
 | `error_handling` | `write_failure_graceful_stop` | Graceful degradation without retry after a write failure |
 | `error_handling` | `max_turns_protection` | MaxTurns triggers controlled engine termination (no panic) |
 | `memory` | `write_memory` | memory_write tool is called |
 | `memory` | `search_memory` | memory_search tool is called |
+| `compaction` | `anchor_preservation` | After compaction the LLM can still answer questions about the user's intent (anchor preservation) |
+| `compaction` | `offload_retrieval` | After compaction the LLM can retrieve offloaded content via tools |
+| `compaction` | `progressive_tiers` | LLM behavior stays coherent after compressing a long conversation (progressive tiers) |
 
 ### 3.2 Running Eval
 
 ```bash
-# Run the full golden dataset (16 cases, no API Key required)
+# Run the full golden dataset (22 cases, no API Key required)
 go test ./internal/evals/... ./internal/evals/dataset/... -v
 
 # Run only a specific category
@@ -225,6 +231,7 @@ go test ./internal/evals/dataset/... -v -run TestPlanning
 go test ./internal/evals/dataset/... -v -run TestContextEngineering
 go test ./internal/evals/dataset/... -v -run TestErrorHandling
 go test ./internal/evals/dataset/... -v -run TestMemory
+go test ./internal/evals/dataset/... -v -run TestCompaction
 
 # Generate JSON + Markdown reports
 results := suite.Run(ctx)
@@ -240,7 +247,7 @@ Once feature development is complete, a corresponding golden case **must** be ad
 - Every feature must cover at least a **positive case** (the feature works correctly) and a **negative case** (the constraint is correctly enforced)
 - `SetupHermeticEnv` must be called first; `NoErrorAssertion` or `ErrorAssertion` is mandatory
 - Extending the dataset only requires adding a new `_test.go` file — no framework code changes needed
-- The current 16 cases are the baseline; they may only be added to, never removed or have coverage reduced
+- The current 22 cases are the baseline; they may only be added to, never removed or have coverage reduced
 
 ---
 

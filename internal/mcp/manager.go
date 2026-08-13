@@ -56,8 +56,11 @@ func NewManager(config Config) *Manager {
 }
 
 // WithNotify 注册状态变更回调（用于 TUI 实时更新）。调用线程不限。
+// notify 字段由 m.mu 保护，与 Start 各连接 goroutine 中的 sendNotify 读取并发安全。
 func (m *Manager) WithNotify(fn func([]ServerStatus)) {
+	m.mu.Lock()
 	m.notify = fn
+	m.mu.Unlock()
 }
 
 // Start 并发连接所有已配置的 MCP Server，超时时间为每个 server 30 秒。
@@ -208,9 +211,12 @@ func (m *Manager) Statuses() []ServerStatus {
 
 // sendNotify 在持有锁之外调用通知回调，避免死锁。
 func (m *Manager) sendNotify() {
-	if m.notify == nil {
+	m.mu.RLock()
+	fn := m.notify
+	m.mu.RUnlock()
+	if fn == nil {
 		return
 	}
 	statuses := m.Statuses()
-	m.notify(statuses)
+	fn(statuses)
 }
