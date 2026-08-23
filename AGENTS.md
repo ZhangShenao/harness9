@@ -107,7 +107,7 @@ harness9 是一款基于 Go 语言构建的**轻量级、功能完备、生产�
 | 导出类型/函数 | PascalCase | `AgentEngine`、`NewRegistry`、`LLMProvider` |
 | 未导出类型/函数 | camelCase | `mainLoop`、`maxRetries`、`runLoop` |
 | 接口名 | 以 `-er` 后缀为惯例，或不加后缀 | `Provider`、`Registry`、`BaseTool` |
-| 常量 | PascalCase（导出）或 camelCase（未导出），**不使用全大写** | `RoleSystem`、`maxLogOutputLen` |
+| 常量 | PascalCase（导出）或 camelCase（未导出），**不使用全大写** | `RoleSystem`、`maxOutputLen` |
 | 测试文件 | `xxx_test.go`，测试函数以 `Test` 开头 | `agent_loop_test.go` |
 | 配置选项函数 | `With` 前缀 | `WithMaxTurns`、`WithToolTimeout` |
 
@@ -269,7 +269,8 @@ harness9/
 │   ├── schema/                      # 跨组件共享的核心数据类型
 │   │   ├── message.go               # Message、Role、ToolCall、ToolResult、ToolDefinition
 │   │   ├── stream.go                # StreamChunk、StreamChunkType（Provider 层流式类型）
-│   │   └── subagent.go              # SubAgentUpdate / SubAgentUpdateKind（子代理进度类型）
+│   │   ├── subagent.go              # SubAgentUpdate / SubAgentUpdateKind（子代理进度类型）
+│   │   └── message_test.go          # JSON tag 契约测试（snake_case + omitempty，锁定序列化向后兼容）
 │   ├── tools/                       # 工具注册表 + 内置工具 + 路径沙箱 + SSRF 防护
 │   │   ├── base.go                  # BaseTool 接口定义（Name / Definition / Execute）
 │   │   ├── registry.go              # 工具注册中心（Register / GetAvailableTools / Execute）
@@ -308,7 +309,7 @@ harness9/
 │   │   ├── provider.go              # TracingProvider：LLM Request Span + Token Metrics
 │   │   ├── hook.go                  # ObservabilityHook：Tool Execution Span + Tool Metrics
 │   │   ├── helpers.go               # truncateAttr / serializeMessages / serializeOutput（Span 属性净化与序列化）
-│   │   └── *_test.go                # 各组件单元测试（noop tracer）
+│   │   └── *_test.go                # 各组件单元测试（noop tracer；helpers_test.go 为同包白盒测试）
 │   ├── evals/                       # 自动化评估框架 — Test & Eval
 │   │   ├── provider.go              # ScriptedProvider：确定性 LLM mock（按脚本序列返回回复）
 │   │   ├── assertions.go            # Assertion 接口 + Case/Result 类型 + 8 种断言（Hard/Soft）
@@ -676,8 +677,9 @@ Provider 实现者需注意：`convertMessages()` 方法应负责将 `schema.Mes
 - 超时的工具会返回 `IsError: true` 的结果，LLM 可据此重试
 
 #### 工具结果的截断
-- 日志输出截断至 512 字节（`maxLogOutputLen`）
+- 日志输出截断至 512 字节（`logfmt.MaxOutputLen`，UTF-8 安全截断）
 - `read_file` 工具截断至 8192 字节
+- `bash` 工具输出截断至 16000 字节（保留首尾）
 - 截断时应在返回文本末尾添加明确的截断标记
 
 ### 6.3 引擎约束

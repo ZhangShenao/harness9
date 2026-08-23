@@ -1,3 +1,7 @@
+// manager.go — Manager：多 MCP Server 连接生命周期管理。
+// 实现并发连接（30s per-server 超时）、fail-soft 状态记录、
+// ServerStatus/ToolDetails 快照（供 TUI 展示）与工具注入（InjectTools）。
+// 包级注释见 config.go，本文件为普通文件头注释，避免 godoc 拼接多份 Package 注释。
 package mcp
 
 import (

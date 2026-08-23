@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/harness9/internal/schema"
 )
@@ -122,6 +123,22 @@ func TestFormatOutput(t *testing.T) {
 		visible := strings.TrimPrefix(body, Indent+"│ ")
 		if len(visible) > MaxOutputLen {
 			t.Errorf("visible content should be ≤ MaxOutputLen, got %d", len(visible))
+		}
+	})
+
+	t.Run("truncation_utf8_safe", func(t *testing.T) {
+		// 中文每字符 3 字节：MaxOutputLen=512 不是 3 的倍数，
+		// 字节截断必然把某个汉字切成两半产生无效 UTF-8。
+		// 回归测试：截断结果必须仍是合法 UTF-8（修复前此用例失败）。
+		long := strings.Repeat("中文输出测试", 200)
+		body, _, truncated := FormatOutput(long)
+		if !truncated {
+			t.Fatal("oversized CJK input should set truncated=true")
+		}
+		visible := strings.TrimSuffix(strings.TrimPrefix(body, Indent+"│ "), "\n")
+		if !utf8.ValidString(visible) {
+			// 直接打印整个 visible（%q），避免 len(visible) < 8 时尾部切片导致测试自身 panic
+			t.Errorf("truncated CJK output should remain valid UTF-8, got invalid bytes: %q", visible)
 		}
 	})
 }

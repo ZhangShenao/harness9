@@ -7,9 +7,12 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/harness9/internal/logfmt"
 
 	_ "modernc.org/sqlite"
 )
@@ -158,16 +161,21 @@ func (m *Manager) ListSessions(ctx context.Context) ([]SessionInfo, error) {
 // DeleteSession 删除指定会话及其所有消息（通过 ON DELETE CASCADE）。
 // 若设置了 toolResultsDir，还会级联清理对应 session 的 offload 子目录。
 // 若设置了 compactionRecordsDir，还会级联清理对应 session 的压缩记录文件。
+// 级联文件清理为 fail-soft：失败仅记录日志，不影响会话删除结果。
 func (m *Manager) DeleteSession(ctx context.Context, id string) error {
 	_, err := m.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("删除会话: %w", err)
 	}
 	if m.toolResultsDir != "" {
-		_ = os.RemoveAll(filepath.Join(m.toolResultsDir, id))
+		if rmErr := os.RemoveAll(filepath.Join(m.toolResultsDir, id)); rmErr != nil {
+			log.Print(logfmt.FormatMsg("memory", fmt.Sprintf("清理会话 offload 目录失败: %v", rmErr)))
+		}
 	}
 	if m.compactionRecordsDir != "" {
-		_ = os.Remove(filepath.Join(m.compactionRecordsDir, id+".jsonl"))
+		if rmErr := os.Remove(filepath.Join(m.compactionRecordsDir, id+".jsonl")); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Print(logfmt.FormatMsg("memory", fmt.Sprintf("清理会话压缩记录失败: %v", rmErr)))
+		}
 	}
 	return nil
 }

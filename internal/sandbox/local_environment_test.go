@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLocalEnvironment_ID(t *testing.T) {
@@ -69,5 +70,32 @@ func TestLocalEnvironment_Close(t *testing.T) {
 	env := NewLocalEnvironment()
 	if err := env.Close(context.Background()); err != nil {
 		t.Errorf("LocalEnvironment.Close() 不应返回 error: %v", err)
+	}
+}
+
+// TestLocalEnvironment_RunBash_ContextCancel 验证 Environment 接口契约：
+// ctx 取消后正在运行的命令必须被终止（exec.CommandContext 绑定），
+// RunBash 及时返回而非无限阻塞。修复前此用例失败（exec.Command 不感知 ctx）。
+func TestLocalEnvironment_RunBash_ContextCancel(t *testing.T) {
+	env := NewLocalEnvironment()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	var out string
+	go func() {
+		defer close(done)
+		out, _ = env.RunBash(ctx, "sleep 30 && echo never", t.TempDir())
+	}()
+
+	cancel() // 立即取消：sleep 应被 SIGKILL 终止
+
+	select {
+	case <-done:
+		// RunBash 已返回；失败语义通过 Self-Correction Loopback 以文本承载（err==nil）
+		if out == "" {
+			t.Error("取消后返回的输出不应为空（应包含终止错误信息）")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ctx 取消后 RunBash 应及时返回，命令未被终止（未绑定 ctx）")
 	}
 }

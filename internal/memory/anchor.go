@@ -99,14 +99,15 @@ func ParseAnchorsAndSummary(text string) ([]Anchor, string) {
 	return result, strings.TrimSpace(summary)
 }
 
-// MergeAnchors 合并新旧锚点：new 中非 "N/A" 的值覆盖 old 的同类型值。
+// MergeAnchors 合并新旧锚点：newAnchors 中非 "N/A" 的值覆盖 oldAnchors 的同类型值。
 // 始终返回按 allAnchorTypes 顺序排列、长度为 5 的锚点切片。
-func MergeAnchors(old, new []Anchor) []Anchor {
+// 参数名避免使用 new（Go 内置函数名），防止 shadow 引发误读。
+func MergeAnchors(oldAnchors, newAnchors []Anchor) []Anchor {
 	m := make(map[AnchorType]string)
-	for _, a := range old {
+	for _, a := range oldAnchors {
 		m[a.Type] = a.Content
 	}
-	for _, a := range new {
+	for _, a := range newAnchors {
 		if a.Content != "N/A" {
 			m[a.Type] = a.Content
 		}

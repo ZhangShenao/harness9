@@ -20,8 +20,10 @@ func (e *LocalEnvironment) ID() string { return "local" }
 func (e *LocalEnvironment) Close(_ context.Context) error { return nil }
 
 // RunBash 在本地以子进程方式执行 bash 命令。
-func (e *LocalEnvironment) RunBash(_ context.Context, cmd, workDir string) (string, error) {
-	c := exec.Command("bash", "-c", cmd)
+// 使用 exec.CommandContext 绑定 ctx：超时或取消时子进程被自动终止，
+// 满足 Environment 接口"ctx 控制调用生命周期"的契约（与 BashTool.runLocal 一致）。
+func (e *LocalEnvironment) RunBash(ctx context.Context, cmd, workDir string) (string, error) {
+	c := exec.CommandContext(ctx, "bash", "-c", cmd)
 	c.Dir = workDir
 	out, err := c.CombinedOutput()
 	if err != nil {

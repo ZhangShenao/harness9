@@ -1,3 +1,8 @@
+// store.go — Store：Mission Control 的 SQLite 事实源。
+// 管理 missions/tasks/task_dependencies/task_attempts/artifacts/evidence/
+// workspace_leases 七张表，提供依赖就绪排队、evidence/artifact 不可变触发器与
+// workspace lease 唯一索引等持久化保证。
+// 包级注释见 types.go，本文件为普通文件头注释，避免 godoc 拼接多份 Package 注释。
 package mission
 
 import (
