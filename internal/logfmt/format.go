@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/harness9/internal/schema"
 )
@@ -168,7 +169,7 @@ func FormatJSON(raw json.RawMessage) string {
 func FormatOutput(s string) (body string, total int, truncated bool) {
 	total = len(s)
 	if total > MaxOutputLen {
-		s = s[:MaxOutputLen]
+		s = truncateUTF8(s, MaxOutputLen)
 		truncated = true
 	}
 	if s == "" {
@@ -189,6 +190,27 @@ func FormatOutput(s string) (body string, total int, truncated bool) {
 		b.WriteString(line)
 	}
 	return b.String(), total, truncated
+}
+
+// truncateUTF8 按字节截断 s 至 maxBytes 以内，并在截断点回退到最近的合法 UTF-8 rune 边界，
+// 避免把中文等多字节字符从中间切开、在日志中产生无效 UTF-8 乱码。
+// 与 cmd/harness9 的 truncateUTF8 采用相同的回退策略：对被截断的多字节字符回退 ≤3 字节；
+// 若输入本身含连续非法字节（二进制垃圾），会持续剥离直到遇到合法边界或清空。
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	s = s[:maxBytes]
+	// DecodeLastRuneInString 返回 (RuneError, 1) 表示末尾是不完整序列的残缺字节 → 剥离；
+	// 注意不能用 RuneStart 判断——被截断序列的首字节（如孤立的 \xe8）同样是"起始字节"。
+	for len(s) > 0 {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if r != utf8.RuneError || size > 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // FormatMsg 渲染通用单行日志条目：[prefix] msg。

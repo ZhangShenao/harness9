@@ -1,3 +1,6 @@
+// Package skills — UseSkillTool：Progressive Disclosure 的执行层工具。
+// 本文件实现 use_skill 工具，LLM 通过调用它按名称加载指定 skill 的全文内容，
+// 避免 System Prompt 在启动时整体注入所有 skill 正文。
 package skills
 
 import (

@@ -1,3 +1,6 @@
+// Package observability — OTEL SDK 初始化。
+// 本文件实现 Setup/Providers：按 Config 组装 Tracer/Meter（noop/stdout/otlp 三种
+// Exporter），并提供 Shutdown 与 ForceFlush 钩子。
 package observability
 
 import (

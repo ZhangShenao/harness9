@@ -1278,15 +1278,6 @@ func summarizeTool(name string, args json.RawMessage) string {
 	}
 }
 
-// dispatch 以指定 prompt 启动一次 agent 推理流（RunStream）。
-//
-// 调用时 running 必须为 false；若已有推理在进行（running == true）则静默返回，
-// 防止多路 goroutine 并发驱动同一个 AgentEngine。
-//
-// autoExecuting 续跑时，dispatch 由 EventDone handler 在 Elm Update 循环内调用，
-// 不存在并发问题（Bubbletea 保证 Update 是单线程的）。
-// 但 running 检查保留作为额外安全网，防止其他代码路径意外调用。
-
 // harvestSubAgentResults 排空后台子代理跟踪器：将每个已完成结果即时显示到对话区（scrollback，
 // 用户立即可见），并写入 pendingSubAgentInject 以便下次 dispatch 注入 LLM 上下文。
 // 从 subAgentNotifyMsg（即时显示）与 dispatch（兜底）两处调用——DrainCompleted 幂等，已注入结果
@@ -1368,6 +1359,14 @@ func (m tuiModel) dispatchMention(raw string) (tuiModel, tea.Cmd) {
 	return m, tea.Batch(readNextSubAgentDirect(m.directCh), m.spinner.Tick)
 }
 
+// dispatch 以指定 prompt 启动一次 agent 推理流（RunStream）。
+//
+// 调用时 running 必须为 false；若已有推理在进行（running == true）则静默返回，
+// 防止多路 goroutine 并发驱动同一个 AgentEngine。
+//
+// autoExecuting 续跑时，dispatch 由 EventDone handler 在 Elm Update 循环内调用，
+// 不存在并发问题（Bubbletea 保证 Update 是单线程的）。
+// 但 running 检查保留作为额外安全网，防止其他代码路径意外调用。
 func (m tuiModel) dispatch(prompt string) (tuiModel, tea.Cmd) {
 	if m.running {
 		return m, nil

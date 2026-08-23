@@ -243,8 +243,8 @@ The tool calling process is output through **Block-Style Structured Logs**. Desi
 ### Key Implementation Details
 
 - **JSON HTML-escape disabled**: Uses `json.NewEncoder.SetEscapeHTML(false)` to avoid `&&` being escaped into `\u0026\u0026`.
-- **Truncation threshold `maxLogOutputLen = 512`**: Any single output in the log exceeding this length is truncated, with the header carrying a `(truncated to N)` hint.
-- **Continuation line indent `logIndent = 8 spaces`**: All continuation lines use the same indentation for visual alignment.
+- **Truncation threshold `MaxOutputLen = 512`**: Any single output in the log exceeding this length is truncated (UTF-8 safe — never cuts through a multi-byte character), with the header carrying a `(truncated to N)` hint.
+- **Continuation line indent `Indent = 8 spaces`**: All continuation lines use the same indentation for visual alignment.
 - **Inline threshold `argInlineThreshold = 80`**: JSON shorter than this length after compaction is displayed inline on a single line.
 
 ### Logging Coverage Points
@@ -407,16 +407,16 @@ L4 — Line-by-Line Indent-Agnostic Matching
 | Attribute | Value |
 |------|-----|
 | Name | `bash` |
-| Parameters | `command` (string, required) — the bash command to execute |
-| Output | The combined content of `stdout` and `stderr` (`CombinedOutput`) |
-| Hard timeout | `bashHardTimeout = 30s`, takes the `min` with the parent context |
-| Truncation threshold | Truncated when exceeding `maxOutputLen = 8000` bytes |
+| Parameters | `command` (string, required) — the bash command; `timeout_secs` (int, optional) — per-call timeout in seconds |
+| Output | The combined content of `stdout` and `stderr` |
+| Default timeout | `defaultBashTimeout = 120s`; per-call relaxation via `timeout_secs` allowed (capped at `maxBashTimeout = 600s`), whichever comes first against the parent context |
+| Truncation threshold | Truncated when exceeding `maxOutputLen = 16000` bytes (head + tail preserved: ~1/3 head + ~2/3 tail, UTF-8 safe) |
 
 **Key design philosophy**:
 - **YOLO philosophy (Trust-the-LLM)**: Does not restrict the kinds of commands that can be executed, handing all judgment and decision-making entirely over to the LLM, with no whitelist/blacklist.
 - **Execution method**: Wrapped via `bash -c <command>`, supporting pipes `|`, logical and/or `&& ||`, environment variables, redirection, and other complex shell syntax.
 - **Errors relayed as-is (Self-Correction Loopback)**: When a command exits with a non-zero exit code, it **still returns `(string, nil)`**, relaying the error content (including `exit status N`) back to the LLM as readable text to trigger a self-healing retry, rather than interrupting the agent loop.
-- **Time Budgeting**: A double safeguard of the engine-layer `ToolTimeout` plus the tool-internal `bashHardTimeout`, preventing blocking commands such as `top` / `tail -f` / web servers from hanging the engine.
+- **Time Budgeting**: A double safeguard of the engine-layer `ToolTimeout` plus the tool-internal `defaultBashTimeout` (120s, relaxable to 600s via `timeout_secs`), preventing blocking commands such as `top` / `tail -f` / web servers from hanging the engine.
 - **Empty command protection**: When `command == ""`, directly returns `Error: command is an empty string` without invoking `exec`.
 
 **Why no sandboxing is applied**: The bash tool inherently provides full shell access; adding `cd /` alone would escape `workDir`, so a "semi-sandbox" would only create a false sense of security. For path-level security, use `read_file` / `write_file` instead.

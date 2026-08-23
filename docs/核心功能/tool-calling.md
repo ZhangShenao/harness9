@@ -243,8 +243,8 @@ func (e *AgentEngine) executeToolsConcurrently(ctx context.Context, turn int, to
 ### 关键实现细节
 
 - **JSON HTML-Escape 关闭**：使用 `json.NewEncoder.SetEscapeHTML(false)`，避免 `&&` 被转义成 `\u0026\u0026`。
-- **截断阈值 `maxLogOutputLen = 512`**：日志中单条输出超出会被截断，header 携带 `(truncated to N)` 提示。
-- **续行缩进 `logIndent = 8 空格`**：所有续行使用同一缩进，视觉对齐。
+- **截断阈值 `MaxOutputLen = 512`**：日志中单条输出超出会被截断（UTF-8 安全，不会切断多字节字符），header 携带 `(truncated to N)` 提示。
+- **续行缩进 `Indent = 8 空格`**：所有续行使用同一缩进，视觉对齐。
 - **Inline 阈值 `argInlineThreshold = 80`**：JSON 压缩后小于此长度直接单行展示。
 
 ### 日志覆盖节点
@@ -407,16 +407,16 @@ L4 — 逐行去缩进匹配（Line-by-Line Indent-Agnostic Matching）
 | 属性 | 值 |
 |------|-----|
 | 名称 | `bash` |
-| 参数 | `command` (string, 必需) — 要执行的 bash 命令 |
-| 输出 | `stdout` 与 `stderr` 的合并内容（`CombinedOutput`） |
-| 硬性超时 | `bashHardTimeout = 30s`，与父 context 取 `min` |
-| 截断阈值 | 超过 `maxOutputLen = 8000` 字节时截断 |
+| 参数 | `command` (string, 必需) — 要执行的 bash 命令；`timeout_secs` (int, 可选) — 单次调用的超时秒数 |
+| 输出 | `stdout` 与 `stderr` 的合并内容 |
+| 默认超时 | `defaultBashTimeout = 120s`；单次可通过 `timeout_secs` 放宽（上限 `maxBashTimeout = 600s`），与父 context 取先到者 |
+| 截断阈值 | 超过 `maxOutputLen = 16000` 字节时截断（保留首尾：头部约 1/3 + 尾部约 2/3，UTF-8 安全） |
 
 **关键设计哲学**：
 - **YOLO 哲学（Trust-the-LLM）**：不限制可执行命令的种类，把所有判断与决策权完全交给大模型，不做白/黑名单。
 - **执行方式**：通过 `bash -c <command>` 包裹，支持管道 `|`、逻辑与/或 `&& ||`、环境变量、重定向等复杂 Shell 语法。
 - **错误原样回传（Self-Correction Loopback）**：命令以非零退出码结束时，**仍返回 `(string, nil)`**，把错误内容（含 `exit status N`）作为可读文本回传给 LLM，触发自愈（Self-Healing）重试，而非中断 agent loop。
-- **时间预算（Time Budgeting）**：引擎层 `ToolTimeout` + 工具内 `bashHardTimeout` 双重保险，防止 `top` / `tail -f` / Web 服务器等阻塞型命令卡死引擎。
+- **时间预算（Time Budgeting）**：引擎层 `ToolTimeout` + 工具内 `defaultBashTimeout`（120s，可经 `timeout_secs` 放宽至 600s）双重保险，防止 `top` / `tail -f` / Web 服务器等阻塞型命令卡死引擎。
 - **空命令保护**：`command == ""` 时直接返回 `Error: 命令为空字符串`，不调用 `exec`。
 
 **为什么不做沙箱**：bash 工具本质上提供完整 shell 访问，加 `cd /` 即可逃逸 `workDir`，做"半沙箱"反而给安全制造假象。如需路径安全请使用 `read_file` / `write_file`。

@@ -284,6 +284,7 @@ func (t *HTTPTransport) Send(ctx context.Context, method string, params json.Raw
 
 // Notify 通过 HTTP POST 发送 JSON-RPC 通知（fire-and-forget，忽略响应体）。
 // 使用 5s 超时避免服务器不可达时无限阻塞。
+// 关闭前限量 drain 响应体，使底层 TCP 连接可被 keep-alive 复用。
 func (t *HTTPTransport) Notify(method string, params json.RawMessage) error {
 	req := rpcRequest{JSONRPC: "2.0", Method: method, Params: params}
 	body, err := json.Marshal(req)
@@ -302,6 +303,7 @@ func (t *HTTPTransport) Notify(method string, params json.RawMessage) error {
 		return err
 	}
 	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	return nil
 }
 
