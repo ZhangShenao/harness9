@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/harness9/internal/schema"
 )
@@ -48,7 +49,7 @@ type loopGuard struct {
 
 	inputTokens int // 累计 input tokens（实际优先，缺失时估算兜底）
 
-	repWindow    []sigEntry // 最近 repWindow 个 turn 的签名记录（滑动窗口）
+	sigEntries   []sigEntry // 最近 RepetitionWindow 个 turn 的签名记录（滑动展示窗口）
 	reminded     bool       // 本轮 Run 内是否已注入过重复提醒（升级判据）
 	lastHitTotal int        // 最近一次命中的相同签名总次数（用于文案）
 	sigLabel     map[turnSignature]string
@@ -158,4 +159,121 @@ func (g *loopGuard) Terminated() (TerminationReason, bool) {
 func (g *loopGuard) alreadyErr() error {
 	reason, _ := g.Terminated()
 	return fmt.Errorf("guard 已裁决终止 (%s)", reason)
+}
+
+// repetitionReminderFmt 是重复提醒的定向文案模板。
+// 与静态 StallNudge 文案不同：检测器知道具体签名，可给出事实性定位。
+const repetitionReminderFmt = "系统检测：你在最近 %d 轮内已第 %d 次发起相同的工具调用（%s），" +
+	"且每次都得到相同结果。继续同一调用不会产生新信息。请择一执行：" +
+	"① 改用其他手段获取所需信息；② 基于已有结果推进任务；" +
+	"③ 若任务已完成，直接输出最终回复停止。"
+
+// canonicalArgsPreview 生成签名的人类可读标签（name + 截断至 120 字节的参数原文）。
+// UTF-8 安全截断，避免中文参数被从中间切开。
+func canonicalArgsPreview(tc schema.ToolCall) string {
+	s := string(tc.Arguments)
+	const maxLen = 120
+	if len(s) > maxLen {
+		cut := maxLen
+		for cut > 0 && cut < len(s) && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "..."
+	}
+	return tc.Name + "(" + s + ")"
+}
+
+// RecordToolCalls 在工具执行后记录本轮全部签名，并应用进展打破规则：
+// 一旦本轮包含进展工具（edit_file/write_file，SWE-bench 式"改代码→重跑同一命令"
+// 是合法节奏），清空重复窗口与停滞计数，开启新工作周期。
+func (g *loopGuard) RecordToolCalls(turn int, calls []schema.ToolCall) {
+	if g.cfg.RepetitionThreshold <= 0 && g.cfg.StallWindow <= 0 {
+		return
+	}
+	if hasProgressTool(calls) {
+		g.turnsSinceProgress = 0
+		g.sigEntries = g.sigEntries[:0]
+		g.reminded = false
+		clear(g.repTotal)
+	} else {
+		g.turnsSinceProgress++
+	}
+
+	// 单轮内多工具并发去重计数；窗口整体滑动淘汰过期 turn（展示窗口），
+	// 升级判定走跨窗口累积的 repTotal，故出窗不做减法。
+	counts := make(map[turnSignature]int, len(calls))
+	for _, tc := range calls {
+		sig := computeSignature(tc)
+		counts[sig]++
+		g.repTotal[sig]++
+		if _, ok := g.sigLabel[sig]; !ok {
+			g.sigLabel[sig] = canonicalArgsPreview(tc)
+		}
+	}
+	if g.cfg.RepetitionWindow <= 0 {
+		return
+	}
+	g.sigEntries = append(g.sigEntries, sigEntry{turn: turn, counts: counts})
+	for len(g.sigEntries) > 0 && turn-g.sigEntries[0].turn >= g.cfg.RepetitionWindow {
+		g.sigEntries = g.sigEntries[1:]
+	}
+}
+
+// detectTopRepeat 返回当前累计计数中次数最多的签名及其总次数。
+// 计数来源是跨窗口累积的 repTotal。说明：为避免复杂的出窗减法误差，
+// repTotal 采用"全 Run 累计 + 进展打破清零 + reminded 升级"的组合判定——
+// 窗口淘汰仅作用于 sigEntries（多-turn 展示窗口），
+// 语义上等价于"同一签名在无进展的连续工作周期内反复出现"这一病理形态。
+func (g *loopGuard) detectTopRepeat() (turnSignature, int, bool) {
+	if g.cfg.RepetitionThreshold <= 0 || len(g.repTotal) == 0 {
+		return turnSignature{}, 0, false
+	}
+	var bestSig turnSignature
+	best := 0
+	for sig, n := range g.repTotal {
+		if n > best {
+			best, bestSig = n, sig
+		}
+	}
+	if best < g.cfg.RepetitionThreshold {
+		return turnSignature{}, 0, false
+	}
+	return bestSig, best, true
+}
+
+// EvaluateReminders 是三源仲裁的唯一入口：每轮至多注入一条干预消息。
+// 优先级：重复（最具体、有危害信号）> 停滞 > 记忆提示。
+// 返回值：reminderText 非空表示需要追加为 user 消息；err 非 nil 表示
+// 重复提醒已被证明无效、已升级为硬终止（terminated 已置位）。
+func (g *loopGuard) EvaluateReminders(turnCount int) (string, error) {
+	// ① 重复检测
+	if sig, total, hit := g.detectTopRepeat(); hit {
+		if !g.reminded {
+			g.reminded = true
+			g.lastHitTotal = total
+			label, ok := g.sigLabel[sig]
+			if !ok {
+				label = "未知调用"
+			}
+			window := g.cfg.RepetitionWindow
+			if window <= 0 {
+				window = 1
+			}
+			return fmt.Sprintf(repetitionReminderFmt, window, total, label), nil
+		}
+		g.terminated = &GuardTermination{Reason: ReasonRepetitionLoop}
+		return "", fmt.Errorf("重复调用提醒无效（同一调用已出现 %d 次），循环终止", total)
+	}
+
+	// ② 停滞检测（原 WithStallNudge 语义迁入）
+	if g.cfg.StallWindow > 0 && g.cfg.StallText != "" && g.turnsSinceProgress >= g.cfg.StallWindow {
+		g.turnsSinceProgress = 0
+		return g.cfg.StallText, nil
+	}
+
+	// ③ 记忆提醒（原 WithMemoryNudge 语义迁入）
+	if g.cfg.MemoryInterval > 0 && g.cfg.MemoryText != "" && turnCount%g.cfg.MemoryInterval == 0 {
+		return g.cfg.MemoryText, nil
+	}
+	return "", nil
 }
