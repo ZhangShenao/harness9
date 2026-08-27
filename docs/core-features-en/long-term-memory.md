@@ -34,7 +34,7 @@ A new self-contained package `internal/ltm/` is added, kept isolated from the sh
 │   ltm.NewExtractor(llm, ltmStore)     → extractor               │
 │   memory.WithMemoryExtractor(extractor)  → inject into Compactor │
 │   promptBuilder.WithLongTermMemory(reader)  → System Prompt     │
-│   engine.WithMemoryNudge(10, text)    → inject prompt every 10 turns │
+│   engine.WithMemoryReminder(10, text)  → inject prompt every 10 turns │
 └─────────────────────┬───────────────────────────────────────────┘
                       │
           ┌───────────▼──────────┐
@@ -244,23 +244,25 @@ func NewExtractor(gen Generator, store *Store) *Extractor
 func (e *Extractor) Extract(msgs []schema.Message)  // implements memory.MemoryExtractor
 ```
 
-### 6.3 Turn-Granularity Nudge
+### 6.3 Turn-Granularity Reminder
 
-`engine.WithMemoryNudge(interval, text)` configures nudge behavior. Every `interval` turns (`turnCount % interval == 0`), the engine appends `text` to a **defensive copy** of the history sent to the LLM — it is not written into `contextHistory`, not persisted, and does not accumulate.
+`engine.WithMemoryReminder(interval, text)` configures the memory reminder behavior. Every `interval` turns (`turnCount % interval == 0`), the engine appends `text` to a **defensive copy** of the history sent to the LLM — it is not written into `contextHistory`, not persisted, and does not accumulate.
+
+> Naming note: this mechanism was originally named `WithMemoryNudge` and has been renamed to `WithMemoryReminder` as part of the loopGuard guardrail system (semantics unchanged). It now shares a three-source arbitration channel with the repetition reminder and the stall reminder (at most one intervention message per turn).
 
 ```go
-func WithMemoryNudge(interval int, text string) Option
+func WithMemoryReminder(interval int, text string) Option
 ```
 
 Default configuration in main.go:
 
 ```go
-engine.WithMemoryNudge(10,
+engine.WithMemoryReminder(10,
     "If this turn's conversation contains information worth retaining across sessions (user preferences, stable " +
     "project knowledge, key decisions, reusable skills), call the memory_write tool to record it; otherwise ignore this prompt.")
 ```
 
-The nudge is disabled when interval=0 or text="" (disabled by default, requires explicit configuration).
+The reminder is disabled when interval=0 or text="" (disabled by default, requires explicit configuration).
 
 ---
 
@@ -372,9 +374,9 @@ compactor := memory.NewSummarizationCompactor(llm, modelLimits.ContextTokens,
     // ...other options
 )
 
-// 7. Configure the Turn nudge
+// 7. Configure the Turn reminder
 eng := engine.NewAgentEngine(llm, registry, workDir,
-    engine.WithMemoryNudge(10, nudgeText),
+    engine.WithMemoryReminder(10, nudgeText),
     // ...other options
 )
 ```

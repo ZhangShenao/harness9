@@ -4,7 +4,7 @@ harness9's quality assurance system consists of three mutually independent but c
 
 ```
 Development stage ──→ Test (deterministic testing)      ScriptedProvider + Assertion
-CI stage           ──→ Eval (golden dataset evaluation)  22 cases + Quality Gate
+CI stage           ──→ Eval (golden dataset evaluation)  26 cases + Quality Gate
 Production stage   ──→ Observability (tracing)           OTEL Traces + Metrics → Langfuse
 ```
 
@@ -33,7 +33,7 @@ Traditional software unit testing assumes: given the same input, you always get 
                              │
           ┌───────────────────▼──────────────────┐
           │ Eval                                 │  ← CI/CD: golden dataset Quality Gate
-          │ Quantify Agent capability boundaries │    22 cases, PR-triggered, failure blocks merge
+           │ Quantify Agent capability boundaries │    26 cases, PR-triggered, failure blocks merge
           └───────────────────┬──────────────────┘
                              │
           ┌───────────────────▼──────────────────┐
@@ -192,7 +192,7 @@ func TestMyFeature(t *testing.T) {
 
 ## III. Eval Subsystem: Golden Dataset
 
-### 3.1 Current Golden Dataset (22 cases)
+### 3.1 Current Golden Dataset (26 cases)
 
 | Category | Case | Verification target |
 |------|------|---------|
@@ -209,7 +209,7 @@ func TestMyFeature(t *testing.T) {
 | `context` | `sequential_tool_chain` | Multi-step tool calls depend on the previous step's Observation |
 | `context` | `multi_turn_conversation` | Multi-turn pure-conversation coherence |
 | `context` | `tool_error_observation` | Tool failure Observation drives the LLM to change strategy |
-| `context` | `stall_nudge_preserves_loop` | WithStallNudge injected hint does not break ReAct loop correctness |
+| `context` | `stall_nudge_preserves_loop` | WithStallReminder injected stall reminder does not break ReAct loop correctness |
 | `error_handling` | `bash_fallback_on_error` | LLM switches to an alternative approach after a tool failure (Self-Healing) |
 | `error_handling` | `write_failure_graceful_stop` | Graceful degradation without retry after a write failure |
 | `error_handling` | `max_turns_protection` | MaxTurns triggers controlled engine termination (no panic) |
@@ -218,11 +218,15 @@ func TestMyFeature(t *testing.T) {
 | `compaction` | `anchor_preservation` | After compaction the LLM can still answer questions about the user's intent (anchor preservation) |
 | `compaction` | `offload_retrieval` | After compaction the LLM can retrieve offloaded content via tools |
 | `compaction` | `progressive_tiers` | LLM behavior stays coherent after compressing a long conversation (progressive tiers) |
+| `guardrails` | `repetition_terminates` | Same-signature repeated-call dead loop: targeted reminder first, then escalation to hard termination |
+| `guardrails` | `budget_trips_hermetically` | Token budget exhaustion triggers controlled termination at the Turn boundary (hermetic, no real API) |
+| `guardrails` | `reminder_visible_in_llm_context` | The targeted reminder appears in the history copy sent to the LLM, and does not fire on the first turn |
+| `guardrails` | `history_survives_breaker` | Full trajectory is still persisted to the Session after a controlled breaker trip (regression guard for the lost-trajectory defect) |
 
 ### 3.2 Running Eval
 
 ```bash
-# Run the full golden dataset (22 cases, no API Key required)
+# Run the full golden dataset (26 cases, no API Key required)
 go test ./internal/evals/... ./internal/evals/dataset/... -v
 
 # Run only a specific category
@@ -232,6 +236,7 @@ go test ./internal/evals/dataset/... -v -run TestContextEngineering
 go test ./internal/evals/dataset/... -v -run TestErrorHandling
 go test ./internal/evals/dataset/... -v -run TestMemory
 go test ./internal/evals/dataset/... -v -run TestCompaction
+go test ./internal/evals/dataset/... -v -run TestGuardrails
 
 # Generate JSON + Markdown reports
 results := suite.Run(ctx)
@@ -247,7 +252,7 @@ Once feature development is complete, a corresponding golden case **must** be ad
 - Every feature must cover at least a **positive case** (the feature works correctly) and a **negative case** (the constraint is correctly enforced)
 - `SetupHermeticEnv` must be called first; `NoErrorAssertion` or `ErrorAssertion` is mandatory
 - Extending the dataset only requires adding a new `_test.go` file — no framework code changes needed
-- The current 22 cases are the baseline; they may only be added to, never removed or have coverage reduced
+- The current 26 cases are the baseline; they may only be added to, never removed or have coverage reduced
 
 ---
 

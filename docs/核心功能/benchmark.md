@@ -186,7 +186,7 @@ runInstance(ctx, inst, cfg)
 | **默认依赖自举（接通 bootstrap 接缝）** | runner 现在为每实例默认设置 `BootstrapCmd`（`ensurepip` + `pip install -e .` + `pytest`），在 Agent 启动前把"真实测试"变得可运行——**恢复验证闭环**（轨迹分析 R1：此前 24/24 实例零测试运行，全靠静态分析）。`SANDBOX_BOOTSTRAP_CMD` 显式设置后覆盖默认；需编译器的仓库可设 `SANDBOX_IMAGE` 指向官方每实例镜像 |
 | **默认镜像改为 `python:3.11`（非 slim）** | slim 常缺 pip、运行库不全；full 镜像自带 pip 并能从 wheel 拉取 numpy/pandas 等依赖，配合默认自举即可跑真实测试（轨迹分析 R1） |
 | **验证关卡（verification gate）** | Agent 自然结束却"全程未运行任何测试"时，runner 注入**一次**续跑提示要求真实验证（复用同一引擎 + 内存会话延续历史，至多一次，受超时/turn 上限兜底）。修复"9 轮静态自证即交卷"（轨迹分析 R2：8/8 失败实例均零验证即交卷）|
-| **停滞提示 `WithStallNudge(10, …)`** | 连续 10 轮无任何改动/测试运行（只在静态重读/grep 空转）时，引擎注入一次提示打断空转（轨迹分析 R6：xarray-3364、pylint-7080 烧满 80 轮即此形态）。仅作用于临时副本，不持久化 |
+| **停滞提示 `WithStallReminder(10, …)`** | 连续 10 轮无任何改动/测试运行（只在静态重读/grep 空转）时，引擎注入一次提示打断空转（轨迹分析 R6：xarray-3364、pylint-7080 烧满 80 轮即此形态）。仅作用于临时副本，不持久化。已并入 loopGuard 护栏体系的三源 Reminder 仲裁，并配套新增 `WithRepetitionReminder(10, 4)`：同一调用在工作周期内累计达阈值即注入定向提醒、提醒无效升级硬终止（死循环止损） |
 | **注入 `hints_text` + dataset 解析评测字段** | `Instance` 现解析 `version`/`environment_setup_commit`/`FAIL_TO_PASS`/`test_patch`；prompt 注入维护者讨论（hints），它常含决定性 API 设计（轨迹分析 R3：flask `text=True`、xarray DeprecationWarning）。⚠️ `FAIL_TO_PASS`/`test_patch` 仅供分析，**绝不**在 Agent 运行时暴露/应用 |
 
 ### 3.3 采样策略
@@ -548,7 +548,7 @@ go run ./cmd/swebench --help
 | **接通依赖自举**：runner 为每实例默认设 `BootstrapCmd`（ensurepip + `pip install -e .` + pytest），默认镜像改 `python:3.11`（buildpack 全镜像，带 pip 与编译器）| `runner.go` | R1/R4 |
 | **验证关卡**：Agent 自然结束却全程未跑过测试时，注入一次续跑提示要求真实验证（复用内存会话延续历史，至多一次，超时/turn 兜底）| `runner.go` | R2 |
 | **HintsText 注入** + dataset 解析评测字段（`FAIL_TO_PASS`/`test_patch` 仅供分析，绝不在运行时暴露/应用）| `prompt.go` `dataset.go` | R3/R4 |
-| **停滞提示 `WithStallNudge`**：连续 N 轮无 edit/write 进展工具调用时注入一次提示打断空转（防御性副本，不持久化）| `engine/agent_loop.go` | R6 |
+| **停滞提示 `WithStallReminder`**：连续 N 轮无 edit/write 进展工具调用时注入一次提示打断空转（防御性副本，不持久化）；配合 `WithRepetitionReminder(10, 4)` 重复死循环护栏 | `engine/agent_loop.go` `engine/loop_guard.go` | R6 |
 | **prompt 重平衡**：删「默认退化静态分析」逃生门；加最小化/错误点局部修复偏置、按符号名查测试、DeprecationWarning 约定提示 | `prompt.go` | R5/R7 |
 | **edit_file banner 收敛**：「无需再确认」→ 明确「字节写入≠行为正确，仍需跑测试」| `tools/edit_file.go` | R8 |
 

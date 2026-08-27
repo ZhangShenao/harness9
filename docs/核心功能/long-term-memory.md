@@ -34,7 +34,7 @@ Long-Term Memory（LTM）系统覆盖以下能力：
 │   ltm.NewExtractor(llm, ltmStore)     → extractor               │
 │   memory.WithMemoryExtractor(extractor)  → 注入 Compactor        │
 │   promptBuilder.WithLongTermMemory(reader)  → System Prompt     │
-│   engine.WithMemoryNudge(10, text)    → 每 10 轮注入提示         │
+│   engine.WithMemoryReminder(10, text)  → 每 10 轮注入提示         │
 └─────────────────────┬───────────────────────────────────────────┘
                       │
           ┌───────────▼──────────┐
@@ -244,23 +244,25 @@ func NewExtractor(gen Generator, store *Store) *Extractor
 func (e *Extractor) Extract(msgs []schema.Message)  // 实现 memory.MemoryExtractor
 ```
 
-### 6.3 Turn 粒度 Nudge
+### 6.3 Turn 粒度 Reminder
 
-`engine.WithMemoryNudge(interval, text)` 配置 nudge 行为。每隔 `interval` 轮（`turnCount % interval == 0`），引擎将 `text` 追加到发送给 LLM 的历史**防御性副本**中——不写入 `contextHistory`，不持久化，不累积。
+`engine.WithMemoryReminder(interval, text)` 配置记忆提醒行为。每隔 `interval` 轮（`turnCount % interval == 0`），引擎将 `text` 追加到发送给 LLM 的历史**防御性副本**中——不写入 `contextHistory`，不持久化，不累积。
+
+> 命名说明：此机制原名为 `WithMemoryNudge`，已随 loopGuard 护栏体系统一更名为 `WithMemoryReminder`（语义不变），与重复提醒 / 停滞提醒共享三源仲裁通道（每轮至多一条干预消息）。
 
 ```go
-func WithMemoryNudge(interval int, text string) Option
+func WithMemoryReminder(interval int, text string) Option
 ```
 
 main.go 默认配置：
 
 ```go
-engine.WithMemoryNudge(10,
+engine.WithMemoryReminder(10,
     "如果本轮对话中出现了值得跨会话长期保留的信息（用户偏好、稳定的项目知识、" +
     "关键决策、可复用技能），请调用 memory_write 工具记录；否则忽略此提示。")
 ```
 
-interval=0 或 text="" 时关闭 nudge（默认关闭，需显式配置）。
+interval=0 或 text="" 时关闭 reminder（默认关闭，需显式配置）。
 
 ---
 
@@ -371,9 +373,9 @@ compactor := memory.NewSummarizationCompactor(llm, modelLimits.ContextTokens,
     // ...其他选项
 )
 
-// 7. 配置 Turn nudge
+// 7. 配置 Turn reminder
 eng := engine.NewAgentEngine(llm, registry, workDir,
-    engine.WithMemoryNudge(10, nudgeText),
+    engine.WithMemoryReminder(10, nudgeText),
     // ...其他选项
 )
 ```
