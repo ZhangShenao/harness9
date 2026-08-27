@@ -119,7 +119,7 @@ func TestContextEngineering(t *testing.T) {
 
 // TestStallNudgeKeepsReActLoopCorrect 验证：启用 WithStallReminder（连续多轮无进展工具即注入
 // 一次停滞提示）后，ReAct 主循环仍正确运行——长时只读探索触发 nudge 注入，循环不被破坏，
-// 工具调用序列与终止行为保持正确。这是停滞提示注入路径（appendUserNudge）的回归护栏，
+// 工具调用序列与终止行为保持正确。这是停滞提示注入路径（ApplyReminders）的回归护栏，
 // 防止 nudge 注入破坏消息结构 / 工具调用流（轨迹分析 R6 的工程化落地）。
 func TestStallNudgeKeepsReActLoopCorrect(t *testing.T) {
 	evals.SetupHermeticEnv(t)
