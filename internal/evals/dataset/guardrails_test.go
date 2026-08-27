@@ -10,11 +10,13 @@ package dataset
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/evals"
+	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/schema"
 )
 
@@ -149,4 +151,61 @@ func TestGuardrails_ReminderVisibleInLLMContext(t *testing.T) {
 	if callIdxOfFirst < 1 {
 		t.Fatalf("[%s] 首次提醒不应出现在第一次调用（i=%d）", c.ID, callIdxOfFirst)
 	}
+}
+
+// 用例 4：熔断后轨迹完整落库（spec §6 history_survives_breaker 回归护栏）。
+// RunCase 默认不绑定 Session；此处经 EngineOptions 注入内存 Session，
+// 用局部断言读回消息快照——验证受控熔断路径执行了 saveHistoryWith
+// （旧实现在熔断 return 时跳过持久化、几十轮轨迹无法复盘的缺陷）。
+func TestGuardrails_HistorySurvivesBreaker(t *testing.T) {
+	evals.SetupHermeticEnv(t)
+
+	loop := evals.ScriptedTurn{
+		ToolCalls: []schema.ToolCall{evals.MakeToolCall("dup", "bash", `{"command":"ls"}`)},
+	}
+	turns := make([]evals.ScriptedTurn, 0, 30)
+	for i := 0; i < 30; i++ {
+		turns = append(turns, loop)
+	}
+
+	sess := memory.NewMemorySession("guardrails-breaker")
+	c := &evals.Case{
+		ID:       "guardrails/history_survives_breaker",
+		Category: "guardrails",
+		Prompt:   "反复列目录",
+		Provider: evals.NewScriptedProvider(turns...),
+		EngineOptions: []engine.Option{
+			engine.WithTokenBudget(220),
+			engine.WithSession(sess),
+		},
+		Assertions: []evals.Assertion{
+			&evals.ErrorAssertion{},
+			&sessionHasTrajectory{sess: sess},
+		},
+	}
+	result := evals.RunCase(context.Background(), c)
+	for _, f := range result.Failures {
+		t.Errorf("[%s] %v", c.ID, f)
+	}
+}
+
+// sessionHasTrajectory 是本文件的局部断言：断言熔断结束后 Session 中至少
+// 持久化了用户输入与两轮以上 assistant 轨迹（末条允许为 user 观测——
+// 护栏检查点先于当轮 generate，属既有集成测试锁定的契约形态）。
+type sessionHasTrajectory struct {
+	sess memory.Session
+}
+
+func (a *sessionHasTrajectory) Name() string { return "history_survives_breaker" }
+
+func (a *sessionHasTrajectory) Check(_ *evals.Result) *evals.Failure {
+	msgs, err := a.sess.GetMessages(context.Background(), 0)
+	if err != nil {
+		return &evals.Failure{AssertionName: a.Name(), Message: fmt.Sprintf("GetMessages 失败: %v", err)}
+	}
+	if len(msgs) >= 3 {
+		return nil
+	}
+	return &evals.Failure{AssertionName: a.Name(),
+		Message: fmt.Sprintf("熔断后历史应 >= 3 条，实际 %d 条", len(msgs))}
 }

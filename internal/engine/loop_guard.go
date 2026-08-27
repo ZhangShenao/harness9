@@ -163,7 +163,7 @@ func (g *loopGuard) alreadyErr() error {
 
 // repetitionReminderFmt 是重复提醒的定向文案模板。
 // 与静态 StallNudge 文案不同：检测器知道具体签名，可给出事实性定位。
-const repetitionReminderFmt = "系统检测：你在最近 %d 轮内已第 %d 次发起相同的工具调用（%s），" +
+const repetitionReminderFmt = "系统检测：你在当前工作周期内已累计第 %d 次发起相同的工具调用（%s），" +
 	"且每次都得到相同结果。继续同一调用不会产生新信息。请择一执行：" +
 	"① 改用其他手段获取所需信息；② 基于已有结果推进任务；" +
 	"③ 若任务已完成，直接输出最终回复停止。"
@@ -255,11 +255,7 @@ func (g *loopGuard) EvaluateReminders(turnCount int) (string, error) {
 			if !ok {
 				label = "未知调用"
 			}
-			window := g.cfg.RepetitionWindow
-			if window <= 0 {
-				window = 1
-			}
-			return fmt.Sprintf(repetitionReminderFmt, window, total, label), nil
+			return fmt.Sprintf(repetitionReminderFmt, total, label), nil
 		}
 		g.terminated = &GuardTermination{Reason: ReasonRepetitionLoop}
 		return "", fmt.Errorf("重复调用提醒无效（同一调用已出现 %d 次），循环终止", total)

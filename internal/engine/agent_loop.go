@@ -88,9 +88,10 @@ func WithTokenBudget(n int) Option {
 	return func(e *AgentEngine) { e.tokenBudget = n }
 }
 
-// WithRepetitionReminder 启用重复调用死循环检测：最近 window 个 turn 内同一
-// 签名（工具名+canonical 参数哈希）出现 threshold 次时注入定向提醒；
-// 提醒无效则升级为硬终止（ReasonRepetitionLoop）。任一参数 <=0 时关闭。
+// WithRepetitionReminder 启用重复调用死循环检测：同一无进展工作周期内同一
+// 签名（工具名+canonical 参数哈希）累计出现 threshold 次即注入定向提醒
+// （window 仅用于淘汰展示切片 sigEntries）；提醒后再命中即硬终止
+// （ReasonRepetitionLoop）。任一参数 <=0 时关闭。
 func WithRepetitionReminder(window, threshold int) Option {
 	return func(e *AgentEngine) { e.repWindow, e.repThreshold = window, threshold }
 }

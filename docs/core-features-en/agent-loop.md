@@ -410,7 +410,7 @@ EvaluateReminders(turnCount)
 
 **Targeted reminder template** (exclusive to repetition detection; carries factual localization generated from the signature label):
 
-> System detection: within the last {window} turns you have issued the identical tool call ({name(args...)}) for the {total}-th time, and every invocation returned the same result. Repeating it will not yield new information. Choose one: ① use another means to obtain the information; ② advance the task based on what you already have; ③ if the task is complete, output your final reply and stop.
+> System notice: within your current working cycle you have issued the identical tool call ({name(args...)}) for the {total}-th time cumulatively, and every invocation returned the same result. Repeating it will not yield new information. Choose one: ① use another means to obtain the information; ② advance the task based on what you already have; ③ if the task is complete, output your final reply and stop.
 
 **Repetition signature and escalation policy**: the signature is `sha256(tool name + canonical JSON arguments)` (canonicalization removes key-order and whitespace differences). Once the same signature accumulates `threshold` occurrences within a no-progress working cycle: on the first threshold hit the targeted reminder above is injected and execution continues; once the reminder has proven ineffective and the threshold is hit again, the run escalates to hard termination — going through the unified controlled-termination exit to persist the trajectory and return an error.
 
@@ -581,7 +581,7 @@ eng := engine.NewAgentEngine(p, r, workDir,
 | `WithToolTimeout(d)` | `time.Duration` | 60s | Timeout for a single tool execution, 0 = use the original context |
 | `WithRunTimeout(d)` | `time.Duration` | unlimited (0 = off) | Wall-clock deadline; tool sub-contexts are clamped to min(toolTimeout, remaining) |
 | `WithTokenBudget(n)` | `int` | unlimited (0 = off) | Cumulative input-token budget, tracked from actual API usage with estimate fallback |
-| `WithRepetitionReminder(window, threshold)` | `int, int` | off | Repetition signature detection: once the same signature reaches threshold occurrences, a targeted reminder is injected first and a subsequent hit escalates to hard termination |
+| `WithRepetitionReminder(window, threshold)` | `int, int` | off | Repetition signature detection: once the same signature accumulates ≥ threshold occurrences within a no-progress working cycle, a targeted reminder is injected first and a subsequent hit escalates to hard termination |
 | `WithStallReminder(window, text)` | `int, string` | 0, "" | Injects a stall reminder once after window consecutive turns without progress tools, 0 disables it (renamed from `WithStallNudge`) |
 | `WithMemoryReminder(interval, text)` | `int, string` | 0, "" | Injects a Long-Term Memory hint into the defensive copy every interval turns, 0 disables it (renamed from `WithMemoryNudge`) |
 | `WithMaxConcurrentTools(n)` | `int` | 0 | Maximum concurrent tools within the same Turn, 0 = unlimited |
