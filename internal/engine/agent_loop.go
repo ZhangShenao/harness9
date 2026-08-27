@@ -694,7 +694,7 @@ var planModeWhitelist = map[string]bool{
 	"todo_write": true,
 }
 
-// progressToolNames 是被视为"取得实质进展"的工具集合（用于 WithStallNudge 停滞检测）。
+// progressToolNames 是被视为"取得实质进展"的工具集合（用于 WithStallReminder 停滞提醒机制）。
 // 调用其一即重置停滞计数：它们改变工作区状态（写入/编辑文件），是 Agent 真正推进任务的信号。
 // 只读探索（read_file/bash grep 等）不计入进展，连续多轮只读即被判定为停滞。
 var progressToolNames = map[string]bool{

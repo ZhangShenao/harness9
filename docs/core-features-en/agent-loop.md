@@ -161,6 +161,8 @@ Event
 | `token_update` | Emitted before each LLM call, reporting token estimate | `TokenUpdateData` |
 | `compaction` | Context underwent effective compaction (token reduction > 5%) | `CompactionData` |
 | `approval_required` | Tool execution requires human approval | `ApprovalRequest` |
+| `terminated` | Guardrail controlled termination (fuse tripped) | `TerminationData{Reason, Message}` |
+| `state_change` | State machine transition | `StateChangeData{From, To, Turn}` |
 | `done` | Loop ended normally | `nil` |
 | `error` | Error occurred | `string` |
 
@@ -262,28 +264,19 @@ responseMsg, err := em.generate(ctx, turnCount, contextHistory, availableTools)
 contextHistory = append(contextHistory, *responseMsg)
 ```
 
-### 4.3 Termination Condition Detection
+### 4.3 Termination Condition Detection — Four-Axis Circuit Breaking
 
-The engine implements a triple safety guarantee:
+All circuit-breaking decisions are centralized in `loopGuard` (`internal/engine/loop_guard.go`), which only fires at Turn boundaries. It tolerates an overshoot of at most one turn and never tears a stream apart mid-flight:
 
-```go
-// 1. MaxTurns limit: prevents infinite loops
-if e.maxTurns > 0 && turnCount > e.maxTurns {
-    return fmt.Errorf("maximum turn count reached (%d), loop terminated", e.maxTurns)
-}
+| Axis | Configuration | Default | Decision Point |
+|------|------|--------|---------|
+| Natural termination | — | — | `ToolCalls == 0` |
+| MaxTurns | `WithMaxTurns` | 500 | Turn start |
+| Wall-clock timeout | `WithRunTimeout(d)` | unlimited | Turn start; tool sub-context is clamped to min(toolTimeout, remaining) |
+| Token budget | `WithTokenBudget(n)` | unlimited | Turn start (accumulated from actual API usage, estimate as fallback) |
+| Repetition loop | `WithRepetitionReminder(window, threshold)` | off | Turn start (see the Reminder Intervention System) |
 
-// 2. Context cancellation: supports timeout and manual interruption
-select {
-case <-ctx.Done():
-    return fmt.Errorf("context cancelled: %w", ctx.Err())
-default:
-}
-
-// 3. Natural termination: the model no longer requests tool calls
-if len(responseMsg.ToolCalls) == 0 {
-    break
-}
-```
+**Unified controlled termination exit**: all controlled fuse paths converge into the `terminate` closure — set the `Terminated` state, send `EventTerminated{Reason, Message}`, **persist the conversation history** (fixing the old defect where fused runs lost their trajectory), emit structured logging with the reason, and return an error (return semantics unchanged). Genuine faults (LLM retries exhausted / context cancellation) still go through `EventError`, so TUI consumers can distinguish between the two.
 
 ### 4.4 ToolCall Phase — Concurrent Execution (with Independent Timeouts)
 
@@ -396,6 +389,58 @@ func sendEvent(ctx context.Context, ch chan<- Event, evt Event) bool {
     }
 }
 ```
+
+### 4.7 Reminder Intervention System
+
+The Reminder Intervention System replaces the previously flat Nudge mechanism (`WithMemoryNudge` / `WithStallNudge` were removed and renamed to `WithMemoryReminder` / `WithStallReminder`, semantics preserved). Both soft interventions and repetition-detection escalation are now funneled through `loopGuard.EvaluateReminders`.
+
+**Three-source arbitration**: at most one intervention message is injected per turn, with priority **repetition > stall > memory hint**:
+
+```
+EvaluateReminders(turnCount)
+│
+├─ ① Repetition detected?
+│     ├─ First threshold hit → inject a targeted reminder, set reminded, keep running
+│     └─ Threshold hit again after the reminder → escalate to hard termination (ReasonRepetitionLoop)
+│
+├─ ② Stall detected? (StallWindow consecutive turns without progress tools) → inject stall reminder, reset counter
+│
+└─ ③ Memory reminder due? (turnCount % MemoryInterval == 0) → inject memory hint
+```
+
+**Targeted reminder template** (exclusive to repetition detection; carries factual localization generated from the signature label):
+
+> System detection: within the last {window} turns you have issued the identical tool call ({name(args...)}) for the {total}-th time, and every invocation returned the same result. Repeating it will not yield new information. Choose one: ① use another means to obtain the information; ② advance the task based on what you already have; ③ if the task is complete, output your final reply and stop.
+
+**Repetition signature and escalation policy**: the signature is `sha256(tool name + canonical JSON arguments)` (canonicalization removes key-order and whitespace differences). Once the same signature accumulates `threshold` occurrences within a no-progress working cycle: on the first threshold hit the targeted reminder above is injected and execution continues; once the reminder has proven ineffective and the threshold is hit again, the run escalates to hard termination — going through the unified controlled-termination exit to persist the trajectory and return an error.
+
+**Progress break rule**: as soon as a turn contains a progress tool (`edit_file` / `write_file`), all accumulated signature counts and the stall counter are cleared and a new working cycle begins. Rationale: the SWE-bench-style rhythm of "edit code → rerun the same command" is legitimate repair behavior — a `go build` with unchanged arguments interleaved between edits is not a death loop.
+
+**Injection mechanics and semantics**: reminders are appended as `{Role: user}` messages to the **turn's dispatched copy only** (the post-compaction history), placed after the last tool result. The defensive copy is never written back to `contextHistory`, never persisted, and never accumulated across turns — each turn re-evaluates and re-injects from scratch. Consecutive user messages remain compatible with Anthropic via the Provider's `convertMessages`. If arbitration decides on a repetition escalation before injection, the turn exits in a controlled manner instead of issuing the LLM call.
+
+### 4.8 Explicit State Machine
+
+`LoopState` makes the execution phase of `runLoop` an explicit single source of truth: circuit-breaking checkpoints can take effect precisely per state, and both the observability layer (OTEL Span attributes) and the client event stream share that one phase authority.
+
+**Seven states and the one-way transition table:**
+
+```
+idle ──► turn_start ⇄ (compacting ──► generating ──► tool_executing) ──► done | terminated
+```
+
+| Current State | May Transition To |
+|---------|---------|
+| `idle` | `turn_start` |
+| `turn_start` | `compacting`, `terminated` |
+| `compacting` | `generating`, `terminated` |
+| `generating` | `tool_executing`, `done`, `terminated` |
+| `tool_executing` | `turn_start` |
+| `done` | — (terminal) |
+| `terminated` | — (terminal) |
+
+**Local-value, lock-free decision**: the state variable is a local value inside `runLoop` rather than an engine field, so concurrent engine instances are naturally race-free — continuing the snapshot-read isolation philosophy already used for session/planMode.
+
+**Single convergence point**: all transitions flow through `setState`, which fans out to two observers — the `EngineObserver.OnStateChange(ctx, from, to, turn)` callback and the streaming event `EventStateChange{Data: StateChangeData{From, To, Turn}}`. Illegal transitions are rejected with a warning log (defensive; a coding mistake cannot break the main loop).
 
 ## 5. Interface Abstraction and Decoupling Design
 
@@ -532,8 +577,13 @@ eng := engine.NewAgentEngine(p, r, workDir,
 
 | Option | Type | Default | Description |
 |------|------|--------|------|
-| `WithMaxTurns(n)` | `int` | 50 | Maximum number of Turns per Run, 0 = unlimited |
+| `WithMaxTurns(n)` | `int` | 500 | Maximum number of Turns per Run, 0 = unlimited |
 | `WithToolTimeout(d)` | `time.Duration` | 60s | Timeout for a single tool execution, 0 = use the original context |
+| `WithRunTimeout(d)` | `time.Duration` | unlimited (0 = off) | Wall-clock deadline; tool sub-contexts are clamped to min(toolTimeout, remaining) |
+| `WithTokenBudget(n)` | `int` | unlimited (0 = off) | Cumulative input-token budget, tracked from actual API usage with estimate fallback |
+| `WithRepetitionReminder(window, threshold)` | `int, int` | off | Repetition signature detection: once the same signature reaches threshold occurrences, a targeted reminder is injected first and a subsequent hit escalates to hard termination |
+| `WithStallReminder(window, text)` | `int, string` | 0, "" | Injects a stall reminder once after window consecutive turns without progress tools, 0 disables it (renamed from `WithStallNudge`) |
+| `WithMemoryReminder(interval, text)` | `int, string` | 0, "" | Injects a Long-Term Memory hint into the defensive copy every interval turns, 0 disables it (renamed from `WithMemoryNudge`) |
 | `WithMaxConcurrentTools(n)` | `int` | 0 | Maximum concurrent tools within the same Turn, 0 = unlimited |
 | `WithSession(s)` | `memory.Session` | nil | Injects session storage, enabling persistence of historical messages |
 | `WithCompactor(c)` | `memory.Compactor` | nil | Injects a context compactor, controlling context window size |
@@ -542,7 +592,6 @@ eng := engine.NewAgentEngine(p, r, workDir,
 | `WithPlanMode(mode)` | `planning.PlanMode` | Default | Initial execution mode; can be updated at runtime via `SetPlanMode` |
 | `WithTodoStore(s)` | `*planning.TodoStore` | nil | Binds a todo list, enabling cross-session todo persistence |
 | `WithEngineObserver(o)` | `EngineObserver` | noopObserver | Injects a lifecycle observer (OTEL Tracing, etc.); degrades to noop if nil |
-| `WithMemoryNudge(n, text)` | `int, string` | 0, "" | Injects a Long-Term Memory hint into the defensive copy every n turns, 0 disables it |
 
 At runtime, `eng.SetSession(sess)` can switch sessions and `eng.SetPlanMode(mode)` can switch execution mode (both are concurrency-safe, using `sync.RWMutex` internally, but have no effect on a `runLoop` currently in progress).
 
@@ -704,6 +753,7 @@ Both Providers' message conversion logic is factored out into `convertMessages` 
 | **Permission control** | Plan Mode provides tool-layer read-only constraints | Unified PermissionChecker before tool execution, supporting interactive confirmation |
 | **Hook system** | None | PreToolUse / PostToolUse / Stop / TurnComplete event hooks |
 | **Multi-Agent orchestration** | Single-Agent mode | Sub-Agent scheduling, parallel Agents, dedicated role Agents |
+| **Loop sequence detection** | A/B/A/B alternating loops are not yet detected (exact signatures already cover the high-frequency pathological shapes) | Sequence pattern mining / output-parroting detection (deferred per YAGNI; see §7 non-goals of the design document) |
 
 ## 10. Summary of Design Principles
 
@@ -716,7 +766,7 @@ Both Providers' message conversion logic is factored out into `convertMessages` 
 | **Channel-driven streaming** | Provider → `chan StreamChunk` → Engine → `chan Event`, native Go CSP model |
 | **Functional options** | `WithMaxTurns` / `WithToolTimeout` / `WithMaxConcurrentTools` optional configuration |
 | **Concurrency safety** | Index-isolated writes + WaitGroup + semaphore throttling + explicit parameter passing, no data races |
-| **Triple-guaranteed termination** | Natural termination + MaxTurns limit + Context cancellation |
+| **Four-Axis Circuit Breaking** | Natural termination plus four hard-fuse axes in `loopGuard` (MaxTurns / wall-clock timeout / token budget / repetition loop), adjudicated at Turn boundaries through the unified controlled-termination exit |
 | **Observability** | Structured logging with `[engine]` / `[engine-stream]` prefixes + key=value format |
 | **Deferred parsing** | `json.RawMessage` used for deferred Arguments deserialization; `interface{}` used for InputSchema compatibility across multiple SDKs |
 | **Self-healing capability** | `ToolResult.IsError` allows the model to perceive errors and automatically retry |

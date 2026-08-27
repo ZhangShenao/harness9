@@ -160,6 +160,8 @@ Event
 | `token_update` | 每轮 LLM 调用前发出，报告 token 估算 | `TokenUpdateData` |
 | `compaction` | 上下文发生有效压缩（token 减少 > 5%） | `CompactionData` |
 | `approval_required` | 工具执行需要人类审批 | `ApprovalRequest` |
+| `terminated` | 护栏受控熔断终止 | `TerminationData{Reason, Message}` |
+| `state_change` | 状态机流转 | `StateChangeData{From, To, Turn}` |
 | `done` | 循环正常结束 | `nil` |
 | `error` | 出错 | `string` |
 
@@ -259,28 +261,23 @@ responseMsg, err := em.generate(ctx, turnCount, contextHistory, availableTools)
 contextHistory = append(contextHistory, *responseMsg)
 ```
 
-### 4.3 终止条件检测
+### 4.3 终止条件检测 —— 四维熔断保障
 
-引擎实现三重安全保障：
+熔断裁决集中在 `loopGuard`（`internal/engine/loop_guard.go`），只在 Turn 边界触发，
+接受最多一轮的过冲，绝不在流式中途撕断：
 
-```go
-// 1. MaxTurns 限制：防止无限循环
-if e.maxTurns > 0 && turnCount > e.maxTurns {
-    return fmt.Errorf("已达最大 Turn 数 (%d)，循环终止", e.maxTurns)
-}
+| 维度 | 配置 | 默认值 | 裁决时机 |
+|------|------|--------|---------|
+| 自然终止 | — | — | `ToolCalls == 0` |
+| MaxTurns | `WithMaxTurns` | 500 | Turn 开始 |
+| 墙钟超时 | `WithRunTimeout(d)` | 不限 | Turn 开始；工具子 context 取 min(toolTimeout, remaining) |
+| Token 预算 | `WithTokenBudget(n)` | 不限 | Turn 开始（按 API 实际 usage 累计，缺失时估算兜底）|
+| 重复死循环 | `WithRepetitionReminder(window, threshold)` | 关闭 | Turn 开始（详见 Reminder 系统）|
 
-// 2. Context 取消：支持超时和手动中断
-select {
-case <-ctx.Done():
-    return fmt.Errorf("context 已取消: %w", ctx.Err())
-default:
-}
-
-// 3. 自然终止：模型不再请求工具调用
-if len(responseMsg.ToolCalls) == 0 {
-    break
-}
-```
+**统一受控出口**：所有受控熔断收敛到 `terminate` 闭包——置 `Terminated` 状态、
+发送 `EventTerminated{Reason, Message}`、**执行历史持久化**（修复旧实现熔断路径
+丢失轨迹的缺陷）、记录带原因的结构化日志、返回 error（返回语义保持不变）。
+意外故障（LLM 重试耗尽 / context 取消）仍走 `EventError`，TUI 可据此区分二者。
 
 ### 4.4 ToolCall 阶段 — 并发执行（带独立超时）
 
@@ -392,6 +389,74 @@ func sendEvent(ctx context.Context, ch chan<- Event, evt Event) bool {
     }
 }
 ```
+
+### 4.7 Reminder 干预系统
+
+Reminder 干预系统取代了原先平铺的 Nudge 机制（`WithMemoryNudge` / `WithStallNudge`
+已删除，更名为 `WithMemoryReminder` / `WithStallReminder`，语义不变），并由
+`loopGuard.EvaluateReminders` 统一承担软干预与重复检测升级两条路径。
+
+**三源仲裁**：每轮至多注入一条干预消息，优先级为 **重复 > 停滞 > 记忆提示**：
+
+```
+EvaluateReminders(turnCount)
+│
+├─ ① 重复检测命中？
+│     ├─ 首次达标 → 注入定向提醒，置 reminded，继续运行
+│     └─ 提醒后再次达标 → 升级为硬终止（ReasonRepetitionLoop）
+│
+├─ ② 停滞检测命中？（连续 StallWindow 轮无进展工具）→ 注入停滞提醒，计数归零
+│
+└─ ③ 记忆提醒命中？（turnCount % MemoryInterval == 0）→ 注入记忆提示
+```
+
+**定向提醒模板**（重复检测专属，携带事实性定位，由签名标签动态生成）：
+
+> 系统检测：你在最近 {window} 轮内已第 {total} 次发起相同的工具调用（{name(args...)}），
+> 且每次都得到相同结果。继续同一调用不会产生新信息。请择一执行：
+> ① 改用其他手段获取所需信息；② 基于已有结果推进任务；
+> ③ 若任务已完成，直接输出最终回复停止。
+
+**重复签名与升级策略**：签名为 `sha256(工具名 + canonical JSON 参数)`（canonical 化消除
+键序与空白差异）；同一签名在无进展的工作周期内累计出现达到 `threshold` 次：
+首次达标注入上述定向提醒并继续运行；提醒已被证明无效后再次达标，升级为硬终止——
+走统一受控出口持久化轨迹、返回 error。
+
+**进展打破规则**：一旦某轮包含进展工具（`edit_file` / `write_file`），清空全部签名
+重复计数与停滞计数，开启新工作周期。理由：SWE-bench 式"改代码 → 重跑同一命令"
+是合法修复节奏，参数不变的 `go build` 夹在编辑动作之间并非死循环。
+
+**注入机制与语义**：提醒以 `{Role: user}` 消息追加到**本轮派发副本**（压缩后的 history）
+末尾，位于最后一个工具结果之后；防御性副本不写入 `contextHistory`、不持久化、不跨轮
+累积，每轮重新评估重新注入。Anthropic 连续 user 消息由 Provider 的 `convertMessages`
+兼容处理。注入前的仲裁若裁决出重复升级终止，则本轮直接受控退出，不再发送 LLM 调用。
+
+### 4.8 显式状态机
+
+`LoopState` 将 `runLoop` 的执行阶段显式化为单一事实源：熔断检查点可按状态精准生效，
+可观测层（OTEL Span 属性）与客户端事件流共享同一份阶段事实源。
+
+**七态图与单向流转表：**
+
+```
+idle ──► turn_start ⇄ (compacting ──► generating ──► tool_executing) ──► done | terminated
+```
+
+| 当前状态 | 可流转至 |
+|---------|---------|
+| `idle` | `turn_start` |
+| `turn_start` | `compacting`, `terminated` |
+| `compacting` | `generating`, `terminated` |
+| `generating` | `tool_executing`, `done`, `terminated` |
+| `tool_executing` | `turn_start` |
+| `done` | —（终态）|
+| `terminated` | —（终态）|
+
+**局部值无锁决策**：状态变量是 `runLoop` 的局部值而非引擎字段，多引擎实例并发天然
+无竞态，延续 session/planMode 快照式读取的隔离哲学。
+
+**单一出口汇聚**：所有流转经 `setState` 汇聚到两路观察者——`EngineObserver.OnStateChange(ctx, from, to, turn)` 回调与流式事件 `EventStateChange{Data: StateChangeData{From, To, Turn}}`。
+非法流转被拒绝并记录告警日志（防御性，编码失误不会击穿主循环）。
 
 ## 5. 接口抽象与解耦设计
 
@@ -528,8 +593,13 @@ eng := engine.NewAgentEngine(p, r, workDir,
 
 | 选项 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `WithMaxTurns(n)` | `int` | 50 | 单次 Run 最大 Turn 数，0 = 不限制 |
+| `WithMaxTurns(n)` | `int` | 500 | 单次 Run 最大 Turn 数，0 = 不限制 |
 | `WithToolTimeout(d)` | `time.Duration` | 60s | 单个工具执行超时，0 = 使用原始 context |
+| `WithRunTimeout(d)` | `time.Duration` | 不限（0 = 关闭） | 墙钟超时 deadline；工具子 context 取 min(toolTimeout, remaining) |
+| `WithTokenBudget(n)` | `int` | 不限（0 = 关闭） | 累计 input token 预算，按 API 实际 usage 统计、缺失时估算兜底 |
+| `WithRepetitionReminder(window, threshold)` | `int, int` | 关闭 | 重复签名检测：同一签名累计出现 ≥ threshold 次先注入定向提醒，再次命中升级硬终止 |
+| `WithStallReminder(window, text)` | `int, string` | 0, "" | 连续 window 轮无进展工具时注入一次停滞提醒，0 关闭（原 `WithStallNudge` 更名） |
+| `WithMemoryReminder(interval, text)` | `int, string` | 0, "" | 每隔 interval 轮向防御性副本注入长期记忆提示，0 关闭（原 `WithMemoryNudge` 更名） |
 | `WithMaxConcurrentTools(n)` | `int` | 0 | 同一 Turn 内最大并发工具数，0 = 不限制 |
 | `WithSession(s)` | `memory.Session` | nil | 注入会话存储，启用历史消息持久化 |
 | `WithCompactor(c)` | `memory.Compactor` | nil | 注入上下文压缩器，控制上下文窗口大小 |
@@ -538,7 +608,6 @@ eng := engine.NewAgentEngine(p, r, workDir,
 | `WithPlanMode(mode)` | `planning.PlanMode` | Default | 初始执行模式；可运行时通过 `SetPlanMode` 更新 |
 | `WithTodoStore(s)` | `*planning.TodoStore` | nil | 绑定任务列表，启用跨会话 todo 持久化 |
 | `WithEngineObserver(o)` | `EngineObserver` | noopObserver | 注入生命周期观察者（OTEL Tracing 等），nil 时退化为 noop |
-| `WithMemoryNudge(n, text)` | `int, string` | 0, "" | 每隔 n 轮向防御性副本注入长期记忆提示，0 关闭 |
 
 运行时可通过 `eng.SetSession(sess)` 切换会话，`eng.SetPlanMode(mode)` 切换执行模式（均并发安全，内部使用 `sync.RWMutex`，但对当前正在运行的 `runLoop` 无影响）。
 
@@ -700,6 +769,7 @@ Turn 2:
 | **权限控制** | Plan Mode 提供工具层只读约束 | 工具执行前统一 PermissionChecker，支持交互式确认 |
 | **Hook 系统** | 无 | PreToolUse / PostToolUse / Stop / TurnComplete 事件钩子 |
 | **多 Agent 编排** | 单 Agent 模式 | 子 Agent 调度、并行 Agent、专用角色 Agent |
+| **循环序列检测** | A/B/A/B 交替循环暂不检测（精确签名已覆盖高频病理形态） | 序列模式挖掘 / 输出复读机检测（YAGNI 后置，见设计文档 §7 非目标） |
 
 ## 10. 设计原则总结
 
@@ -712,7 +782,7 @@ Turn 2:
 | **channel 驱动流式** | Provider → `chan StreamChunk` → Engine → `chan Event`，Go 原生 CSP 模型 |
 | **函数选项** | `WithMaxTurns` / `WithToolTimeout` / `WithMaxConcurrentTools` 可选配置 |
 | **并发安全** | 索引隔离写入 + WaitGroup + 信号量限流 + 显式参数传递，无数据竞争 |
-| **三重保障终止** | 自然终止 + MaxTurns 限制 + Context 取消 |
+| **四维熔断保障** | 自然终止 + `loopGuard` 四维硬熔断（MaxTurns / 墙钟超时 / Token 预算 / 重复死循环），Turn 边界裁决 + 统一受控出口 |
 | **可观测性** | 结构化日志 `[engine]` / `[engine-stream]` 前缀 + key=value 格式 |
 | **延迟解析** | `json.RawMessage` 用于 Arguments 延迟反序列化；`interface{}` 用于 InputSchema 兼容多 SDK |
 | **自愈能力** | `ToolResult.IsError` 支持模型感知错误并自动重试 |
