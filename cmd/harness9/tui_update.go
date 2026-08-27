@@ -765,6 +765,35 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		m.input.Focus()
 		return m, textinput.Blink
 
+	case engine.EventTerminated:
+		data, _ := evt.Data.(engine.TerminationData)
+		// 与 EventError 相同的现场清理，但渲染样式区分"受控终止"与"故障"。
+		if m.thinkingLineStart != -1 {
+			m.lines = m.lines[:m.thinkingLineStart]
+		} else {
+			m.lines = m.lines[:m.pendingReplyStart]
+		}
+		m.pendingReply = ""
+		m.pendingThinking = ""
+		m.thinkingLineStart = -1
+		if m.cancelFn != nil {
+			m.cancelFn()
+		}
+		m.running = false
+		m.currentTool = ""
+		m.autoExecuting = false
+		m.lines = append(m.lines, dimStyle.Render("⛔ 受控终止 ["+string(data.Reason)+"] "+data.Message))
+		m.input.Focus()
+		return m, textinput.Blink
+
+	case engine.EventStateChange:
+		// 最小适配：事件本身用于驱动 spinner 动词前进一步（原本靠定时器轮换）。
+		// 关键义务是消费事件防止无缓冲 channel 阻塞生产者 goroutine。
+		if _, ok := evt.Data.(engine.StateChangeData); ok {
+			m.verbIdx = (m.verbIdx + 1) % len(spinnerVerbs)
+		}
+		return m, readNextEvent(m.eventCh)
+
 	case engine.EventError:
 		errMsg, _ := evt.Data.(string)
 		// 丢弃未渲染的流式缓冲（含 thinking 块）

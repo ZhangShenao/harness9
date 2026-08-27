@@ -91,7 +91,7 @@ func RunCase(ctx context.Context, c *Case) Result {
 	}
 	hookReg := hooks.NewHookRegistry(registry, recorder)
 
-	// 基础选项 + Case 附加选项（如 WithStallNudge）。附加选项置于其后，可覆盖默认。
+	// 基础选项 + Case 附加选项（如 WithStallReminder）。附加选项置于其后，可覆盖默认。
 	engOpts := append([]engine.Option{engine.WithMaxTurns(maxTurns)}, c.EngineOptions...)
 	eng := engine.NewAgentEngine(c.Provider, hookReg, workDir, engOpts...)
 

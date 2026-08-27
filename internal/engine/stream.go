@@ -60,6 +60,14 @@ const (
 	// EventSubAgent 表示一次子代理进度更新。Data 类型为 schema.SubAgentUpdate。
 	// 由 task 工具执行期间，Runner 消费子引擎事件流时经 ctx 注入的进度回调透传。
 	EventSubAgent EventType = "sub_agent"
+
+	// EventTerminated 表示 agent loop 因护栏熔断而受控终止。Data 类型为 TerminationData。
+	// 与 EventError 的区别：前者是设计内的受控行为（预算耗尽/死循环拦截等），
+	// 后者是意外故障（LLM 连接失败/context 取消等）。TUI 以不同样式区分展示。
+	EventTerminated EventType = "terminated"
+
+	// EventStateChange 表示 runLoop 状态机发生流转。Data 类型为 StateChangeData。
+	EventStateChange EventType = "state_change"
 )
 
 // Event 是引擎面向客户端的流式事件单元。RunStream 返回 <-chan Event，
@@ -85,7 +93,8 @@ type Event struct {
 	//   EventToolStart    → schema.ToolCall,
 	//   EventToolResult   → ToolResultData, EventDone → nil, EventError → string,
 	//   EventTokenUpdate  → TokenUpdateData, EventCompaction → memory.CompactionRecord,
-	//   EventSubAgent     → schema.SubAgentUpdate
+	//   EventSubAgent     → schema.SubAgentUpdate,
+	//   EventTerminated   → TerminationData, EventStateChange → StateChangeData
 	Data any `json:"data,omitempty"`
 }
 
@@ -148,6 +157,10 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 	go func() {
 		defer close(ch)
 
+		// 受控熔断标记：terminate 回调置位。runLoop 同步返回后据此抑制 EventError，
+		// 避免同一次终止渲染两条互斥消息（受控终止 vs 故障）。
+		var terminatedData *TerminationData
+
 		em := emitter{
 			generate: func(ctx context.Context, turn int, history []schema.Message, tools []schema.ToolDefinition) (*schema.Message, *schema.Usage, error) {
 				return e.streamGenerate(ctx, ch, turn, history, tools)
@@ -168,6 +181,13 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 			},
 			compaction: func(record memory.CompactionRecord) {
 				sendEvent(ctx, ch, Event{Type: EventCompaction, Data: record})
+			},
+			terminated: func(data TerminationData) {
+				terminatedData = &data
+				sendEvent(ctx, ch, Event{Type: EventTerminated, Data: data})
+			},
+			stateChanged: func(data StateChangeData) {
+				sendEvent(ctx, ch, Event{Type: EventStateChange, Data: data})
 			},
 			// 审批等待使用会话级 ctx（RunStream 的外层 ctx），不受工具执行超时约束。
 			// 工具超时（toolTimeout）仅应限制工具本身的计算时间，而非人类决策时间：
@@ -204,6 +224,11 @@ func (e *AgentEngine) RunStream(ctx context.Context, userPrompt string) (<-chan 
 			sendEvent(ctx, ch, Event{Type: EventSubAgent, Data: u})
 		})
 		if err := e.runLoop(progressCtx, userPrompt, "engine-stream", em); err != nil {
+			if terminatedData != nil {
+				// 受控熔断已经发送 EventTerminated，不再补发 EventError，
+				// 避免 TUI 对同一次终止渲染两条互斥消息。
+				return
+			}
 			ch <- Event{Type: EventError, Data: err.Error()}
 			return
 		}

@@ -66,7 +66,7 @@ type Case struct {
 	MaxTurns   int               // 引擎最大 Turn 数（0 时默认 50）
 	WorkDir    string            // 工具执行的工作目录（空则自动创建临时目录并在结束后清理）
 	// EngineOptions 是附加的引擎选项，用于评估依赖特定引擎特性的 Agent 行为
-	// （如 WithStallNudge）。为空时保持原最小化、确定性的引擎构造。
+	// （如 WithStallReminder）。为空时保持原最小化、确定性的引擎构造。
 	// 注意：传入引入非确定性的选项（如真实 Compactor）会破坏 eval 的可复现性，应避免。
 	EngineOptions []engine.Option
 }

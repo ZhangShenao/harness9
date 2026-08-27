@@ -136,7 +136,10 @@ func TestRunStream_ContextCancellation_ReceivesEventError(t *testing.T) {
 	}
 }
 
-func TestRunStream_MaxTurns_ReceivesEventError(t *testing.T) {
+// TestRunStream_MaxTurns_ReceivesEventTerminated 验证 MaxTurns 属受控熔断：
+// 流中应发出 EventTerminated（携带 reason=max_turns 与"最大"措辞的消息），
+// 且不再补发 EventError——两者互斥，避免消费者对同一次终止渲染两条消息。
+func TestRunStream_MaxTurns_ReceivesEventTerminated(t *testing.T) {
 	p := &countingProvider{
 		responses: []func(tools []schema.ToolDefinition) *schema.Message{
 			func(_ []schema.ToolDefinition) *schema.Message {
@@ -155,19 +158,29 @@ func TestRunStream_MaxTurns_ReceivesEventError(t *testing.T) {
 		t.Fatalf("RunStream error: %v", err)
 	}
 
-	var errData string
+	var termData TerminationData
+	sawError := false
 	for _, evt := range collectEvents(stream) {
-		if evt.Type == EventError {
-			if s, ok := evt.Data.(string); ok {
-				errData = s
+		switch evt.Type {
+		case EventTerminated:
+			if d, ok := evt.Data.(TerminationData); ok {
+				termData = d
 			}
+		case EventError:
+			sawError = true
 		}
 	}
-	if errData == "" {
-		t.Fatal("expected EventError when MaxTurns exceeded")
+	if termData.Reason == "" {
+		t.Fatal("expected EventTerminated when MaxTurns exceeded")
 	}
-	if !strings.Contains(errData, "最大") {
-		t.Errorf("error message should mention max turns, got: %q", errData)
+	if termData.Reason != ReasonMaxTurns {
+		t.Errorf("reason should be max_turns, got %q", termData.Reason)
+	}
+	if !strings.Contains(termData.Message, "最大") {
+		t.Errorf("termination message should mention max turns, got: %q", termData.Message)
+	}
+	if sawError {
+		t.Error("controlled termination must not emit EventError")
 	}
 }
 

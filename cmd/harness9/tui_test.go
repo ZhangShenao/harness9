@@ -1305,3 +1305,35 @@ func TestMCPPanelOverhead_LayoutConsistency(t *testing.T) {
 			totalRows, m.height, mcpPanelOverhead)
 	}
 }
+
+// TestEventTerminated_ShowsReasonAndResetsRunning 验证受控终止事件的现场清理与文案。
+func TestEventTerminated_ShowsReasonAndResetsRunning(t *testing.T) {
+	m := newTestModel()
+	m.running = true
+	m = applyUpdate(m, eventMsg{Type: engine.EventTerminated, Data: engine.TerminationData{
+		Reason:  engine.ReasonTokenBudget,
+		Message: "已达到 Token 预算 (350 tokens)",
+	}})
+	if m.running {
+		t.Error("running should be false after EventTerminated")
+	}
+	if len(m.lines) == 0 || !strings.Contains(m.lines[len(m.lines)-1], "token_budget") {
+		t.Errorf("应渲染携带原因码的终止文案，got %+v", m.lines)
+	}
+}
+
+// TestEventStateChange_ConsumedWithoutError 验证状态事件被消费（不阻塞）且不动 running 态。
+func TestEventStateChange_ConsumedWithoutError(t *testing.T) {
+	m := newTestModel()
+	m.running = true
+	before := m.verbIdx
+	m = applyUpdate(m, eventMsg{Type: engine.EventStateChange, Data: engine.StateChangeData{
+		From: engine.StateTurnStart, To: engine.StateCompacting, Turn: 1,
+	}})
+	if !m.running {
+		t.Error("EventStateChange 不应改变 running 态")
+	}
+	if m.verbIdx == before && len(spinnerVerbs) > 1 {
+		t.Error("spinner 动词应前进")
+	}
+}

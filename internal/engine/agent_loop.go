@@ -75,31 +75,7 @@ func WithNetworkRetry(attempts int, baseDelay time.Duration) Option {
 	}
 }
 
-// WithMemoryNudge 配置长期记忆 nudge：每隔 interval 个 turn 在发送给 LLM 的历史中
-// 注入一行 text 提示（仅注入到临时副本，不持久化）。interval<=0 时关闭。
-func WithMemoryNudge(interval int, text string) Option {
-	return func(e *AgentEngine) {
-		e.nudgeInterval = interval
-		e.nudgeText = text
-	}
-}
-
-// WithStallNudge 配置停滞 nudge：当连续 window 个"使用了工具但未调用任何进展工具
-// （edit_file/write_file）"的 turn 后，向发送给 LLM 的历史副本注入一次 text 提示，
-// 然后重置计数。用于打断"反复静态重读却不收敛"的空转（SWE-bench 轨迹中 xarray-3364、
-// pylint-7080 烧满 80 轮即此形态）。
-//
-// 与 WithMemoryNudge 一致：仅注入到临时副本，绝不持久化、不累积；window<=0 时关闭。
-// 进展工具集合见 progressToolNames。
-func WithStallNudge(window int, text string) Option {
-	return func(e *AgentEngine) {
-		e.stallWindow = window
-		e.stallText = text
-	}
-}
-
-// ---- 以下为护栏体系新 Options（双轨过渡期：转发到既有字段实现）。----
-// Task「runLoop 接入」完成后将删除旧 WithMemoryNudge / WithStallNudge 及对应字段。
+// ---- 以下为护栏体系新 Options。----
 
 // WithRunTimeout 设置整次 Run 的墙钟超时上限，仅在 Turn 边界裁决。0 表示不限。
 func WithRunTimeout(d time.Duration) Option {
@@ -119,14 +95,17 @@ func WithRepetitionReminder(window, threshold int) Option {
 	return func(e *AgentEngine) { e.repWindow, e.repThreshold = window, threshold }
 }
 
-// WithStallReminder 是原 WithStallNudge 的新命名，语义不变。
+// WithStallReminder 配置停滞提醒：连续 window 个 turn 未调用进展工具
+// （edit_file/write_file）时向当轮历史副本注入一次 text，然后重置计数。
+// 仅注入副本，绝不持久化。window<=0 时关闭。
 func WithStallReminder(window int, text string) Option {
-	return func(e *AgentEngine) { e.stallWindow, e.stallText = window, text }
+	return func(e *AgentEngine) { e.stallReminderWindow, e.stallReminderText = window, text }
 }
 
-// WithMemoryReminder 是原 WithMemoryNudge 的新命名，语义不变。
+// WithMemoryReminder 配置记忆提醒：每隔 interval 个 turn 注入一次 text。
+// 仅注入副本，绝不持久化。interval<=0 时关闭。
 func WithMemoryReminder(interval int, text string) Option {
-	return func(e *AgentEngine) { e.nudgeInterval, e.nudgeText = interval, text }
+	return func(e *AgentEngine) { e.memoryReminderInterval, e.memoryReminderText = interval, text }
 }
 
 // PromptBuilder 构造 Agent 的 system prompt。
@@ -190,29 +169,29 @@ func (e *AgentEngine) SetPlanMode(mode planning.PlanMode) {
 // AgentEngine 是 harness9 agent loop 的核心编排器，将 LLM Provider（"大脑"）
 // 与 Tool Registry（"双手"）组合在一起，执行多轮 ReAct 循环直到任务完成。
 type AgentEngine struct {
-	provider           provider.LLMProvider
-	registry           tools.Registry
-	workDir            string
-	maxTurns           int
-	toolTimeout        time.Duration
-	maxConcurrentTools int
-	contextWindow      int // 模型 context window（tokens），用于 TUI 展示，0 表示未知
-	promptBuilder      PromptBuilder
-	mu                 sync.RWMutex        // protects session and compactor
-	session            memory.Session      // 可选，nil 表示无持久化
-	compactor          memory.Compactor    // 可选，nil 表示不压缩
-	planMode           planning.PlanMode   // 当前执行模式，影响工具过滤
-	todoStore          *planning.TodoStore // 可选，nil 表示无 planning
-	permissionMode     PermissionMode      // 全局权限策略，影响审批行为
-	nudgeInterval      int                 // >0 时每隔该轮数注入一次记忆 nudge
-	nudgeText          string              // nudge 提示文本
-	stallWindow        int                 // >0 时连续该轮数无进展工具调用则注入一次停滞 nudge
-	stallText          string              // 停滞 nudge 提示文本
-	observer           EngineObserver      // 可选，nil 时自动退化为 noopObserver
-	generateRetries    int                 // LLM 生成调用最大尝试次数（默认 3）
-	generateRetryBase  time.Duration       // 重试退避基准（默认 1s）
-	networkRetries     int                 // 网络传输层错误的独立最大尝试次数（默认 6）
-	networkRetryBase   time.Duration       // 网络传输层错误的重试退避基准（默认 5s）
+	provider               provider.LLMProvider
+	registry               tools.Registry
+	workDir                string
+	maxTurns               int
+	toolTimeout            time.Duration
+	maxConcurrentTools     int
+	contextWindow          int // 模型 context window（tokens），用于 TUI 展示，0 表示未知
+	promptBuilder          PromptBuilder
+	mu                     sync.RWMutex        // protects session and compactor
+	session                memory.Session      // 可选，nil 表示无持久化
+	compactor              memory.Compactor    // 可选，nil 表示不压缩
+	planMode               planning.PlanMode   // 当前执行模式，影响工具过滤
+	todoStore              *planning.TodoStore // 可选，nil 表示无 planning
+	permissionMode         PermissionMode      // 全局权限策略，影响审批行为
+	memoryReminderInterval int                 // >0 时每隔该轮数注入一次记忆提醒
+	memoryReminderText     string              // 记忆提醒文本
+	stallReminderWindow    int                 // >0 时连续该轮数无进展工具调用则注入一次停滞提醒
+	stallReminderText      string              // 停滞提醒文本
+	observer               EngineObserver      // 可选，nil 时自动退化为 noopObserver
+	generateRetries        int                 // LLM 生成调用最大尝试次数（默认 3）
+	generateRetryBase      time.Duration       // 重试退避基准（默认 1s）
+	networkRetries         int                 // 网络传输层错误的独立最大尝试次数（默认 6）
+	networkRetryBase       time.Duration       // 网络传输层错误的重试退避基准（默认 5s）
 
 	runTimeout   time.Duration // >0 启用墙钟熔断
 	tokenBudget  int           // >0 启用累计 token 预算熔断
@@ -354,6 +333,10 @@ type emitter struct {
 	tokenUpdate func(tokens, window int)
 	// compaction 在上下文发生有效压缩时调用。
 	compaction func(record memory.CompactionRecord)
+	// terminated 在受控熔断发生时调用（每种模式决定如何呈现给消费者）。
+	terminated func(data TerminationData)
+	// stateChanged 在状态机流转时调用。
+	stateChanged func(data StateChangeData)
 	// approval 是人类审批回调，注入到工具执行 context 中。
 	// RunStream 模式下通过 EventApprovalRequired 事件驱动 TUI 审批对话框；
 	// Run（阻塞）模式下留 nil，HookActionAsk 视为 Allow（向后兼容）。
@@ -390,6 +373,12 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 				memory.FormatTokenCount(record.TokensAfter),
 				record.MsgsBefore, record.MsgsAfter,
 			)))
+		},
+		terminated: func(data TerminationData) {
+			log.Print(logfmt.FormatMsg("engine", fmt.Sprintf("受控终止 [%s]: %s", data.Reason, data.Message)))
+		},
+		stateChanged: func(data StateChangeData) {
+			log.Print(logfmt.FormatMsg("engine", fmt.Sprintf("状态流转 [%d]: %s -> %s", data.Turn, data.From, data.To)))
 		},
 	}
 	return e.runLoop(ctx, userPrompt, "engine", em)
@@ -457,19 +446,58 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 
 	overallStart := time.Now()
 
-	// turnsSinceProgress 记录自上次"进展工具"调用以来的轮数，驱动 WithStallNudge 停滞检测。
-	turnsSinceProgress := 0
+	// 行为护栏：单次 runLoop 一个守护实例（spec §4.4-§4.7）。
+	guard := newLoopGuard(GuardConfig{
+		MaxTurns:            e.maxTurns,
+		RunTimeout:          e.runTimeout,
+		TokenBudget:         e.tokenBudget,
+		RepetitionWindow:    e.repWindow,
+		RepetitionThreshold: e.repThreshold,
+		StallWindow:         e.stallReminderWindow,
+		StallText:           e.stallReminderText,
+		MemoryInterval:      e.memoryReminderInterval,
+		MemoryText:          e.memoryReminderText,
+	}, overallStart)
+
+	// 显式状态机：局部值 + 单一入口，多实例并发无竞态（spec §4.2）。
+	state := StateIdle
+	setState := func(to LoopState) {
+		next := transition(state, to, turnCount)
+		if next == state {
+			return
+		}
+		from := state
+		state = next
+		if em.stateChanged != nil {
+			em.stateChanged(StateChangeData{From: from, To: next, Turn: turnCount})
+		}
+		obs.OnStateChange(ctx, from, next, turnCount)
+	}
+
+	// 统一受控出口：发终止事件 → 保存历史（修复旧缺陷）→ 记录日志 → 返回 error。
+	terminate := func(reason TerminationReason, msg string) error {
+		interactionErr = fmt.Errorf("%s", msg)
+		setState(StateTerminated)
+		if em.terminated != nil {
+			em.terminated(TerminationData{Reason: reason, Message: msg})
+		}
+		log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf("受控终止 [%s]: %s", reason, msg)))
+		e.saveHistoryWith(ctx, sess, contextHistory, startLen)
+		return interactionErr
+	}
 
 	for {
 		turnCount++
+		setState(StateTurnStart)
 		turnCtx := obs.OnTurnStart(ctx, turnCount)
 
-		if e.maxTurns > 0 && turnCount > e.maxTurns {
-			interactionErr = fmt.Errorf("已达最大 Turn 数 (%d)，循环终止", e.maxTurns)
-			return interactionErr
+		if err := guard.CheckTurn(turnCount); err != nil {
+			reason, _ := guard.Terminated()
+			return terminate(reason, err.Error())
 		}
 		select {
 		case <-ctx.Done():
+			// ctx 取消是外部中断（意外故障类），保持 EventError 语义不变。
 			interactionErr = fmt.Errorf("context 已取消: %w", ctx.Err())
 			return interactionErr
 		default:
@@ -482,6 +510,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		toolTokens := memory.EstimateToolTokens(availableTools)
 
 		// Preflight token check: estimate tokens before and after compaction.
+		setState(StateCompacting)
 		compactedHistory, compactionRecord := e.applyCompactionWith(comp, contextHistory)
 		msgTokensAfter := memory.EstimateTokens(compactedHistory)
 		totalTokens := msgTokensAfter + toolTokens
@@ -493,18 +522,21 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		// Report current context token usage to TUI / CLI.
 		em.tokenUpdate(totalTokens, e.contextWindow)
 
-		// 记忆 nudge：每隔 nudgeInterval 轮，向发送给 LLM 的历史副本追加一行提示。
-		// 注入到防御性副本，绝不写入 contextHistory（因此不会被持久化、不会累积）。
-		if e.nudgeInterval > 0 && e.nudgeText != "" && turnCount%e.nudgeInterval == 0 {
-			compactedHistory = appendUserNudge(compactedHistory, e.nudgeText)
+		// 三源 Reminder 仲裁（替代原先平铺的两个 nudge if 块）：
+		// 重复升级会在这里裁决出终止。
+		if txt, err := guard.EvaluateReminders(turnCount); err != nil {
+			reason, _ := guard.Terminated()
+			return terminate(reason, err.Error())
+		} else if txt != "" {
+			compactedHistory = appendUserNudge(compactedHistory, txt)
 		}
 
-		// 停滞 nudge：连续 stallWindow 轮未调用进展工具（只在静态重读/grep 空转）时，
-		// 注入一次提示打断空转，并重置计数，避免每轮重复刷屏。同样仅作用于临时副本。
-		if e.stallWindow > 0 && e.stallText != "" && turnsSinceProgress >= e.stallWindow {
-			compactedHistory = appendUserNudge(compactedHistory, e.stallText)
-			turnsSinceProgress = 0
+		// Token 预算裁决（压缩后的估算值随响应一并累计）。
+		if err := guard.CheckBudget(); err != nil {
+			reason, _ := guard.Terminated()
+			return terminate(reason, err.Error())
 		}
+		setState(StateGenerating)
 
 		turnStart := time.Now()
 		log.Print(logfmt.FormatTurnStart(logPrefix, turnCount, len(compactedHistory), len(availableTools)))
@@ -517,6 +549,9 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		}
 		llmDuration := time.Since(llmStart)
 
+		// 累计 input token：实际 usage 优先，缺失以本轮发送的上下文估算兜底。
+		guard.AddUsage(usage, totalTokens)
+
 		// 用实际 API 返回的 token 用量更新显示，替代之前的估算值。
 		if usage != nil && usage.InputTokens > 0 {
 			em.tokenUpdate(usage.InputTokens, e.contextWindow)
@@ -525,20 +560,22 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		contextHistory = append(contextHistory, *responseMsg)
 
 		if len(responseMsg.ToolCalls) == 0 {
+			setState(StateDone)
 			log.Print(logfmt.FormatTurnDone(logPrefix, turnCount, llmDuration, time.Since(overallStart)))
 			obs.OnTurnEnd(turnCtx, turnCount, false)
 			break
 		}
 
-		// 停滞计数：本轮调用了进展工具则归零，否则累加（驱动 WithStallNudge）。
-		if hasProgressTool(responseMsg.ToolCalls) {
-			turnsSinceProgress = 0
-		} else {
-			turnsSinceProgress++
-		}
+		// 停滞计数与重复签名记录移交 guard.RecordToolCalls（含进展打破规则）。
+		guard.RecordToolCalls(turnCount, responseMsg.ToolCalls)
 
 		toolStart := time.Now()
-		results := e.executeTools(turnCtx, turnCount, responseMsg.ToolCalls, logPrefix, em)
+		setState(StateToolExecuting)
+		toolBudget := e.toolTimeout
+		if rem, ok := guard.Remaining(); ok && (toolBudget <= 0 || rem < toolBudget) {
+			toolBudget = rem // 单个工具不得冲破墙钟 deadline
+		}
+		results := e.executeTools(turnCtx, turnCount, responseMsg.ToolCalls, logPrefix, em, toolBudget)
 		toolDuration := time.Since(toolStart)
 
 		for i, toolCall := range responseMsg.ToolCalls {
@@ -697,8 +734,9 @@ func filterReadOnlyTools(tools []schema.ToolDefinition) []schema.ToolDefinition 
 }
 
 // executeTools 并发执行所有工具调用，每个工具带有独立的超时控制。
-// 通过预分配切片 + 索引写入保证结果顺序与 ToolCalls 一致。
-func (e *AgentEngine) executeTools(ctx context.Context, turn int, toolCalls []schema.ToolCall, logPrefix string, em emitter) []schema.ToolResult {
+// toolBudget 为本轮全部工具共享的超时预算（已由 runLoop 用护栏墙钟剩余时间钳制），
+// 0 表示使用 context 原始截止时间。通过预分配切片 + 索引写入保证结果顺序与 ToolCalls 一致。
+func (e *AgentEngine) executeTools(ctx context.Context, turn int, toolCalls []schema.ToolCall, logPrefix string, em emitter, toolBudget time.Duration) []schema.ToolResult {
 	log.Print(logfmt.FormatParallelTools(logPrefix, turn, len(toolCalls), e.maxConcurrentTools))
 
 	results := make([]schema.ToolResult, len(toolCalls))
@@ -721,8 +759,8 @@ func (e *AgentEngine) executeTools(ctx context.Context, turn int, toolCalls []sc
 
 			toolCtx := ctx
 			var cancel context.CancelFunc
-			if e.toolTimeout > 0 {
-				toolCtx, cancel = context.WithTimeout(ctx, e.toolTimeout)
+			if toolBudget > 0 {
+				toolCtx, cancel = context.WithTimeout(ctx, toolBudget)
 				defer cancel()
 			}
 

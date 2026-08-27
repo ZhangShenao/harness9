@@ -217,6 +217,12 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 			msg, _ := evt.Data.(string)
 			emit(schema.SubAgentUpdate{Kind: schema.SubAgentError, Text: msg})
 			return SubAgentResult{}, fmt.Errorf("子代理执行失败: %s", msg)
+		case engine.EventTerminated:
+			// 受控熔断（max_turns/预算耗尽/死循环拦截）对子代理而言同样意味着
+			// 任务未完成：作为错误上抛给主代理，附带原因码供其决策。
+			data, _ := evt.Data.(engine.TerminationData)
+			emit(schema.SubAgentUpdate{Kind: schema.SubAgentError, Text: data.Message})
+			return SubAgentResult{}, fmt.Errorf("子代理受控终止 [%s]: %s", data.Reason, data.Message)
 		case engine.EventDone:
 			// 循环将随 channel 关闭自然结束。
 		}

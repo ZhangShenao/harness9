@@ -605,7 +605,7 @@ func (p *capturingProvider) GenerateStream(ctx context.Context, msgs []schema.Me
 	return p.inner.GenerateStream(ctx, msgs, tools)
 }
 
-// TestMemoryNudgeInjectedEveryNTurns 验证 WithMemoryNudge 在指定 turn 间隔向 LLM 历史注入 nudge 提示。
+// TestMemoryNudgeInjectedEveryNTurns 验证 WithMemoryReminder 在指定 turn 间隔向 LLM 历史注入 nudge 提示。
 func TestMemoryNudgeInjectedEveryNTurns(t *testing.T) {
 	var captured [][]schema.Message
 	mock := providertest.NewMockWithCallback(func(msgs []schema.Message, _ []schema.ToolDefinition) schema.Message {
@@ -617,7 +617,7 @@ func TestMemoryNudgeInjectedEveryNTurns(t *testing.T) {
 	})
 	reg := tools.NewRegistry()
 	eng := NewAgentEngine(mock, reg, t.TempDir(),
-		WithMemoryNudge(1, "【记忆提示】如有值得长期保留的信息，请调用 memory_write。"),
+		WithMemoryReminder(1, "【记忆提示】如有值得长期保留的信息，请调用 memory_write。"),
 	)
 	if err := eng.Run(context.Background(), "hi"); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -645,7 +645,7 @@ func TestMemoryNudgeNotPersisted(t *testing.T) {
 	})
 	sess := newMemorySessionForTest("nudge-sess")
 	eng := NewAgentEngine(mock, tools.NewRegistry(), t.TempDir(),
-		WithMemoryNudge(1, nudge),
+		WithMemoryReminder(1, nudge),
 		WithSession(sess),
 	)
 	if err := eng.Run(context.Background(), "hi"); err != nil {
@@ -876,7 +876,7 @@ func TestStallNudge_InjectedAfterWindowWithoutProgress(t *testing.T) {
 		readToolCall, readToolCall, readToolCall, readToolCall, finalText,
 	}}
 	reg := &staticRegistry{tools: []schema.ToolDefinition{{Name: "read_file"}, {Name: "edit_file"}}, output: "ok"}
-	eng := NewAgentEngine(prov, reg, "/tmp", WithStallNudge(3, nudge))
+	eng := NewAgentEngine(prov, reg, "/tmp", WithStallReminder(3, nudge))
 
 	if err := eng.Run(context.Background(), "go"); err != nil {
 		t.Fatalf("Run 失败: %v", err)
@@ -894,7 +894,7 @@ func TestStallNudge_ResetByProgressTool(t *testing.T) {
 		readToolCall, editToolCall, readToolCall, editToolCall, readToolCall, finalText,
 	}}
 	reg := &staticRegistry{tools: []schema.ToolDefinition{{Name: "read_file"}, {Name: "edit_file"}}, output: "ok"}
-	eng := NewAgentEngine(prov, reg, "/tmp", WithStallNudge(3, nudge))
+	eng := NewAgentEngine(prov, reg, "/tmp", WithStallReminder(3, nudge))
 
 	if err := eng.Run(context.Background(), "go"); err != nil {
 		t.Fatalf("Run 失败: %v", err)
@@ -912,7 +912,7 @@ func TestStallNudge_NotPersisted(t *testing.T) {
 	}}
 	reg := &staticRegistry{tools: []schema.ToolDefinition{{Name: "read_file"}, {Name: "edit_file"}}, output: "ok"}
 	sess := newMemorySessionForTest("stall-sess")
-	eng := NewAgentEngine(prov, reg, "/tmp", WithStallNudge(3, nudge), WithSession(sess))
+	eng := NewAgentEngine(prov, reg, "/tmp", WithStallReminder(3, nudge), WithSession(sess))
 
 	if err := eng.Run(context.Background(), "go"); err != nil {
 		t.Fatalf("Run 失败: %v", err)
@@ -924,6 +924,178 @@ func TestStallNudge_NotPersisted(t *testing.T) {
 	for _, m := range msgs {
 		if strings.Contains(m.Content, nudge) {
 			t.Errorf("停滞提示不应被持久化，却出现在: %q", m.Content)
+		}
+	}
+}
+
+// ---- 护栏体系集成测试（Scripted/counting provider 驱动，Hermetic 无真实 API）----
+
+// usageProvider 每次调用返回固定 token 用量，用于驱动 TokenBudget 实际用量路径。
+// call 非空时每轮返回同一工具调用，使循环持续消耗预算（否则首轮即自然终止）。
+type usageProvider struct {
+	mu     sync.Mutex
+	in     int
+	out    int
+	nCalls int
+	text   string
+	call   *schema.ToolCall
+}
+
+func newUsageProvider(in, out int, text string) *usageProvider {
+	return &usageProvider{in: in, out: out, text: text}
+}
+
+func (p *usageProvider) Generate(_ context.Context, _ []schema.Message, _ []schema.ToolDefinition) (*schema.Message, *schema.Usage, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.nCalls++
+	msg := &schema.Message{Role: schema.RoleAssistant, Content: p.text}
+	if p.call != nil {
+		msg.ToolCalls = []schema.ToolCall{*p.call}
+	}
+	return msg, &schema.Usage{InputTokens: p.in, OutputTokens: p.out}, nil
+}
+
+func (p *usageProvider) GenerateStream(ctx context.Context, msgs []schema.Message, td []schema.ToolDefinition) (<-chan schema.StreamChunk, error) {
+	msg, usage, err := p.Generate(ctx, msgs, td)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan schema.StreamChunk, 2)
+	go func() {
+		defer close(ch)
+		ch <- schema.StreamChunk{Type: schema.StreamChunkDone, Message: msg, Usage: usage}
+	}()
+	return ch, nil
+}
+
+func (p *usageProvider) getCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.nCalls
+}
+
+// TestTokenBudget_TripsAtBoundary 验证：累计 input token 达到预算后在下一
+// Turn 边界受控终止，错误信息携带预算值。
+func TestTokenBudget_TripsAtBoundary(t *testing.T) {
+	p := newUsageProvider(100, 10, "keep going")
+	// 每轮发起同一工具调用，保持循环运转以持续累计 token（否则首轮即自然终止）。
+	p.call = &schema.ToolCall{ID: "burn", Name: "read_file", Arguments: []byte(`{"path":"x.txt"}`)}
+	r := &staticRegistry{output: "ok"}
+	eng := NewAgentEngine(p, r, "/tmp", WithTokenBudget(350))
+
+	err := eng.Run(context.Background(), "burn")
+	if err == nil || !strings.Contains(err.Error(), "Token 预算 (350)") {
+		t.Fatalf("期望预算熔断，got: %v", err)
+	}
+	// 100×4=400 ≥ 350 时应发生在第 4~5 次调用之间；此处宽松上界防御回归。
+	if p.getCalls() > 5 {
+		t.Fatalf("预算应在早期熔断，实际调用了 %d 次", p.getCalls())
+	}
+}
+
+// TestRepetitionDetector_TerminatesBeforeMaxTurns 验证（痛点优先级 #1）：
+// 同签名死循环在远小于 MaxTurns 时被注入提醒并随后硬终止。
+func TestRepetitionDetector_TerminatesBeforeMaxTurns(t *testing.T) {
+	// 每轮都发起同一签名的工具调用（脚本预置足够多的重复轮次，
+	// 熔断应远在耗尽之前触发）。
+	dupTurn := func(_ []schema.ToolDefinition) *schema.Message {
+		return &schema.Message{Role: schema.RoleAssistant, Content: "",
+			ToolCalls: []schema.ToolCall{{ID: "dup", Name: "read_file", Arguments: []byte(`{"path":"same.txt"}`)}}}
+	}
+	prov := &countingProvider{responses: []func([]schema.ToolDefinition) *schema.Message{
+		dupTurn, dupTurn, dupTurn, dupTurn, dupTurn, dupTurn,
+		dupTurn, dupTurn, dupTurn, dupTurn, dupTurn, dupTurn,
+	}}
+	reg := &staticRegistry{tools: []schema.ToolDefinition{{Name: "read_file"}}, output: "same content"}
+	eng := NewAgentEngine(prov, reg, "/tmp",
+		WithMaxTurns(100),
+		WithRepetitionReminder(6, 4),
+	)
+
+	err := eng.Run(context.Background(), "loop")
+	if err == nil || !strings.Contains(err.Error(), "重复调用") {
+		t.Fatalf("期望重复死循环终止，got: %v", err)
+	}
+	if len(prov.calls) > 12 {
+		t.Fatalf("应在远小于 MaxTurns(100) 时终止，实际 %d 次 LLM 调用", len(prov.calls))
+	}
+	// 第二次及之后的 dispatch 应携带定向提醒文案（对模型可见，虽最终无效）。
+	foundReminder := false
+	for _, c := range prov.calls {
+		for _, m := range c.messages {
+			if strings.Contains(m.Content, "相同的工具调用") {
+				foundReminder = true
+			}
+		}
+	}
+	if !foundReminder {
+		t.Error("升级前应至少注入过一条定向重复提醒")
+	}
+}
+
+// TestBreaker_PersistsHistoryToSession 回归测试（spec 缺口 #4）：
+// 受控熔断路径也必须把完整轨迹写入 Session——旧实现在熔断 return 时直接
+// 跳过了 saveHistoryWith，烧掉几十轮 token 的轨迹无法复盘。
+func TestBreaker_PersistsHistoryToSession(t *testing.T) {
+	prov := newUsageProvider(100, 10, "keep going")
+	// 每轮发起同一工具调用，驱动预算跨多轮累计直至熔断。
+	prov.call = &schema.ToolCall{ID: "burn", Name: "read_file", Arguments: []byte(`{"path":"x.txt"}`)}
+	reg := &staticRegistry{output: "ok"}
+	sess := newMemorySessionForTest("breaker-sess")
+	eng := NewAgentEngine(prov, reg, "/tmp", WithTokenBudget(150), WithSession(sess))
+
+	_ = eng.Run(context.Background(), "burn")
+	msgs, err := sess.GetMessages(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	// 至少应有：system 之后的 user prompt + 每轮 assistant 回复及其观测。
+	if len(msgs) < 3 {
+		t.Fatalf("熔断后历史应完整落库，实际 %d 条消息", len(msgs))
+	}
+	assistantCount := 0
+	for _, m := range msgs {
+		if m.Role == schema.RoleAssistant {
+			assistantCount++
+		}
+	}
+	if assistantCount < 2 {
+		t.Errorf("应至少持久化两轮 assistant 回复，实际 %d", assistantCount)
+	}
+	// 所有护栏检查点都位于当轮生成之前，因此熔断时轨迹的末尾是上一轮
+	// 的工具观测（user 角色）——这正是"完整轨迹落库"的设计不变量。
+	last := msgs[len(msgs)-1]
+	if last.Role != schema.RoleUser {
+		t.Errorf("最后一条应是尾随的工具观测（user），got %q", last.Role)
+	}
+}
+
+// TestEngineObserver_OnStateChangeSequence 验证状态回调按预期顺序到达。
+func TestEngineObserver_OnStateChangeSequence(t *testing.T) {
+	var seq []LoopState
+	obs := &testObserver{
+		onStateChange: func(_, to LoopState, _ int) { seq = append(seq, to) },
+	}
+	mock := &countingProvider{
+		responses: []func([]schema.ToolDefinition) *schema.Message{
+			finalText,
+		},
+	}
+	reg := &staticRegistry{output: "ok"}
+	eng := NewAgentEngine(mock, reg, "/tmp", WithEngineObserver(obs))
+
+	if err := eng.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// 单轮自然完成的最短序列。
+	want := []LoopState{StateTurnStart, StateCompacting, StateGenerating, StateDone}
+	if len(seq) < len(want) {
+		t.Fatalf("状态回调数量不足，got %v want 前缀 %v", seq, want)
+	}
+	for i, s := range want {
+		if seq[i] != s {
+			t.Fatalf("seq[%d]=%s, want %s; full=%v", i, seq[i], s, seq)
 		}
 	}
 }
