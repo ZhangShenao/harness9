@@ -117,3 +117,13 @@ func (o *OTELEngineObserver) OnTurnEnd(ctx context.Context, turn int, hasToolCal
 	}
 	o.turnsTotal.Add(ctx, 1)
 }
+
+// OnStateChange 将状态流转写入当前 turn Span 属性。
+// Span 名沿用 turnSpanKey 存放的 turn-level Span（interaction 下级节点）。
+func (o *OTELEngineObserver) OnStateChange(ctx context.Context, from, to engine.LoopState, turn int) {
+	if span, _ := ctx.Value(turnSpanKey{}).(trace.Span); span != nil {
+		span.SetAttributes(attribute.Int(AttrTurnNumber, turn))
+		span.SetAttributes(attribute.String("harness9.loop.state_transition",
+			string(from)+"->"+string(to)))
+	}
+}

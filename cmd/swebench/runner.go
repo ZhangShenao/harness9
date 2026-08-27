@@ -231,7 +231,10 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 		// 瞬时 LLM/流式错误的应用层重试：把"一次抖动杀实例"变为可恢复事件。
 		engine.WithGenerateRetry(4, 2*time.Second),
 		// 停滞提示：连续多轮无改动/无测试运行时注入一次提示，打断盲目空转（轨迹分析 R6）。
-		engine.WithStallNudge(stallNudgeWindow, stallNudgeText),
+		engine.WithStallReminder(stallNudgeWindow, stallNudgeText),
+		// 无人值守场景的重复死循环护栏：同一调用 10 轮内出现 4 次即注入定向提醒，
+		// 再犯硬终止（烧满 benchmarkMaxTurns 才停的失控轨迹由此止损）。
+		engine.WithRepetitionReminder(10, 4),
 	}
 	if cfg.MaxTurns > 0 {
 		engOpts = append(engOpts, engine.WithMaxTurns(cfg.MaxTurns))

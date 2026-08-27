@@ -420,7 +420,9 @@ Flags:
 		engine.WithCompactor(compactor),
 		engine.WithContextWindow(modelLimits.ContextTokens),
 		engine.WithTodoStore(todoStore),
-		engine.WithMemoryNudge(10, "如果本轮对话中出现了值得跨会话长期保留的信息（用户偏好、稳定的项目知识、关键决策、可复用技能），请调用 memory_write 工具记录；否则忽略此提示。"),
+		engine.WithMemoryReminder(10, "如果本轮对话中出现了值得跨会话长期保留的信息（用户偏好、稳定的项目知识、关键决策、可复用技能），请调用 memory_write 工具记录；否则忽略此提示。"),
+		// 行为护栏：TUI 场景默认开启重复调用死循环检测（痛点优先级 #1，spec §1）。
+		engine.WithRepetitionReminder(10, 4),
 	}
 	if engineObserver != nil {
 		engOpts = append(engOpts, engine.WithEngineObserver(engineObserver))

@@ -730,10 +730,11 @@ func TestEngineObserver_CallSequence(t *testing.T) {
 
 // testObserver 是用于测试的 EngineObserver 实现。
 type testObserver struct {
-	onStart     func(ctx context.Context, sid, prompt string) context.Context
-	onEnd       func(ctx context.Context, turns int, err error)
-	onTurnStart func(ctx context.Context, turn int) context.Context
-	onTurnEnd   func(ctx context.Context, turn int, hasTools bool)
+	onStart       func(ctx context.Context, sid, prompt string) context.Context
+	onEnd         func(ctx context.Context, turns int, err error)
+	onTurnStart   func(ctx context.Context, turn int) context.Context
+	onTurnEnd     func(ctx context.Context, turn int, hasTools bool)
+	onStateChange func(from, to LoopState, turn int)
 }
 
 func (o *testObserver) OnInteractionStart(ctx context.Context, sid, prompt string) context.Context {
@@ -756,6 +757,11 @@ func (o *testObserver) OnTurnStart(ctx context.Context, turn int) context.Contex
 func (o *testObserver) OnTurnEnd(ctx context.Context, turn int, hasTools bool) {
 	if o.onTurnEnd != nil {
 		o.onTurnEnd(ctx, turn, hasTools)
+	}
+}
+func (o *testObserver) OnStateChange(_ context.Context, from, to LoopState, turn int) {
+	if o.onStateChange != nil {
+		o.onStateChange(from, to, turn)
 	}
 }
 

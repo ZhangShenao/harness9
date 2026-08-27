@@ -98,6 +98,37 @@ func WithStallNudge(window int, text string) Option {
 	}
 }
 
+// ---- 以下为护栏体系新 Options（双轨过渡期：转发到既有字段实现）。----
+// Task「runLoop 接入」完成后将删除旧 WithMemoryNudge / WithStallNudge 及对应字段。
+
+// WithRunTimeout 设置整次 Run 的墙钟超时上限，仅在 Turn 边界裁决。0 表示不限。
+func WithRunTimeout(d time.Duration) Option {
+	return func(e *AgentEngine) { e.runTimeout = d }
+}
+
+// WithTokenBudget 设置单次 Run 的累计 input token 预算上限。
+// 按 API 实际返回的 usage.InputTokens 累计，缺失时以上下文估算兜底。0 表示不限。
+func WithTokenBudget(n int) Option {
+	return func(e *AgentEngine) { e.tokenBudget = n }
+}
+
+// WithRepetitionReminder 启用重复调用死循环检测：最近 window 个 turn 内同一
+// 签名（工具名+canonical 参数哈希）出现 threshold 次时注入定向提醒；
+// 提醒无效则升级为硬终止（ReasonRepetitionLoop）。任一参数 <=0 时关闭。
+func WithRepetitionReminder(window, threshold int) Option {
+	return func(e *AgentEngine) { e.repWindow, e.repThreshold = window, threshold }
+}
+
+// WithStallReminder 是原 WithStallNudge 的新命名，语义不变。
+func WithStallReminder(window int, text string) Option {
+	return func(e *AgentEngine) { e.stallWindow, e.stallText = window, text }
+}
+
+// WithMemoryReminder 是原 WithMemoryNudge 的新命名，语义不变。
+func WithMemoryReminder(interval int, text string) Option {
+	return func(e *AgentEngine) { e.nudgeInterval, e.nudgeText = interval, text }
+}
+
 // PromptBuilder 构造 Agent 的 system prompt。
 // 接口定义在 engine 包（使用者侧），由 internal/context 包实现。
 // 引擎通过此接口与 Context Engineering 模块解耦。
@@ -182,6 +213,11 @@ type AgentEngine struct {
 	generateRetryBase  time.Duration       // 重试退避基准（默认 1s）
 	networkRetries     int                 // 网络传输层错误的独立最大尝试次数（默认 6）
 	networkRetryBase   time.Duration       // 网络传输层错误的重试退避基准（默认 5s）
+
+	runTimeout   time.Duration // >0 启用墙钟熔断
+	tokenBudget  int           // >0 启用累计 token 预算熔断
+	repWindow    int           // >0 启用重复签名检测窗口
+	repThreshold int           // 同签名触发提醒阈值
 }
 
 // maxGenerateRetryDelay 是生成重试指数退避的上限，避免退避时间吞掉整体预算。

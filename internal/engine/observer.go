@@ -14,6 +14,8 @@ type EngineObserver interface {
 	OnTurnStart(ctx context.Context, turn int) context.Context
 	// OnTurnEnd 在每个 Turn 结束时调用（工具执行完毕后）。
 	OnTurnEnd(ctx context.Context, turn int, hasToolCalls bool)
+	// OnStateChange 在 runLoop 状态机发生流转时调用。
+	OnStateChange(ctx context.Context, from, to LoopState, turn int)
 }
 
 // noopObserver 是 EngineObserver 的空实现，所有方法为零开销。
@@ -25,3 +27,4 @@ func (noopObserver) OnInteractionStart(ctx context.Context, _, _ string) context
 func (noopObserver) OnInteractionEnd(_ context.Context, _ int, _ error)     {}
 func (noopObserver) OnTurnStart(ctx context.Context, _ int) context.Context { return ctx }
 func (noopObserver) OnTurnEnd(_ context.Context, _ int, _ bool)             {}
+func (noopObserver) OnStateChange(_ context.Context, _, _ LoopState, _ int) {}
