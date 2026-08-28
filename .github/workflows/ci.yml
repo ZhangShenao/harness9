@@ -40,6 +40,12 @@ jobs:
       - name: Go vet
         run: go vet ./...
 
+      - name: AutoCorrect lint
+        uses: huacnlee/autocorrect-action@main
+
+      - name: Typos spell check
+        uses: crate-ci/typos@v1.49.1
+
   build:
     name: Build
     runs-on: ubuntu-latest
