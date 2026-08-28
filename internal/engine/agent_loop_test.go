@@ -175,9 +175,11 @@ func TestGenerateRetry_DoesNotRetryOnContextCancel(t *testing.T) {
 // 使用独立、更宽松的重试预算，即使默认 generateRetries 已耗尽也能继续重试直到恢复。
 // 复现 docs/技术调研/terminal-bench-轨迹分析-v1.md §2 R2:3 个任务在 Turn 1 就命中同一条
 // x509 证书错误，默认 3 次/总计 3s 退避窗口耗尽后直接放弃整个 turn。
+// mock 错误只保留分类器 isTransientNetworkError 依赖的标准库子串（`tls:`、`x509:`），
+// 不复制 provider 层的消息措辞，避免生产文案调整时测试失真——分类器按子串匹配，不影响分类结果。
 func TestGenerateRetry_NetworkErrorGetsExtendedBudget(t *testing.T) {
 	p := &flakyProvider{failFirst: 5, err: fmt.Errorf(
-		`OpenAI 兼容 API 请求失败：Post "https://openrouter.ai/api/v1/chat/completions": ` +
+		`Post "https://openrouter.ai/api/v1/chat/completions": ` +
 			`tls: failed to verify certificate: x509: certificate signed by unknown authority`)}
 	r := &staticRegistry{output: "ok"}
 	// 默认重试预算（3 次）明显不够跑到第 6 次才成功；网络重试预算给够（6 次），

@@ -53,7 +53,7 @@ jobs:
           if [ -n "${{ github.base_ref }}" ]; then
             scripts/check-doc-drift.sh "origin/${{ github.base_ref }}"
           else
-            scripts/check-doc-drift.sh
+            scripts/check-doc-drift.sh "origin/master"
           fi
         env:
           DOC_DRIFT_STRICT: "0"
@@ -98,7 +98,7 @@ jobs:
 
       - name: Run jscpd
         shell: bash
-        run: set -o pipefail; npx jscpd@latest . 2>&1 | tee jscpd-output.txt
+        run: set -o pipefail; npx jscpd@5.0.16 . 2>&1 | tee jscpd-output.txt
 
       - name: Report summary
         if: always()

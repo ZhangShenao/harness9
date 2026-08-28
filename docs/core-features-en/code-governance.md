@@ -25,7 +25,7 @@ The duplication gate is built on [jscpd](https://github.com/kucherenko/jscpd) (c
 
 ### Gate Configuration
 
-The configuration lives in `.jscpd.json` at the repository root and is shared by CI and the local `npx jscpd@latest .` invocation:
+The configuration lives in `.jscpd.json` at the repository root and is shared by CI and the local `npx jscpd@5.0.16 .` invocation:
 
 | Field | Value | Meaning |
 |-------|-------|---------|
@@ -61,12 +61,12 @@ The "baseline + 2" strategy means the gate **prevents regression without punishi
 
 ### Behavior in CI
 
-The `duplication` job runs `npx jscpd@latest .` on every build:
+The `duplication` job runs `npx jscpd@5.0.16 .` on every build (the version is pinned explicitly, no `@latest`):
 
 ```yaml
 - name: Run jscpd
   shell: bash
-  run: set -o pipefail; npx jscpd@latest . 2>&1 | tee jscpd-output.txt
+  run: set -o pipefail; npx jscpd@5.0.16 . 2>&1 | tee jscpd-output.txt
 
 - name: Report summary
   if: always()
@@ -97,7 +97,7 @@ Two details matter: `set -o pipefail` ensures jscpd's over-threshold non-zero ex
 
 `scripts/check-doc-drift.sh` works as follows:
 
-1. **Collect the changeset**: `git diff --name-only <base>...HEAD` (defaults to `master...HEAD`; an explicit base-ref can be passed). `git -c core.quotepath=off` keeps non-ASCII paths such as `docs/核心功能/` unescaped, so path comparison never breaks on quote escaping;
+1. **Collect the changeset**: `git diff --name-only <base>...HEAD` (defaults to `origin/master...HEAD`, falling back to `master...HEAD`, then the `HEAD` working tree; an explicit base-ref can be passed). `git -c core.quotepath=off` keeps non-ASCII paths such as `docs/核心功能/` unescaped, so path comparison never breaks on quote escaping;
 2. **Test-file exemption**: changes to `*_test.go` never trigger doc checks — internal test adjustments (case additions, assertion tweaks) carry no documentation obligation;
 3. **Path matching**: each changed file is matched against the entry's `paths` using glob semantics; a directory pattern matches every file underneath it via prefix matching;
 4. **Doc-sync verification**: once a module is hit, **all** docs in its `docs` list must appear in the changeset, otherwise the script reports `DRIFT: 代码已变更但文档未同步` (code changed but docs not updated).
@@ -116,7 +116,7 @@ The split is a deliberate evolution strategy: **run in warn as an observation pe
 
 ### CI Integration Point
 
-Drift detection runs inside the `lint` job: on pull requests it uses `origin/${{ github.base_ref }}` as the base (i.e. "what did this PR change relative to the target branch"), and on pushes to master it compares `master...HEAD`.
+Drift detection runs inside the `lint` job: on pull requests it uses `origin/${{ github.base_ref }}` as the base (i.e. "what did this PR change relative to the target branch"); on pushes to master it compares against `origin/master` explicitly — at that point HEAD is already the latest commit, so the diff is empty and the check passes explicitly (the real gate runs during the PR phase).
 
 ---
 
@@ -180,7 +180,7 @@ Drift detection can only tell you that docs did not move; it cannot move them fo
 
 ### Phase 1: Code Changes → Chinese Docs
 
-1. Determine the changeset (user-supplied range / uncommitted working-tree changes / `git diff --name-only master...HEAD`), filtering out `*_test.go` and generated artifacts;
+1. Determine the changeset (user-supplied range / uncommitted working-tree changes / `git diff --name-only origin/master...HEAD`, falling back to `master...HEAD`, then the working tree), filtering out `*_test.go` and generated artifacts;
 2. Consult `docs/doc-map.json`: entries whose `paths` hit the changeset and whose `docs` is non-empty form the candidate list;
 3. For each candidate doc: read it in full alongside the relevant code diff, then update stale descriptions, add sections for new features, and fix outdated code snippets; skipping a change with no real doc impact is allowed but must be justified.
 
@@ -225,10 +225,12 @@ cargo install typos-cli
 | `autocorrect --lint` | CI-equivalent format check, report-only |
 | `typos` | Repo-wide spell check |
 | `typos -w` | Auto-fix spelling errors (inspect with `git diff` first) |
-| `npx jscpd@latest .` | Local duplication report (reads `.jscpd.json`) |
+| `npx jscpd@5.0.16 .` | Local duplication report (reads `.jscpd.json`) |
 | `scripts/check-doc-drift.sh` | Doc drift detection, warn mode by default |
 | `DOC_DRIFT_STRICT=1 scripts/check-doc-drift.sh` | Strict mode: drift exits 1 |
 | `/sync-docs` | opencode command: the three-phase doc sync pipeline |
+
+CI pins jscpd to the same version (`npx jscpd@5.0.16`); when upgrading jscpd, update the version in both CI and this cheat sheet, and re-measure the duplication baseline.
 
 Recommended personal workflow: run `autocorrect --fix .` and `typos` over your changes before committing, and run `/sync-docs` whenever you touched anything under `internal/`, `cmd/`, or `skills/`.
 
@@ -246,7 +248,7 @@ All governance-related checks in `.github/workflows/ci.yml`:
 | lint | Prose format | `huacnlee/autocorrect-action@main` | Blocking |
 | lint | Spelling | `crate-ci/typos@v1.49.1` | Blocking |
 | lint | Doc drift | `scripts/check-doc-drift.sh` (`DOC_DRIFT_STRICT: "0"`) | Warning only, non-blocking |
-| duplication | Code duplication | `npx jscpd@latest .` (threshold 5) | Blocking + Step Summary report |
+| duplication | Code duplication | `npx jscpd@5.0.16 .` (threshold 5) | Blocking + Step Summary report |
 | build | Compilation | `go build ./...` | Blocking |
 | test | Tests | `go test -race ./...` | Blocking |
 

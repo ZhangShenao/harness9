@@ -3,7 +3,7 @@
 # check-doc-drift.sh — 代码模块与技术方案文档的同步漂移检测
 #
 # 用法：
-#   scripts/check-doc-drift.sh [<base-ref>]   # 默认比较 master...HEAD
+#   scripts/check-doc-drift.sh [<base-ref>]   # 默认比较 origin/master...HEAD（回退 master...HEAD、HEAD 工作区）
 #   DOC_DRIFT_STRICT=1 时漂移导致退出码 1（CI 阻断），默认仅警告
 #
 # 依赖：git, jq
@@ -20,7 +20,7 @@ command -v jq >/dev/null 2>&1 || { echo "check-doc-drift: 缺少 jq 依赖" >&2;
 if [ -n "$BASE" ]; then
   CHANGED=$(git -c core.quotepath=off diff --name-only "$BASE...HEAD")
 else
-  CHANGED=$(git -c core.quotepath=off diff --name-only master...HEAD 2>/dev/null || git -c core.quotepath=off diff --name-only HEAD)
+  CHANGED=$(git -c core.quotepath=off diff --name-only origin/master...HEAD 2>/dev/null || git -c core.quotepath=off diff --name-only master...HEAD 2>/dev/null || git -c core.quotepath=off diff --name-only HEAD)
 fi
 
 if [ -z "$CHANGED" ]; then

@@ -25,7 +25,7 @@ harness9 的代码治理由**三项自动化质量门禁**（jscpd 重复度、a
 
 ### 门禁配置
 
-配置位于仓库根目录 `.jscpd.json`，CI 与本地 `npx jscpd@latest .` 共用这一份：
+配置位于仓库根目录 `.jscpd.json`，CI 与本地 `npx jscpd@5.0.16 .` 共用这一份：
 
 | 字段 | 值 | 含义 |
 |------|-----|------|
@@ -61,12 +61,12 @@ threshold = ceil(基线重复行百分比) + 2
 
 ### CI 中的行为
 
-`duplication` job 每次跑 `npx jscpd@latest .`：
+`duplication` job 每次跑 `npx jscpd@5.0.16 .`（版本显式锁定，不用 `@latest`）：
 
 ```yaml
 - name: Run jscpd
   shell: bash
-  run: set -o pipefail; npx jscpd@latest . 2>&1 | tee jscpd-output.txt
+  run: set -o pipefail; npx jscpd@5.0.16 . 2>&1 | tee jscpd-output.txt
 
 - name: Report summary
   if: always()
@@ -97,7 +97,7 @@ threshold = ceil(基线重复行百分比) + 2
 
 `scripts/check-doc-drift.sh` 的检测流程：
 
-1. **取变更集**：`git diff --name-only <base>...HEAD`（默认 `master...HEAD`，也可显式传 base-ref）；`git -c core.quotepath=off` 保证 `docs/核心功能/` 等中文路径不被转义，路径比对不会因为引号转义而失配；
+1. **取变更集**：`git diff --name-only <base>...HEAD`（默认 `origin/master...HEAD`，依次回退 `master...HEAD`、HEAD 工作区；也可显式传 base-ref）；`git -c core.quotepath=off` 保证 `docs/核心功能/` 等中文路径不被转义，路径比对不会因为引号转义而失配；
 2. **测试文件豁免**：`*_test.go` 的变更不触发文档检查——测试内部调整（case 增删、断言微调）不要求文档跟着动；
 3. **路径匹配**：变更文件依次与映射条目的 `paths` 做 glob 匹配；pattern 为目录时按目录前缀匹配，命中其下所有文件；
 4. **文档同步核对**：某模块被命中后，其 `docs` 列表中的**所有**文档必须出现在本次变更集中，否则报 `DRIFT: 代码已变更但文档未同步`。
@@ -116,7 +116,7 @@ threshold = ceil(基线重复行百分比) + 2
 
 ### 与 CI 的接入点
 
-漂移检测跑在 `lint` job 中：PR 触发时以 `origin/${{ github.base_ref }}` 为 base 比对（即「这个 PR 相对目标分支改了什么」），push 到 master 时比对 `master...HEAD`。
+漂移检测跑在 `lint` job 中：PR 触发时以 `origin/${{ github.base_ref }}` 为 base 比对（即「这个 PR 相对目标分支改了什么」）；push 到 master 时显式与 `origin/master` 比对——此时 HEAD 已是最新提交，diff 为空，检查显式通过（真正的门禁发生在 PR 阶段）。
 
 ---
 
@@ -180,7 +180,7 @@ autocorrect 与多数英文 lint 工具不同，**不启用自动硬折行**（p
 
 ### Phase 1：代码变更 → 中文文档
 
-1. 确定变更范围（用户指定 / 工作区未提交改动 / `git diff --name-only master...HEAD`），过滤掉 `*_test.go` 与生成产物；
+1. 确定变更范围（用户指定 / 工作区未提交改动 / `git diff --name-only origin/master...HEAD`，回退 `master...HEAD`、工作区），过滤掉 `*_test.go` 与生成产物；
 2. 以 `docs/doc-map.json` 为准，`paths` 命中且 `docs` 非空的条目进入候选清单；
 3. 对每个候选文档：通读全文 + 相关代码 diff，直接更新过时描述、新增功能段落、失效的代码片段；无实质影响的变更可跳过但需说明理由。
 
@@ -225,10 +225,12 @@ cargo install typos-cli
 | `autocorrect --lint` | CI 同款格式检查，只报不改 |
 | `typos` | 全仓拼写检查 |
 | `typos -w` | 自动修复拼写错误（改动前建议先 `git diff` 确认） |
-| `npx jscpd@latest .` | 本地重复度报告（读取 `.jscpd.json`） |
+| `npx jscpd@5.0.16 .` | 本地重复度报告（读取 `.jscpd.json`） |
 | `scripts/check-doc-drift.sh` | 文档漂移检测，默认 warn 模式 |
 | `DOC_DRIFT_STRICT=1 scripts/check-doc-drift.sh` | strict 模式，漂移时退出码 1 |
 | `/sync-docs` | opencode 命令：三阶段文档同步管线 |
+
+CI 中的 jscpd 已锁定为同一版本（`npx jscpd@5.0.16`）；升级 jscpd 时应同步更新 CI 与本处的版本号，并复测重复度基线。
 
 推荐的个人工作流：提交前 `autocorrect --fix .` + `typos` 清理自己的改动范围，涉及 `internal/`、`cmd/`、`skills/` 的变更先跑 `/sync-docs`。
 
@@ -246,7 +248,7 @@ cargo install typos-cli
 | lint | 文案格式 | `huacnlee/autocorrect-action@main` | 阻断 |
 | lint | 拼写 | `crate-ci/typos@v1.49.1` | 阻断 |
 | lint | 文档漂移 | `scripts/check-doc-drift.sh`（`DOC_DRIFT_STRICT: "0"`） | warn 告警，不阻断 |
-| duplication | 代码重复度 | `npx jscpd@latest .`（threshold 5） | 阻断 + Step Summary 报告 |
+| duplication | 代码重复度 | `npx jscpd@5.0.16 .`（threshold 5） | 阻断 + Step Summary 报告 |
 | build | 编译 | `go build ./...` | 阻断 |
 | test | 测试 | `go test -race ./...` | 阻断 |
 
