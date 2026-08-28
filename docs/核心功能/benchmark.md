@@ -173,11 +173,11 @@ runInstance(ctx, inst, cfg)
 | bash 超时放宽至 300s | 默认 120s 仍不足以跑完测试套件/装依赖；runner 通过 `WithBashTimeout` 提到 300s，模型亦可用 `timeout_secs` 临时放宽（验证修复的关键路径）|
 | 收集 patch 前先 `git add -A -N` | 纯 `git diff` 只输出已跟踪文件，Agent 用 write_file 新建的修复文件会被静默丢弃；intent-to-add 使新文件进入 diff |
 | git diff 用独立 context | Ctrl+C 取消主 context 后，仍能收集已修改的 patch，避免丢弃有效结果 |
-| 显式接入 Compactor + ContextWindow | 此前未配置压缩器，长轨迹上下文无界增长触及窗口 → API 400 杀实例；runner 用无需 LLM/Session 的 `TokenBudgetCompactor`（预算取窗口 55%，为工具定义+输出+估算误差留余量）|
+| 显式接入 Compactor + ContextWindow | 此前未配置压缩器，长轨迹上下文无界增长触及窗口 → API 400 杀实例；runner 用无需 LLM/Session 的 `TokenBudgetCompactor`（预算取窗口 55%，为工具定义 + 输出 + 估算误差留余量）|
 | 引擎级生成重试 `WithGenerateRetry(4, 2s)` | SDK 重试只覆盖首字节前；流式中途断连/瞬时 429 会逃逸到引擎层杀实例。应用层有界退避重试把"一次抖动杀实例"变为可恢复事件 |
 | `WithPermissionMode(BypassAll)` | 无人值守显式短路审批，零延迟，不依赖是否注册 hook |
 | MaxTurns benchmark 默认 80 | 此前沿用引擎 500，卡死实例会在每实例超时内烧掉大量 token；80 足够 explore+fix+verify 又能截断失控循环（如观测到的 69 轮 runaway）。仍可用 `--max-turns N` 覆盖 |
-| 单实例超时默认 30 分钟 | 原 10 分钟需覆盖 clone+sandbox 启动+整段 agent loop，对大仓库偏紧 |
+| 单实例超时默认 30 分钟 | 原 10 分钟需覆盖 clone+sandbox 启动 + 整段 agent loop，对大仓库偏紧 |
 | 采样种子固定（`--seed`，默认 1）| 原用 `time.Now().UnixNano()` 导致每次运行抽样不同、无法复现/对比；固定 seed → 同实例集，`--resume` 自然一致 |
 | 日志按 RunID 命名空间隔离 | `logs/<RunID>/<instance>.log`，避免多次运行同名日志互相覆盖、污染分析 |
 | `--resume` 仅跳过非空 patch | 原按 instance_id 跳过且接受空 patch，导致最该重跑的失败实例被永久跳过；改为仅跳过已产出非空 patch 的实例 |
@@ -185,7 +185,7 @@ runInstance(ctx, inst, cfg)
 | predictions.jsonl 追加写 | 每条完成后立即 flush，配合 `--resume` 支持断点续跑 |
 | **默认依赖自举（接通 bootstrap 接缝）** | runner 现在为每实例默认设置 `BootstrapCmd`（`ensurepip` + `pip install -e .` + `pytest`），在 Agent 启动前把"真实测试"变得可运行——**恢复验证闭环**（轨迹分析 R1：此前 24/24 实例零测试运行，全靠静态分析）。`SANDBOX_BOOTSTRAP_CMD` 显式设置后覆盖默认；需编译器的仓库可设 `SANDBOX_IMAGE` 指向官方每实例镜像 |
 | **默认镜像改为 `python:3.11`（非 slim）** | slim 常缺 pip、运行库不全；full 镜像自带 pip 并能从 wheel 拉取 numpy/pandas 等依赖，配合默认自举即可跑真实测试（轨迹分析 R1） |
-| **验证关卡（verification gate）** | Agent 自然结束却"全程未运行任何测试"时，runner 注入**一次**续跑提示要求真实验证（复用同一引擎 + 内存会话延续历史，至多一次，受超时/turn 上限兜底）。修复"9 轮静态自证即交卷"（轨迹分析 R2：8/8 失败实例均零验证即交卷）|
+| **验证关卡（verification gate）** | Agent 自然结束却"全程未运行任何测试"时，runner 注入**一次**续跑提示要求真实验证（复用同一引擎 + 内存会话延续历史，至多一次，受超时/turn 上限兜底）。修复"9 轮静态自证即交卷"（轨迹分析 R2:8/8 失败实例均零验证即交卷）|
 | **停滞提示 `WithStallNudge(10, …)`** | 连续 10 轮无任何改动/测试运行（只在静态重读/grep 空转）时，引擎注入一次提示打断空转（轨迹分析 R6：xarray-3364、pylint-7080 烧满 80 轮即此形态）。仅作用于临时副本，不持久化 |
 | **注入 `hints_text` + dataset 解析评测字段** | `Instance` 现解析 `version`/`environment_setup_commit`/`FAIL_TO_PASS`/`test_patch`；prompt 注入维护者讨论（hints），它常含决定性 API 设计（轨迹分析 R3：flask `text=True`、xarray DeprecationWarning）。⚠️ `FAIL_TO_PASS`/`test_patch` 仅供分析，**绝不**在 Agent 运行时暴露/应用 |
 
@@ -417,12 +417,12 @@ I can see the issue in autoreload.py. Let me read the relevant section...
 ```markdown
 # SWE-bench Lite Run Summary
 
-- 开始时间: 2026-06-09 14:30:00
-- 结束时间: 2026-06-09 17:51:00
-- 总实例数: 110
+- 开始时间：2026-06-09 14:30:00
+- 结束时间：2026-06-09 17:51:00
+- 总实例数：110
 - 成功生成 patch: 89 / 110
 - 空 patch（agent 无改动）: 14
-- 运行出错: 7
+- 运行出错：7
 
 ## 按 Repo 分布
 | Repo              | 实例数 | 有 patch | 空 patch | 出错 |
@@ -569,9 +569,9 @@ go run ./cmd/swebench --help
 
 | 实例 | v1 | v2 | 起作用的优化 |
 |---|---|---|---|
-| **pylint-7080** | 80 轮(打满)/无测试 → 挂 | **17 轮/测试 → 过** | 依赖自举让 `pylint` 可跑 → 盲目空转 80 轮变成 17 轮收敛到正确的 1 行 `os.path.normpath` 修复（最典型）|
+| **pylint-7080** | 80 轮 (打满)/无测试 → 挂 | **17 轮/测试 → 过** | 依赖自举让 `pylint` 可跑 → 盲目空转 80 轮变成 17 轮收敛到正确的 1 行 `os.path.normpath` 修复（最典型）|
 | **flask-4992** | 13 轮/无测试 → 挂 | **14 轮/测试 → 过** | hints 注入暴露维护者定的 `text=True` API + 真实测试当场暴露 `mode='t'` 的 ValueError |
-| **astropy-7746** | 17 轮/无测试 → 挂 | **110 轮/测试 → 过** | 验证关卡触发一次续跑（110=主跑+强制验证），真实测试抓到非对称 `[],[1]` 回归 |
+| **astropy-7746** | 17 轮/无测试 → 挂 | **110 轮/测试 → 过** | 验证关卡触发一次续跑（110=主跑 + 强制验证），真实测试抓到非对称 `[],[1]` 回归 |
 
 ### 6.7 五个仍未解决：诚实归因
 
@@ -581,12 +581,12 @@ go run ./cmd/swebench --help
 | **xarray-4493** | 40 轮/测试 | **隐藏测试专属行为**：gold 要发 `DeprecationWarning`，只写在评测时才注入的 test_patch 里，运行时看不到 |
 | **seaborn-3407** | 33 轮/测试 | 同上：隐藏测试断言 `diag_vars==list(cols)` 的精确类型 |
 | **flask-5063** | 16 轮/测试 | 同上：隐藏测试要 `Host`/`Subdomain` 表头 + host_matching 模式 |
-| **xarray-3364** | 80 轮(打满)/测试 | **复杂定位**：现在能跑测试，但锚定了一条 test_patch 会删除的现存断言，仍改错代码路径 |
+| **xarray-3364** | 80 轮 (打满)/测试 | **复杂定位**：现在能跑测试，但锚定了一条 test_patch 会删除的现存断言，仍改错代码路径 |
 
 ### 6.8 关键结论
 
 - **真实测试反馈是「必要但不充分」**：它解决了「能靠反馈收敛」的题（+3、零回归、还快 3 倍），但对「期望行为只存在于隐藏测试」这一类（xarray-4493/seaborn-3407/flask-5063）即便有环境也无能为力。
-- 剩余 5 例已被精确归因为「**环境天花板(1) + 隐藏测试专属行为(3) + 复杂定位(1)**」，与根因分析完全自洽。
+- 剩余 5 例已被精确归因为「**环境天花板 (1) + 隐藏测试专属行为 (3) + 复杂定位 (1)**」，与根因分析完全自洽。
 - 下一步增量只能来自：① 官方每实例镜像（解 requests-1963 这类版本天花板）；② 更强的「按项目惯例推断隐藏行为」脚手架。
 
 ---

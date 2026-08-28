@@ -272,7 +272,7 @@ if e.maxTurns > 0 && turnCount > e.maxTurns {
 // 2. Context 取消：支持超时和手动中断
 select {
 case <-ctx.Done():
-    return fmt.Errorf("context 已取消: %w", ctx.Err())
+    return fmt.Errorf("context 已取消：%w", ctx.Err())
 default:
 }
 

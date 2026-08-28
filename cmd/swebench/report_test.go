@@ -99,7 +99,7 @@ func TestWriteSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "总实例数: 3") {
+	if !strings.Contains(content, "总实例数：3") {
 		t.Errorf("summary should contain total count 3, got:\n%s", content)
 	}
 	if !strings.Contains(content, "django/django") {

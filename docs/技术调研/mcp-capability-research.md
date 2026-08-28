@@ -32,7 +32,7 @@
 
 ## 2. 逐框架深度分析
 
-### 2.1 DeepAgents（LangChain）
+### 2.1 DeepAgents (LangChain)
 
 **GitHub**: https://github.com/langchain-ai/deepagents
 **语言**: Python | **Stars**: 24,752（未 archived）
@@ -74,7 +74,7 @@ MCP 工具经外部 adapter 转换后，名称沿用 LangChain 侧的工具名�
 
 ---
 
-### 2.2 OpenHarness（HKUDS）
+### 2.2 OpenHarness (HKUDS)
 
 **GitHub**: https://github.com/HKUDS/OpenHarness
 **语言**: Python | **Stars**: 13,932（未 archived）
@@ -165,7 +165,7 @@ Resources 工具作为一等公民注入 Registry，与普通内置工具无差�
 
 ---
 
-### 2.3 OpenCode（Anomaly）
+### 2.3 OpenCode (Anomaly)
 
 **GitHub**: https://github.com/anomalyco/opencode
 **语言**: TypeScript | **Stars**: 175,405（未 archived）
@@ -360,7 +360,7 @@ OpenClaw 有独立的插件工具系统（`packages/plugin-sdk/src/provider-tool
 
 ---
 
-### 2.5 HermesAgent（NousResearch）
+### 2.5 HermesAgent (NousResearch)
 
 **GitHub**: https://github.com/NousResearch/hermes-agent
 **语言**: Python | **Stars**: 195,609（未 archived）
@@ -431,7 +431,7 @@ Messaging MCP Server 通过后台 `EventBridge` 线程保持状态同步：
 
 ---
 
-### 2.6 Claude Agent SDK（Anthropic）
+### 2.6 Claude Agent SDK (Anthropic)
 
 **文档**: https://code.claude.com/docs/en/agent-sdk/mcp
 **语言**: Python + TypeScript | **来源**: Anthropic 官方

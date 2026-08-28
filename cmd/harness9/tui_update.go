@@ -388,7 +388,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// Shell 模式: "!" 前缀直接执行 Bash 命令，绕过 LLM
+			// Shell 模式："!" 前缀直接执行 Bash 命令，绕过 LLM
 			// 不显示 "▶ You:" 行，改为 "$ cmd" 风格
 			if strings.HasPrefix(raw, "!") {
 				shellCmd := strings.TrimSpace(strings.TrimPrefix(raw, "!"))
@@ -438,13 +438,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			prompt, ok := resolvePrompt(raw, m.skillsIndex)
 			if !ok {
 				name := strings.TrimPrefix(strings.SplitN(raw, " ", 2)[0], "/")
-				m.lines = append(m.lines, errorStyle.Render("  ✗ 技能未找到: "+name))
+				m.lines = append(m.lines, errorStyle.Render("  ✗ 技能未找到："+name))
 				m.input.Focus()
 				return m, textinput.Blink
 			}
 			if strings.HasPrefix(raw, "/") && m.skillsIndex != nil {
 				name := strings.TrimPrefix(strings.SplitN(raw, " ", 2)[0], "/")
-				m.lines = append(m.lines, skillStyle.Render("  ◎ 技能已加载: "+name))
+				m.lines = append(m.lines, skillStyle.Render("  ◎ 技能已加载："+name))
 			}
 
 			return m.dispatch(prompt)
@@ -489,7 +489,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case compactErrMsg:
 		m.compacting = false
-		m.lines = append(m.lines, errorStyle.Render("  ✗ /compact 失败: "+msg.err.Error()))
+		m.lines = append(m.lines, errorStyle.Render("  ✗ /compact 失败："+msg.err.Error()))
 		m.input.Focus()
 		return m, textinput.Blink
 
@@ -553,7 +553,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelFn()
 		}
 		if msg.err != nil {
-			m.lines = append(m.lines, errorStyle.Render("  ✗ 子代理失败: "+msg.err.Error()))
+			m.lines = append(m.lines, errorStyle.Render("  ✗ 子代理失败："+msg.err.Error()))
 		} else {
 			for _, ln := range strings.Split(strings.TrimRight(msg.result, "\n"), "\n") {
 				m.lines = append(m.lines, ln)
@@ -672,7 +672,7 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 			toolArgs = m.toolArgs
 		}
 
-		// 工具完成行：展示 tool_name(args摘要) — 耗时
+		// 工具完成行：展示 tool_name(args 摘要) — 耗时
 		summary := summarizeTool(toolName, toolArgs)
 		display := toolName
 		if summary != "" {
@@ -859,7 +859,7 @@ func (m tuiModel) appendSubAgentUpdate(u schema.SubAgentUpdate) tuiModel {
 		m.subAgentLines = append(m.subAgentLines, line)
 		m.subAgentStreaming = false
 	case schema.SubAgentToolResult:
-		// 成功的工具结果不单独成行：上面的 `▸ 工具名(参数)` 已展示该调用，
+		// 成功的工具结果不单独成行：上面的 `▸ 工具名 (参数)` 已展示该调用，
 		// 再加一行 ✓ 既无信息量，又会在 maxSubAgentLines 上限下挤掉有用的调用行（"空 tool-calling"）。
 		// 仅在出错时提示，便于用户察觉子代理的工具失败。
 		if u.IsError {
@@ -1324,7 +1324,7 @@ func (m tuiModel) dispatchMention(raw string) (tuiModel, tea.Cmd) {
 		for _, d := range m.subAgentReg.List() {
 			names = append(names, d.Name)
 		}
-		m.lines = append(m.lines, errorStyle.Render("  ✗ 未知子代理: "+name+"（可用: "+strings.Join(names, ", ")+"）"))
+		m.lines = append(m.lines, errorStyle.Render("  ✗ 未知子代理："+name+"（可用："+strings.Join(names, ", ")+"）"))
 		return m, nil
 	}
 	if task == "" {
@@ -1444,7 +1444,7 @@ func (m tuiModel) handleNewSession() (tea.Model, tea.Cmd) {
 	}
 	sess, err := m.manager.NewSession(m.outerCtx)
 	if err != nil {
-		m.lines = append(m.lines, errorStyle.Render("  ✗ 创建会话失败: "+err.Error()))
+		m.lines = append(m.lines, errorStyle.Render("  ✗ 创建会话失败："+err.Error()))
 		m.input.Focus()
 		return m, textinput.Blink
 	}
@@ -1453,7 +1453,7 @@ func (m tuiModel) handleNewSession() (tea.Model, tea.Cmd) {
 	if m.eng != nil {
 		m.eng.SetSession(sess)
 	}
-	m.lines = append(m.lines, dimStyle.Render("  ✓ 新会话已创建: "+m.sessionID))
+	m.lines = append(m.lines, dimStyle.Render("  ✓ 新会话已创建："+m.sessionID))
 	m.input.Reset()
 	m.input.Focus()
 	return m, textinput.Blink
@@ -1468,7 +1468,7 @@ func (m tuiModel) handleResumeList() (tea.Model, tea.Cmd) {
 	}
 	sessions, err := m.manager.ListSessions(m.outerCtx)
 	if err != nil {
-		m.lines = append(m.lines, errorStyle.Render("  ✗ 获取会话列表失败: "+err.Error()))
+		m.lines = append(m.lines, errorStyle.Render("  ✗ 获取会话列表失败："+err.Error()))
 		m.input.Focus()
 		return m, textinput.Blink
 	}
@@ -1519,7 +1519,7 @@ func (m tuiModel) handleResumeSelection(raw string) (tea.Model, tea.Cmd) {
 	info := savedSessions[num-1]
 	sess, err := m.manager.OpenSession(m.outerCtx, info.ID)
 	if err != nil {
-		m.lines = append(m.lines, errorStyle.Render("  ✗ 加载会话失败: "+err.Error()))
+		m.lines = append(m.lines, errorStyle.Render("  ✗ 加载会话失败："+err.Error()))
 		m.input.Focus()
 		return m, textinput.Blink
 	}

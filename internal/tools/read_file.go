@@ -113,7 +113,7 @@ const maxLineRead = 500
 func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input readFileArgs
 	if err := json.Unmarshal(args, &input); err != nil {
-		return "", fmt.Errorf("参数解析失败: %w", err)
+		return "", fmt.Errorf("参数解析失败：%w", err)
 	}
 
 	fullPath, err := safePath(t.workDir, input.Path)
@@ -132,13 +132,13 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	// 字节偏移模式（原有逻辑）。
 	file, err := os.Open(fullPath)
 	if err != nil {
-		return "", fmt.Errorf("打开文件失败: %w", err)
+		return "", fmt.Errorf("打开文件失败：%w", err)
 	}
 	defer file.Close()
 
 	info, err := file.Stat()
 	if err != nil {
-		return "", fmt.Errorf("获取文件信息失败: %w", err)
+		return "", fmt.Errorf("获取文件信息失败：%w", err)
 	}
 	totalSize := info.Size()
 
@@ -148,7 +148,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 			return fmt.Sprintf("[offset=%d 超出文件大小（%d 字节），无内容可读。]", offset, totalSize), nil
 		}
 		if _, err := file.Seek(offset, io.SeekStart); err != nil {
-			return "", fmt.Errorf("定位文件偏移失败: %w", err)
+			return "", fmt.Errorf("定位文件偏移失败：%w", err)
 		}
 	}
 
@@ -160,7 +160,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	// 多读 1 字节用于检测是否真的超出上限
 	content, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
 	if err != nil {
-		return "", fmt.Errorf("读取文件内容失败: %w", err)
+		return "", fmt.Errorf("读取文件内容失败：%w", err)
 	}
 
 	if len(content) > limit {
@@ -190,7 +190,7 @@ func readFileByLines(fullPath string, startLine, endLine int) (string, error) {
 
 	f, err := os.Open(fullPath)
 	if err != nil {
-		return "", fmt.Errorf("打开文件失败: %w", err)
+		return "", fmt.Errorf("打开文件失败：%w", err)
 	}
 	defer f.Close()
 
@@ -223,7 +223,7 @@ func readFileByLines(fullPath string, startLine, endLine int) (string, error) {
 		if errors.Is(err, bufio.ErrTooLong) {
 			return "", fmt.Errorf("文件含超长行（>512KB），行号模式不支持；请改用 offset/limit 字节模式读取该文件")
 		}
-		return "", fmt.Errorf("读取文件失败: %w", err)
+		return "", fmt.Errorf("读取文件失败：%w", err)
 	}
 
 	// sb.Len() == 0 只有一种真实情况：startLine 超出文件总行数。

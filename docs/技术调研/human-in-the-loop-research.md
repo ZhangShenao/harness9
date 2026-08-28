@@ -8,7 +8,7 @@
 
 ## 一、各框架调研结果
 
-### 1. Claude Agent SDK（Anthropic）
+### 1. Claude Agent SDK (Anthropic)
 
 **语言**: Python + TypeScript（双 SDK）
 
@@ -142,7 +142,7 @@ const options = {
 
 ---
 
-### 2. DeepAgents（LangChain）
+### 2. DeepAgents (LangChain)
 
 **语言**: Python，MIT，依托 LangGraph 运行时
 
@@ -201,7 +201,7 @@ Middleware 在 LLM 调用前（而非工具调用前）触发，可动态过滤�
 
 ---
 
-### 3. OpenHarness（HKUDS）
+### 3. OpenHarness (HKUDS)
 
 **语言**: Python，MIT，活跃维护，安全优先，多层防御
 
@@ -285,7 +285,7 @@ class AgentHookDefinition(BaseModel):
 
 ---
 
-### 4. OpenCode（Anomaly）
+### 4. OpenCode (Anomaly)
 
 **语言**: TypeScript，MIT，Effect 函数式编程风格，事件驱动
 
@@ -378,7 +378,7 @@ OpenClaw 有独立安全审计层（`src/security/`，106 个文件），偏向"
 
 ---
 
-### 6. HermesAgent（NousResearch）
+### 6. HermesAgent (NousResearch)
 
 **语言**: Python，MIT，以 callback 注入替代内置 HITL，安全层外置化
 

@@ -263,7 +263,7 @@ HermesAgent 的 TodoStore 是**纯内存**实现，`format_for_injection()` 在 
 
 ---
 
-### Claude Agent SDK（Anthropic）
+### Claude Agent SDK (Anthropic)
 
 #### Context Offload 机制
 
@@ -320,7 +320,7 @@ SDK 最具特色的文件系统功能：
 | **read_file 反查机制** | 有，system prompt 注入指引 | 无 | 无 | 无 | 有，offset/limit 分页 | 无（框架层） |
 | **Plan 文件持久化** | 无 | 部分（任务日志） | 有，`.opencode/plans/*.md` | 无 | 无（内存 todo） | 无（JSONL session） |
 | **Checkpoint/快照** | 无 | 无 | SQLite 事务 | sessionFile 机制 | 有，git-based shadow store | 有，file checkpointing |
-| **记忆文件** | AGENTS.md | MEMORY.md（sha1+hash 路径） | 无专属记忆文件 | MEMORY.md（规范+遗留名） | 无 | CLAUDE.md |
+| **记忆文件** | AGENTS.md | MEMORY.md（sha1+hash 路径） | 无专属记忆文件 | MEMORY.md（规范 + 遗留名） | 无 | CLAUDE.md |
 | **Session 存储** | LangGraph thread state | 内存（部分日志文件） | SQLite（Drizzle ORM） | 插件化（可扩展） | SQLite（FTS5 + WAL） | JSONL 文件 |
 | **文件 GC/生命周期管理** | 无自动 GC | memory 有 ttl_days | 无自动 GC | 未知 | 有，retention_days + size cap + git gc | 无自动 GC |
 | **路径安全/沙箱** | virtual_mode root_dir 约束 | permissions 模块 | contains/overlaps 路径检测 | boundary 检测 | WRITE_DENIED_PATHS + WRITE_SAFE_ROOT | 工作目录约束 |

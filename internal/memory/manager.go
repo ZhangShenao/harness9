@@ -77,11 +77,11 @@ func WithCompactionRecordsDir(dir string) ManagerOption {
 // 父目录不存在时自动创建。
 func NewManager(dbPath string, opts ...ManagerOption) (*Manager, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
-		return nil, fmt.Errorf("创建数据库目录: %w", err)
+		return nil, fmt.Errorf("创建数据库目录：%w", err)
 	}
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("打开数据库: %w", err)
+		return nil, fmt.Errorf("打开数据库：%w", err)
 	}
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
@@ -111,7 +111,7 @@ func (m *Manager) NewSession(ctx context.Context) (Session, error) {
 		`INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)`,
 		id, now, now)
 	if err != nil {
-		return nil, fmt.Errorf("创建会话: %w", err)
+		return nil, fmt.Errorf("创建会话：%w", err)
 	}
 	return &SQLiteSession{db: m.db, sessionID: id}, nil
 }
@@ -122,7 +122,7 @@ func (m *Manager) OpenSession(ctx context.Context, id string) (Session, error) {
 	err := m.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM sessions WHERE id = ?`, id).Scan(&count)
 	if err != nil {
-		return nil, fmt.Errorf("查询会话: %w", err)
+		return nil, fmt.Errorf("查询会话：%w", err)
 	}
 	if count == 0 {
 		return nil, fmt.Errorf("会话不存在: %s", id)
@@ -140,7 +140,7 @@ func (m *Manager) ListSessions(ctx context.Context) ([]SessionInfo, error) {
 		ORDER BY s.updated_at DESC
 	`)
 	if err != nil {
-		return nil, fmt.Errorf("列出会话: %w", err)
+		return nil, fmt.Errorf("列出会话：%w", err)
 	}
 	defer rows.Close()
 
@@ -149,7 +149,7 @@ func (m *Manager) ListSessions(ctx context.Context) ([]SessionInfo, error) {
 		var info SessionInfo
 		var createdAt, updatedAt int64
 		if err := rows.Scan(&info.ID, &createdAt, &updatedAt, &info.MsgCount); err != nil {
-			return nil, fmt.Errorf("扫描会话: %w", err)
+			return nil, fmt.Errorf("扫描会话：%w", err)
 		}
 		info.CreatedAt = time.Unix(createdAt, 0)
 		info.UpdatedAt = time.Unix(updatedAt, 0)
@@ -165,7 +165,7 @@ func (m *Manager) ListSessions(ctx context.Context) ([]SessionInfo, error) {
 func (m *Manager) DeleteSession(ctx context.Context, id string) error {
 	_, err := m.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
-		return fmt.Errorf("删除会话: %w", err)
+		return fmt.Errorf("删除会话：%w", err)
 	}
 	if m.toolResultsDir != "" {
 		if rmErr := os.RemoveAll(filepath.Join(m.toolResultsDir, id)); rmErr != nil {

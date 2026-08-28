@@ -128,7 +128,7 @@ harness9           # 启动（自动将当前目录设为 Agent 工作沙箱）
 # 我的项目规范
 
 ## 技术栈
-- Go 1.25、PostgreSQL 16
+- Go 1.25, PostgreSQL 16
 
 ## 编码规范
 - 所有函数必须有注释

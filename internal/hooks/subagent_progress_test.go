@@ -18,7 +18,7 @@ func TestSubAgentProgressContextRoundTrip(t *testing.T) {
 	}
 	extracted(schema.SubAgentUpdate{AgentName: "reviewer", Kind: schema.SubAgentDelta, Text: "hi"})
 	if got.AgentName != "reviewer" || got.Text != "hi" {
-		t.Fatalf("回调收到的更新不符: %+v", got)
+		t.Fatalf("回调收到的更新不符：%+v", got)
 	}
 }
 

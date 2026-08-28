@@ -60,7 +60,7 @@ func (m *Manager) Create(ctx context.Context, workDir string) (Environment, erro
 
 	c := newContainer(id, workDir, m.cfg, run)
 	if err := c.Start(ctx); err != nil {
-		return nil, fmt.Errorf("sandbox: 启动容器失败: %w", err)
+		return nil, fmt.Errorf("sandbox: 启动容器失败：%w", err)
 	}
 
 	env := newDockerEnvironment(c.DockerID(), id, workDir, run)
@@ -151,7 +151,7 @@ func (m *Manager) ReapOrphans(ctx context.Context) error {
 		"--format", "{{.ID}}",
 	)
 	if err != nil {
-		return fmt.Errorf("sandbox: 列出孤儿容器失败: %w", err)
+		return fmt.Errorf("sandbox: 列出孤儿容器失败：%w", err)
 	}
 	ids := strings.Fields(out)
 	if len(ids) == 0 {

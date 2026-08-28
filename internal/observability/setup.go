@@ -66,7 +66,7 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		resource.WithAttributes(semconv.ServiceName(cfg.ServiceName)),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("创建 otel resource 失败: %w", err)
+		return nil, fmt.Errorf("创建 otel resource 失败：%w", err)
 	}
 
 	// ---- Trace Exporter ----
@@ -75,7 +75,7 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 	case ExporterStdout:
 		spanExporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
 		if err != nil {
-			return nil, fmt.Errorf("创建 stdout trace exporter 失败: %w", err)
+			return nil, fmt.Errorf("创建 stdout trace exporter 失败：%w", err)
 		}
 
 	case ExporterOTLP:
@@ -95,7 +95,7 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		}
 		spanExporter, err = otlptracehttp.New(ctx, traceOpts...)
 		if err != nil {
-			return nil, fmt.Errorf("创建 OTLP trace exporter 失败: %w", err)
+			return nil, fmt.Errorf("创建 OTLP trace exporter 失败：%w", err)
 		}
 		otelLogger.Printf("[OTEL] Trace exporter 初始化成功 → %s（headers: %d 个）", tracesURL, len(cfg.OTLPHeaders))
 
@@ -122,7 +122,7 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		metricExporter, err = stdoutmetric.New()
 		if err != nil {
 			_ = tp.Shutdown(ctx)
-			return nil, fmt.Errorf("创建 stdout metric exporter 失败: %w", err)
+			return nil, fmt.Errorf("创建 stdout metric exporter 失败：%w", err)
 		}
 	case ExporterOTLP:
 		// Langfuse 目前只支持 traces，metrics 端点可能返回 404。

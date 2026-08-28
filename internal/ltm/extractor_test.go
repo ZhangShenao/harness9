@@ -32,7 +32,7 @@ func TestExtractorUpsertsFacts(t *testing.T) {
 		t.Fatalf("提取应写入 1 条记忆，got %+v", list)
 	}
 	if list[0].Category != CategoryPreference || list[0].Importance != 8 {
-		t.Errorf("分类/重要度解析错误: %+v", list[0])
+		t.Errorf("分类/重要度解析错误：%+v", list[0])
 	}
 }
 

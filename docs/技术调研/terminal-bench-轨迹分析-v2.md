@@ -91,7 +91,7 @@ PYTHONPATH=benchmarks harbor run -d terminal-bench@2.0 \
 |---|---|---|---|
 | `merge-diff-arc-agi-task` | Turn 1 即失败，从未测试过 | **reward=1（真正 resolved）** | 37 turns / 4m47s，正确推导出 ARC-AGI 变换规则（对角线周期填色），3/3 隐藏样例通过 |
 | `sqlite-with-gcov` | Turn 1 即失败，从未测试过 | reward=0，**但这次是真实测试出的失败** | 52 turns / 9m2s，agent 产出了详细的"已完成"总结报告，但 verifier 阶段 3/3 隐藏测试均 `FileNotFoundError`（`sqlite3` 二进制实际不可执行/不在预期路径）——agent 在没有真正验证构建产物的情况下宣称完成，这是模型自我验证不足的问题（同类问题参见 §5 `sanitize-git-repo`/`build-cython-ext`），不是 harness9 工具/引擎缺陷 |
-| `compile-compcert` | Turn 1 即失败，从未测试过 | 仍未 resolved，但性质完全变了：**RuntimeError（880s 适配器超时）** | 75 turns / 撞到 880s 上限，期间已通过 `opam` 安装 Coq 8.16.1、Menhir 等真实工具链并开始用 `dune` 构建，是合法的深度工作被 benchmark 适配器的保守超时打断——`task.toml` 声明 `agent.timeout_sec=2400`（40分钟），`harness9_agent.py` 硬编码 `_RUN_TIMEOUT_SEC=880`（约14.7分钟），二者相差 2.7 倍 |
+| `compile-compcert` | Turn 1 即失败，从未测试过 | 仍未 resolved，但性质完全变了：**RuntimeError（880s 适配器超时）** | 75 turns / 撞到 880s 上限，期间已通过 `opam` 安装 Coq 8.16.1、Menhir 等真实工具链并开始用 `dune` 构建，是合法的深度工作被 benchmark 适配器的保守超时打断——`task.toml` 声明 `agent.timeout_sec=2400`（40 分钟），`harness9_agent.py` 硬编码 `_RUN_TIMEOUT_SEC=880`（约 14.7 分钟），二者相差 2.7 倍 |
 
 **结论**：3 个任务里 1 个从"从未测试过"变为"真正解决"，另外 2 个从"从未测试过"变为"有真实、可解释的失败原因"（1 个模型自我验证不足，1 个撞上已知的 R3 适配器超时不匹配问题，命中 §6 的第三个实例）。三者都不再是 harness9 内核问题。
 
@@ -133,8 +133,8 @@ v1 文档 R3 已记录 `fix-ocaml-gc`（声明 3600s）一个实例。本轮 `co
 
 | 任务 | v1 归因 | 本轮结果 | 本轮核实结论 |
 |---|---|---|---|
-| `sanitize-git-repo` | R5，模型判断问题：正确的正则扫出了第5个密钥的命中，但被自建过滤器误判为假阳性而放弃 | reward=0（不变） | **同一失败模式复现**：本轮 agent 找到并正确替换了 4 类密钥（AWS key/secret、GitHub token、HuggingFace token），但依然遗漏了藏在一个 JSON 测试夹具文件（内嵌 diff 文本）里的**第二个** HuggingFace token（`hf_ocffijsv...`）。`test_removal_of_secret_information` / `test_correct_replacement_of_secret_information` 两个隐藏测试失败，`test_no_other_files_changed` 通过。与 v1 是同一类"遗漏非常规位置的第二个同类密钥"问题，非 harness9 缺陷 |
-| `fix-ocaml-gc` | R3，任务复杂度超预算：Turn 25 已定位正确修复，Turn 33 起单次编译耗时约650s 撞上 880s | 仍超时（不变，此结果测于 §4 的适配器超时修复**之前**） | 本轮同样在合理、有方向性地推进 OCaml 运行时构建（`make coreall`/`opt.opt` 相关 target 探查），880s 内未完成全量构建。与 v1 同一归因，非 harness9 缺陷，正是 §4 修复的那类问题——`fix-ocaml-gc` 本身尚未用修复后的适配器重新验证过（`task.toml` 声明 3600s，留给未来一次单独确认） |
+| `sanitize-git-repo` | R5，模型判断问题：正确的正则扫出了第 5 个密钥的命中，但被自建过滤器误判为假阳性而放弃 | reward=0（不变） | **同一失败模式复现**：本轮 agent 找到并正确替换了 4 类密钥（AWS key/secret、GitHub token、HuggingFace token），但依然遗漏了藏在一个 JSON 测试夹具文件（内嵌 diff 文本）里的**第二个** HuggingFace token（`hf_ocffijsv...`）。`test_removal_of_secret_information` / `test_correct_replacement_of_secret_information` 两个隐藏测试失败，`test_no_other_files_changed` 通过。与 v1 是同一类"遗漏非常规位置的第二个同类密钥"问题，非 harness9 缺陷 |
+| `fix-ocaml-gc` | R3，任务复杂度超预算：Turn 25 已定位正确修复，Turn 33 起单次编译耗时约 650s 撞上 880s | 仍超时（不变，此结果测于 §4 的适配器超时修复**之前**） | 本轮同样在合理、有方向性地推进 OCaml 运行时构建（`make coreall`/`opt.opt` 相关 target 探查），880s 内未完成全量构建。与 v1 同一归因，非 harness9 缺陷，正是 §4 修复的那类问题——`fix-ocaml-gc` 本身尚未用修复后的适配器重新验证过（`task.toml` 声明 3600s，留给未来一次单独确认） |
 | `fix-git` | R4，模型推理判断错误：用 `git fsck --lost-found` 找到 2 个悬空 commit，误判合并了任务叙事之外的第二个 | **reward=1（翻转为 resolved）** | 本轮改用 `git reflog` + `git fsck` 准确定位唯一相关的悬空 commit（`650dba4 "Move to Stanford"`），正确合并且冲突解决方向正确（保留 Stanford 版本）。这是**同一套工具/引擎能力下，模型这次做出了更好的推理判断**，属于 LLM 采样非确定性，不代表 harness9 有任何行为变化——不能作为"稳定修复"看待 |
 | `custom-memory-heap-crash` | R3，任务复杂度超预算：56+ 轮方向正确的调试，880s 内未完成 | **reward=1（翻转为 resolved）** | 本轮 52 轮、7m12s（远低于 880s 预算）里完整定位并解释了自定义堆分配器与 `libstdc++` 静态析构顺序的 6 步根因链，给出的修复方案技术上自洽。同样是 LLM 采样层面这次更高效地走到了正确路径，harness9 侧无行为变化——该任务仍处在 880s 预算的边界线附近，不应视为已稳定解决 |
 | `build-cython-ext` | R5，模型持久性不足：正确修复 NumPy 2.x 兼容性问题后被 `setuptools` 缺失报错吓退，未重试 pip install | **reward=1（翻转为 resolved）**，11/11 全部通过 | 本轮 93 轮、11m4s，全程未出现 `setuptools` 相关报错字样，agent 顺利完成全部 4 个 Cython 扩展编译。同样判断为 LLM 采样非确定性（这次没有走到会触发该报错的路径），不代表 harness9 或环境有变化 |
@@ -167,7 +167,7 @@ v1 文档 R3 已记录 `fix-ocaml-gc`（声明 3600s）一个实例。本轮 `co
 
 ## 8. 不需要新增工具能力（延续 v1 结论）
 
-本轮暴露的三个可行动项（P0 已验证有效、P1 根因修正+已修复、适配器超时不匹配已修复）都不涉及"agent 想用但没有对应工具"的情况，都是 harness9 工具/引擎实现或 benchmark 适配器层面的问题，不涉及新增工具能力。
+本轮暴露的三个可行动项（P0 已验证有效、P1 根因修正 + 已修复、适配器超时不匹配已修复）都不涉及"agent 想用但没有对应工具"的情况，都是 harness9 工具/引擎实现或 benchmark 适配器层面的问题，不涉及新增工具能力。
 
 ---
 

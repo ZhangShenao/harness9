@@ -250,7 +250,7 @@ mgr, err := memory.NewManager(
 func (m *Manager) DeleteSession(ctx context.Context, id string) error {
     _, err := m.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
     if err != nil {
-        return fmt.Errorf("删除会话: %w", err)
+        return fmt.Errorf("删除会话：%w", err)
     }
     if m.toolResultsDir != "" {
         _ = os.RemoveAll(filepath.Join(m.toolResultsDir, id))

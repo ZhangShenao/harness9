@@ -15,7 +15,7 @@ func TestFinalize_ContiguousIndices(t *testing.T) {
 		t.Fatalf("expected 2 tool calls, got %d", len(got))
 	}
 	if got[0].ID != "id0" || got[1].ID != "id1" {
-		t.Errorf("顺序/ID 错误: %+v", got)
+		t.Errorf("顺序/ID 错误：%+v", got)
 	}
 }
 
@@ -34,7 +34,7 @@ func TestFinalize_SparseIndices(t *testing.T) {
 		t.Fatalf("稀疏 index 时应保留全部 2 个工具调用，got %d（旧 bug 会漏掉）", len(got))
 	}
 	if got[0].ID != "id1" || got[1].ID != "id2" {
-		t.Errorf("应按 index 升序: %+v", got)
+		t.Errorf("应按 index 升序：%+v", got)
 	}
 }
 

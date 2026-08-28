@@ -156,6 +156,6 @@ func TestTaskToolBackgroundDoesNotUseParentSink(t *testing.T) {
 	}
 	list := tt.tracker.List()
 	if len(list) != 1 || list[0].LogLines == 0 {
-		t.Fatalf("tracker 应捕获后台日志: %+v", list)
+		t.Fatalf("tracker 应捕获后台日志：%+v", list)
 	}
 }

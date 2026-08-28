@@ -209,8 +209,8 @@ func min(a, b int) int {
 
 // TestFormatMsg 验证通用单行日志条目的前缀拼接格式。
 func TestFormatMsg(t *testing.T) {
-	got := FormatMsg("server", "RunStream 启动失败: timeout")
-	want := "[server] RunStream 启动失败: timeout"
+	got := FormatMsg("server", "RunStream 启动失败：timeout")
+	want := "[server] RunStream 启动失败：timeout"
 	if got != want {
 		t.Errorf("FormatMsg = %q, want %q", got, want)
 	}

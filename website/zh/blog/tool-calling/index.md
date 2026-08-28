@@ -334,7 +334,7 @@ func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, e
     out, err := cmd.CombinedOutput()
 
     if timeoutCtx.Err() == context.DeadlineExceeded {
-        return outputStr + "\n[警告: 命令执行超时(30s)，已被系统强制终止。]", nil
+        return outputStr + "\n[警告：命令执行超时 (30s)，已被系统强制终止。]", nil
     }
     if err != nil {
         // 注意：返回 (string, nil)，不是 (string, error)

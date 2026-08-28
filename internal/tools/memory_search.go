@@ -49,18 +49,18 @@ type memorySearchArgs struct {
 func (t *MemorySearchTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var in memorySearchArgs
 	if err := json.Unmarshal(args, &in); err != nil {
-		return "", fmt.Errorf("参数解析失败: %w", err)
+		return "", fmt.Errorf("参数解析失败：%w", err)
 	}
 	entries, err := t.store.Search(ctx, in.Query, in.Limit)
 	if err != nil {
-		return "", fmt.Errorf("检索记忆失败: %w", err)
+		return "", fmt.Errorf("检索记忆失败：%w", err)
 	}
 	if entries == nil {
 		entries = []*ltm.Entry{}
 	}
 	b, err := json.Marshal(entries)
 	if err != nil {
-		return "", fmt.Errorf("序列化结果失败: %w", err)
+		return "", fmt.Errorf("序列化结果失败：%w", err)
 	}
 	return string(b), nil
 }

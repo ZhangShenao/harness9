@@ -449,7 +449,7 @@ async for message in query(
 | **上下文压缩** | ✅ auto+reactive | ✅ 三级压缩 | ✅ Compaction API | ✅ summarization | ✅ 专用 agent | ✅ /compact | ✅ 黑盒 |
 | **错误恢复** | ✅ reactive compact | ✅ backoff+failover | ✅ RunState 恢复 | ✅ checkpoint | ⚠️ 基础 | ⚠️ 基础 | ❌ 黑盒 |
 | **Handoff** | ❌ | ✅ delegate 工具 | ✅ NextStepHandoff | ✅ SubAgent | ✅ subagent | ✅ 多代理路由 | ✅ AgentDefinition |
-| **权限系统** | ✅ 多级+路径规则 | ✅ allowlist | ✅ guardrails+approval | ✅ Permission MW | ✅ Ruleset | ✅ 沙箱模式 | ✅ 多种模式 |
+| **权限系统** | ✅ 多级 + 路径规则 | ✅ allowlist | ✅ guardrails+approval | ✅ Permission MW | ✅ Ruleset | ✅ 沙箱模式 | ✅ 多种模式 |
 | **Hook 系统** | ✅ Pre/Post Tool | ✅ callback 体系 | ✅ RunHooks | ✅ Middleware | ✅ Plugin | ✅ Plugin | ✅ HookMatcher |
 | **中断/恢复** | ✅ continue_pending | ✅ interrupt+steer | ✅ RunState | ✅ checkpoint | ⚠️ 基础 | ⚠️ 基础 | ✅ session_id |
 

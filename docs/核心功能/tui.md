@@ -73,7 +73,7 @@ const (
 
 ---
 
-## WelcomeBanner：ASCII Art
+## WelcomeBanner: ASCII Art
 
 `tui_banner.go` 中定义了三行框线字符组成的 HARNESS9 标题（字符宽度 38）：
 

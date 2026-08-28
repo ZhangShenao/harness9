@@ -142,7 +142,7 @@ func (p *OpenAIProvider) Generate(ctx context.Context, msgs []schema.Message, av
 
 	resp, err := p.client.Chat.Completions.New(ctx, reqParams, reqOpts...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("OpenAI 兼容 API 请求失败: %w", err)
+		return nil, nil, fmt.Errorf("OpenAI 兼容 API 请求失败：%w", err)
 	}
 	if len(resp.Choices) == 0 {
 		return nil, nil, fmt.Errorf("OpenAI 兼容 API 返回了空的 Choices")

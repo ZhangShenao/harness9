@@ -71,7 +71,7 @@ type RunResult struct {
 func loadDataset(path string) ([]Instance, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("打开数据集失败: %w", err)
+		return nil, fmt.Errorf("打开数据集失败：%w", err)
 	}
 	defer f.Close()
 
@@ -85,7 +85,7 @@ func loadDataset(path string) ([]Instance, error) {
 		}
 		var inst Instance
 		if err := json.Unmarshal([]byte(line), &inst); err != nil {
-			return nil, fmt.Errorf("解析 JSONL 行失败: %w", err)
+			return nil, fmt.Errorf("解析 JSONL 行失败：%w", err)
 		}
 		instances = append(instances, inst)
 	}

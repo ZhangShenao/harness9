@@ -80,7 +80,7 @@ type taskArgs struct {
 func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var a taskArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return "", fmt.Errorf("参数解析失败: %w", err)
+		return "", fmt.Errorf("参数解析失败：%w", err)
 	}
 	if a.SubAgentType == "" {
 		return "", fmt.Errorf("subagent_type 不能为空")

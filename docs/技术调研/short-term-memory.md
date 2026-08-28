@@ -838,12 +838,12 @@ const Info = z.object({
 | 对比维度 | OpenAI Agent SDK | DeepAgents | OpenHarness | HermesAgent | OpenCode | Claude Agent SDK |
 |---------|-----------------|------------|-------------|-------------|----------|-----------------|
 | **Session 绑定** | String session_id | LangGraph thread_id | 进程内列表 + 命名文件 | SQLite UUID | Drizzle ORM UUID | 服务端托管 |
-| **持久化后端** | 8种（SQLite/Redis等） | 插件化 Checkpointer | 进程内/文件 | SQLite WAL | SQLite/PG | 服务端存储 |
-| **消息格式** | OpenAI Responses API 原生 | LangGraph BaseMessage | Pydantic ContentBlock | JSON+NUL编码 | Zod Part 类型 | Anthropic Messages |
+| **持久化后端** | 8 种（SQLite/Redis 等） | 插件化 Checkpointer | 进程内/文件 | SQLite WAL | SQLite/PG | 服务端存储 |
+| **消息格式** | OpenAI Responses API 原生 | LangGraph BaseMessage | Pydantic ContentBlock | JSON+NUL 编码 | Zod Part 类型 | Anthropic Messages |
 | **Context 压缩** | 滑动窗口 callback | REMOVE_ALL_MESSAGES | 双层 LLM 压缩 | Session 分叉链 | compacting 标志 | 服务端自动 |
 | **Token 控制** | SessionSettings limit | DeltaChannel O(N) | 阈值触发 | 无明确限制 | 无明确限制 | 服务端管理 |
 | **全文搜索** | 无 | 无 | 无 | FTS5 unicode+trigram | 无 | 无 |
-| **并发安全** | RLock/Thread-Local | LangGraph 内部保证 | 文件锁 | WAL+jitter重试 | Effect 运行时 | 服务端保证 |
+| **并发安全** | RLock/Thread-Local | LangGraph 内部保证 | 文件锁 | WAL+jitter 重试 | Effect 运行时 | 服务端保证 |
 | **会话恢复** | 通过 session_id | 通过 thread_id | /resume 命令 | reopen_session | 列表选择 | conversation_id |
 | **TTL/自动过期** | 无（需应用层实现） | 无 | 无 | 无 | 无 | 服务端策略 |
 | **会话分叉/回滚** | pop_item | RemoveMessage | 无 | replace_messages | Fork session | 无 |
@@ -946,7 +946,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, ...) error
     if e.session != nil {
         history, err := e.session.GetMessages(ctx, 0)
         if err != nil {
-            return fmt.Errorf("加载会话历史失败: %w", err)
+            return fmt.Errorf("加载会话历史失败：%w", err)
         }
         contextHistory = history
     }
@@ -970,7 +970,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, ...) error
     if e.session != nil {
         newMsgs := contextHistory[startLen:]
         if err := e.session.AddMessages(ctx, newMsgs); err != nil {
-            log.Print(logfmt.FormatMsg("engine", "警告：保存会话历史失败: "+err.Error()))
+            log.Print(logfmt.FormatMsg("engine", "警告：保存会话历史失败："+err.Error()))
         }
     }
 
@@ -1018,7 +1018,7 @@ func TokenBudgetCompact(msgs []schema.Message, maxTokens int) []schema.Message {
 func estimateTokens(msgs []schema.Message) int {
     total := 0
     for _, m := range msgs {
-        total += len(m.Content) / 4  // 粗略：4字节≈1token
+        total += len(m.Content) / 4  // 粗略：4 字节≈1token
     }
     return total
 }
@@ -1047,15 +1047,15 @@ Session ID 生成策略：
 
 | 优先级 | 功能 | 难度 | 工作量估计 |
 |--------|------|------|------------|
-| P0 | Session 接口定义 + MemorySession（测试用） | 低 | 1天 |
-| P0 | SQLiteSession 基本实现（CRUD） | 中 | 2天 |
-| P0 | AgentEngine 集成 Session 接口 | 低 | 0.5天 |
-| P1 | TUI /new、/resume 命令 | 中 | 1天 |
-| P1 | SlidingWindow 压缩策略 | 低 | 0.5天 |
-| P2 | Token Budget 压缩 | 中 | 1天 |
-| P2 | TUI Session 状态显示 | 低 | 0.5天 |
-| P3 | LLM-based 摘要压缩 | 高 | 3天 |
-| P3 | FTS5 会话搜索 | 中 | 1天 |
+| P0 | Session 接口定义 + MemorySession（测试用） | 低 | 1 天 |
+| P0 | SQLiteSession 基本实现（CRUD） | 中 | 2 天 |
+| P0 | AgentEngine 集成 Session 接口 | 低 | 0.5 天 |
+| P1 | TUI /new、/resume 命令 | 中 | 1 天 |
+| P1 | SlidingWindow 压缩策略 | 低 | 0.5 天 |
+| P2 | Token Budget 压缩 | 中 | 1 天 |
+| P2 | TUI Session 状态显示 | 低 | 0.5 天 |
+| P3 | LLM-based 摘要压缩 | 高 | 3 天 |
+| P3 | FTS5 会话搜索 | 中 | 1 天 |
 
 ---
 
@@ -1065,7 +1065,7 @@ Session ID 生成策略：
 
 1. **SQLite 单文件持久化** — 零依赖、可移植、WAL 模式支持并发
 2. **消息 JSON 序列化** — 消息格式与 LLM API 保持一致，减少转换层
-3. **应用层压缩** — 框架本身不强制压缩策略，由调用方选择（滑动窗口/LLM摘要/Token Budget）
+3. **应用层压缩** — 框架本身不强制压缩策略，由调用方选择（滑动窗口/LLM 摘要/Token Budget）
 
 **最佳参考**：
 - **接口设计**：OpenAI Agent SDK 的 `SessionABC`（四个方法：get/add/pop/clear）是最简洁、可扩展的抽象

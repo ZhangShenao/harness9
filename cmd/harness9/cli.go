@@ -27,7 +27,7 @@ func RunCLI(ctx context.Context, eng *engine.AgentEngine, idx *skills.Index) {
 func RunOnce(ctx context.Context, eng *engine.AgentEngine, promptFilePath string) error {
 	data, err := os.ReadFile(promptFilePath)
 	if err != nil {
-		return fmt.Errorf("读取 prompt 文件失败: %w", err)
+		return fmt.Errorf("读取 prompt 文件失败：%w", err)
 	}
 	return eng.Run(ctx, string(data))
 }

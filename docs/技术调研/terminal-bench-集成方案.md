@@ -1,7 +1,7 @@
 # Terminal-Bench 接入方案（v2，设计已修正，待实现）
 
 > 状态：**设计已确认，未开始实现**。v1 版本调研时把接入目标误判为经典 `tb`/`AbstractInstalledAgent`
-> （那是 Terminal-Bench 1.x 的legacy 接口）；v2 已修正为官方当前真正对应"2.0 版 89 题"的框架
+> （那是 Terminal-Bench 1.x 的 legacy 接口）；v2 已修正为官方当前真正对应"2.0 版 89 题"的框架
 > **Harbor**，全部接口/CLI 细节均已源码级核实（两轮独立对抗式复核，见调研记录）。跑完 pilot 后应产出
 > `terminal-bench-轨迹分析-v1.md`（方法论对标 `swebench-轨迹分析与内核优化-v2.md`）。
 
@@ -155,7 +155,7 @@ benchmarks/
 ## 4. 范围：Pilot 任务清单（18 个，已从 89 题的 category/tags 元数据中确定）
 
 依据 `task.toml` 的 `category`/`tags` 字段筛选（软件工程调试/Git/版本控制/构建工具链/网络与服务类
-系统管理），排除 QEMU 虚拟化类（3 个，偏exotic）、邮件服务器类（niche）、GPU/模型训练类、
+系统管理），排除 QEMU 虚拟化类（3 个，偏 exotic）、邮件服务器类（niche）、GPU/模型训练类、
 "Challenges"长时程变体（不在 89 题主集内，无需额外排除）：
 
 ```

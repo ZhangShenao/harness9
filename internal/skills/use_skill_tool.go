@@ -51,7 +51,7 @@ type useSkillArgs struct {
 func (t *UseSkillTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
 	var a useSkillArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return "", fmt.Errorf("参数解析失败: %w", err)
+		return "", fmt.Errorf("参数解析失败：%w", err)
 	}
 	if a.SkillName == "" {
 		return "", fmt.Errorf("skill_name 不能为空")

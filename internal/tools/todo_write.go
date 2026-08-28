@@ -109,7 +109,7 @@ type todoWriteArgs struct {
 func (t *TodoWriteTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
 	var input todoWriteArgs
 	if err := json.Unmarshal(args, &input); err != nil {
-		return "", fmt.Errorf("参数解析失败: %w", err)
+		return "", fmt.Errorf("参数解析失败：%w", err)
 	}
 
 	var current []planning.TodoItem
@@ -172,7 +172,7 @@ func (t *TodoWriteTool) Execute(_ context.Context, args json.RawMessage) (string
 
 	b, err := json.Marshal(current)
 	if err != nil {
-		return "", fmt.Errorf("序列化任务列表失败: %w", err)
+		return "", fmt.Errorf("序列化任务列表失败：%w", err)
 	}
 	return string(b), nil
 }

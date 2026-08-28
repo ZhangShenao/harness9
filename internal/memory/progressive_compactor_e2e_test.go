@@ -19,9 +19,9 @@ import (
 // 4. 验证每个阶段的行为：
 //   - TierWarn: offload 大 tool_result，无 LLM 调用
 //   - TierFull: LLM 摘要 + 锚点提取 + offload
-//   - 增量更新: 第二次 TierFull 使用增量模板
-//   - 持久化: JSONL 文件包含正确的压缩记录
-//   - 可检索性: offload 文件真实存在于文件系统
+//   - 增量更新：第二次 TierFull 使用增量模板
+//   - 持久化：JSONL 文件包含正确的压缩记录
+//   - 可检索性：offload 文件真实存在于文件系统
 func TestProgressiveCompactor_E2E_FullPipeline(t *testing.T) {
 	workDir := t.TempDir()
 	sessionID := "e2e-sess-001"

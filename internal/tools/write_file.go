@@ -91,7 +91,7 @@ type writeFileArgs struct {
 func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input writeFileArgs
 	if err := json.Unmarshal(args, &input); err != nil {
-		return "", fmt.Errorf("参数解析失败: %w", err)
+		return "", fmt.Errorf("参数解析失败：%w", err)
 	}
 
 	// 沙箱边界校验：阻止路径遍历攻击（Path Traversal Attack）。
@@ -106,12 +106,12 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (stri
 
 	// 自动创建父级目录（Auto-Mkdir），避免 LLM 因父目录缺失而反复试错。
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		return "", fmt.Errorf("创建父目录失败: %w", err)
+		return "", fmt.Errorf("创建父目录失败：%w", err)
 	}
 
 	// 覆盖写入（Overwrite Semantics）：与 os.WriteFile 一致，文件已存在时直接覆盖。
 	if err := os.WriteFile(fullPath, []byte(input.Content), 0644); err != nil {
-		return "", fmt.Errorf("写入文件失败: %w", err)
+		return "", fmt.Errorf("写入文件失败：%w", err)
 	}
 
 	return fmt.Sprintf("成功将 %d 字节写入到文件: %s", len(input.Content), input.Path), nil

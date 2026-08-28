@@ -97,7 +97,7 @@ func TestAggregateDaily(t *testing.T) {
 		}
 	})
 
-	t.Run("同日多次star合并为一个点", func(t *testing.T) {
+	t.Run("同日多次 star 合并为一个点", func(t *testing.T) {
 		events := []time.Time{
 			mustParse(t, "2026-05-01T01:00:00Z"),
 			mustParse(t, "2026-05-01T23:00:00Z"),

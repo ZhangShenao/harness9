@@ -74,7 +74,7 @@ description: ok
 		t.Fatal(err)
 	}
 	if len(r.List()) != 1 || r.List()[0].Name != "good" {
-		t.Fatalf("应只加载合法定义: %+v", r.List())
+		t.Fatalf("应只加载合法定义：%+v", r.List())
 	}
 }
 

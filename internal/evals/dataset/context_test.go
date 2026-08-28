@@ -18,7 +18,7 @@ func TestContextEngineering(t *testing.T) {
 	evals.SetupHermeticEnv(t)
 
 	cases := []*evals.Case{
-		// 用例1：多步工具调用——每步依赖上一步的 Observation。
+		// 用例 1：多步工具调用——每步依赖上一步的 Observation。
 		// 验证引擎把工具结果正确注入上下文，LLM 能够连续推理。
 		{
 			ID:       "context/sequential_tool_chain",
@@ -48,7 +48,7 @@ func TestContextEngineering(t *testing.T) {
 			},
 		},
 
-		// 用例2：多轮纯对话连贯性——不调用工具，但多轮回复必须保持对话语境。
+		// 用例 2：多轮纯对话连贯性——不调用工具，但多轮回复必须保持对话语境。
 		// 验证 ScriptedProvider 多轮序列在无工具场景下的正常退出。
 		{
 			ID:       "context/multi_turn_conversation",
@@ -68,7 +68,7 @@ func TestContextEngineering(t *testing.T) {
 			},
 		},
 
-		// 用例3：工具输出驱动后续行为——LLM 在读取文件失败后改变策略。
+		// 用例 3：工具输出驱动后续行为——LLM 在读取文件失败后改变策略。
 		// 工具返回 IsError=true 时，引擎将错误作为 Observation 回传，
 		// LLM 应能根据错误信息调整行为（此处脚本化为不再重试，转为纯文本回复）。
 		{
@@ -114,7 +114,7 @@ func TestContextEngineering(t *testing.T) {
 			t.Logf("   ⚠️ %s: %s", r.Case.ID, w.Error())
 		}
 	}
-	t.Logf("Context Engineering 评估: %d/%d 通过", passed, passed+failed)
+	t.Logf("Context Engineering 评估：%d/%d 通过", passed, passed+failed)
 }
 
 // TestStallNudgeKeepsReActLoopCorrect 验证：启用 WithStallNudge（连续多轮无进展工具即注入

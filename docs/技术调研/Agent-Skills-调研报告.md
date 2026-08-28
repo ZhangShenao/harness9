@@ -22,7 +22,7 @@ Agent Skills（技能）是近年 Agent Harness 框架中涌现的一类核心�
 
 ## 2. 各框架 Skills 实现分析
 
-### 2.1 DeepAgents（LangChain）
+### 2.1 DeepAgents (LangChain)
 
 **仓库**：https://github.com/langchain-ai/deepagents
 
@@ -73,7 +73,7 @@ When performing a code review, follow these steps:
 
 ---
 
-### 2.2 OpenHarness（HKUDS）
+### 2.2 OpenHarness (HKUDS)
 
 **仓库**：https://github.com/HKUDS/OpenHarness
 
@@ -112,7 +112,7 @@ disable-model-invocation: false   # 控制 LLM 是否可自主触发此技能
 
 ---
 
-### 2.3 OpenCode（Anomaly）
+### 2.3 OpenCode (Anomaly)
 
 **仓库**：https://github.com/anomalyco/opencode
 
@@ -152,7 +152,7 @@ const loadSkill = (name: string): Effect.Effect<Skill, SkillNotFoundError> =>
 
 ---
 
-### 2.4 OpenClaw（OpenClaw）
+### 2.4 OpenClaw (OpenClaw)
 
 **仓库**：https://github.com/openclaw/openclaw
 
@@ -551,13 +551,13 @@ skills/
 
 | 阶段 | 任务 | 预计工作量 |
 |------|------|---------|
-| P0 | `types.go` + `loader.go`（文件系统扫描 + YAML 解析） | 1天 |
+| P0 | `types.go` + `loader.go`（文件系统扫描 + YAML 解析） | 1 天 |
 | P0 | `registry.go`（线程安全注册表） | 半天 |
 | P0 | `SkillsPromptBuilder`（System Prompt 注入） | 半天 |
 | P1 | 斜杠命令支持（`/skill-name`） | 半天 |
 | P1 | 内置示例技能（code-review、debug） | 半天 |
-| P2 | 热重载（文件变更监听） | 1天 |
-| P2 | 技能正文按需懒加载（`invoke_skill` tool） | 1天 |
+| P2 | 热重载（文件变更监听） | 1 天 |
+| P2 | 技能正文按需懒加载（`invoke_skill` tool） | 1 天 |
 
 ---
 
@@ -592,7 +592,7 @@ harness9 已有 `PromptBuilder` 接口和 `WithPromptBuilder` Option，天然适
 
 ### 7.2 各框架唤起机制详解
 
-#### 7.2.1 DeepAgents（LangChain）
+#### 7.2.1 DeepAgents (LangChain)
 
 DeepAgents **没有专用的 skill 工具**，而是将技能文件视为普通文件，借道已有的 `read_file` 工具加载：
 
@@ -650,7 +650,7 @@ OpenHarness 是最早引入**专用 `skill` 工具**的框架之一：
 
 ---
 
-#### 7.2.3 OpenCode（Anomaly）
+#### 7.2.3 OpenCode (Anomaly)
 
 **仓库状态**：经调研，`https://github.com/anomalyco/opencode` 仓库已归档（Archived），项目处于停止维护状态。现存代码库中未发现独立的 Skills 系统实现。
 
@@ -679,7 +679,7 @@ To activate a skill, use the read tool with the specified path.
 
 ---
 
-#### 7.2.5 HermesAgent（NousResearch）
+#### 7.2.5 HermesAgent (NousResearch)
 
 HermesAgent 是三模式并存最完整的框架：
 

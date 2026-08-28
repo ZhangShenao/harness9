@@ -104,7 +104,7 @@ func TestTruncateUTF8(t *testing.T) {
 			wantTruncated: true,
 		},
 		{
-			// 多字节 UTF-8：4 个汉字 = 12 字节；截断点需回退到合法 rune 边界
+			// 多字节 UTF-8:4 个汉字 = 12 字节；截断点需回退到合法 rune 边界
 			name:          "多字节 UTF-8 不截断字符内部",
 			input:         "你好世界" + strings.Repeat("x", markerLen+20),
 			maxBytes:      markerLen + 10,

@@ -73,7 +73,7 @@ func main() {
 	flag.Usage = func() {
 		fmt.Print(`harness9 — 轻量级 AI Agent Harness 框架
 
-用法:
+用法：
   harness9 [flags]
   harness9 <command>
 
@@ -82,15 +82,15 @@ Flags:
   --help                打印此帮助信息并退出
   --prompt-file <path>  从文件读取完整 prompt，非交互执行一次后退出（用于评测/CI 场景）
 
-命令:
+命令：
   upgrade     升级 harness9 到最新版本
 
-环境变量:
-  LLM_MODEL        模型名称（默认: openai/gpt-4o-mini）
+环境变量：
+  LLM_MODEL        模型名称（默认：openai/gpt-4o-mini）
   OPENAI_API_KEY   OpenAI 兼容 API Key（必填）
   OPENAI_BASE_URL  自定义 API 地址（可选，用于 OpenRouter / Azure 等）
 
-示例:
+示例：
   harness9                  启动（TTY 自动进入 TUI，管道模式退回 CLI REPL）
   harness9 --version        查看版本号
   harness9 upgrade          升级到最新版本

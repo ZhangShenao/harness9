@@ -92,7 +92,7 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 	if r.sandboxMgr != nil {
 		sandboxEnv, err := r.sandboxMgr.Create(ctx, r.workDir)
 		if err != nil {
-			return SubAgentResult{}, fmt.Errorf("sandbox: 为子代理创建环境失败: %w", err)
+			return SubAgentResult{}, fmt.Errorf("sandbox: 为子代理创建环境失败：%w", err)
 		}
 		defer r.sandboxMgr.Destroy(r.baseCtx, sandboxEnv.ID())
 		effectiveBaseTools = wrapToolsWithSandbox(r.baseTools, sandboxEnv, r.workDir)
@@ -100,12 +100,12 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 
 	childReg, err := r.buildChildRegistry(def, effectiveBaseTools)
 	if err != nil {
-		return SubAgentResult{}, fmt.Errorf("构建子代理工具注册表失败: %w", err)
+		return SubAgentResult{}, fmt.Errorf("构建子代理工具注册表失败：%w", err)
 	}
 
 	p, ctxWin, err := r.providerFor(def.Model)
 	if err != nil {
-		return SubAgentResult{}, fmt.Errorf("解析子代理模型失败: %w", err)
+		return SubAgentResult{}, fmt.Errorf("解析子代理模型失败：%w", err)
 	}
 
 	var loader skillLoader
@@ -195,7 +195,7 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 		case engine.EventToolStart:
 			currentTurnText = "" // 工具前文本是中间产物，丢弃
 			if tc, ok := evt.Data.(schema.ToolCall); ok {
-				// Text 携带工具调用参数（紧凑 JSON），供 TUI 展示 `工具名(参数)`。
+				// Text 携带工具调用参数（紧凑 JSON），供 TUI 展示 `工具名 (参数)`。
 				emit(schema.SubAgentUpdate{Kind: schema.SubAgentToolStart, ToolName: tc.Name, Text: string(tc.Arguments)})
 			}
 		case engine.EventToolResult:

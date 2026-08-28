@@ -121,18 +121,18 @@ func (s *Store) Add(ctx context.Context, e *Entry) (*Entry, error) {
 		if _, err := s.db.ExecContext(ctx,
 			`UPDATE long_term_memories SET updated_at = ?, use_count = use_count + 1 WHERE id = ?`,
 			now, existingID); err != nil {
-			return nil, fmt.Errorf("去重刷新: %w", err)
+			return nil, fmt.Errorf("去重刷新：%w", err)
 		}
 		return s.Get(ctx, existingID)
 	}
 	if err != sql.ErrNoRows {
-		return nil, fmt.Errorf("查询签名: %w", err)
+		return nil, fmt.Errorf("查询签名：%w", err)
 	}
 
 	id := newID()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("开启事务: %w", err)
+		return nil, fmt.Errorf("开启事务：%w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 	if _, err := tx.ExecContext(ctx,
@@ -140,14 +140,14 @@ func (s *Store) Add(ctx context.Context, e *Entry) (*Entry, error) {
 			(id, title, content, category, importance, signature, created_at, updated_at, use_count, ttl_days, disabled, tags)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?)`,
 		id, e.Title, e.Content, string(e.Category), e.Importance, sig, now, now, nullTTL(e.TTLDays), marshalTags(e.Tags)); err != nil {
-		return nil, fmt.Errorf("插入记忆: %w", err)
+		return nil, fmt.Errorf("插入记忆：%w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO memories_fts (id, title, content) VALUES (?, ?, ?)`, id, e.Title, e.Content); err != nil {
 		return nil, fmt.Errorf("插入 fts: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("提交事务: %w", err)
+		return nil, fmt.Errorf("提交事务：%w", err)
 	}
 	return s.Get(ctx, id)
 }
@@ -180,19 +180,19 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]*Entry, 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id FROM memories_fts WHERE memories_fts MATCH ? ORDER BY rank LIMIT ?`, match, limit)
 	if err != nil {
-		return nil, fmt.Errorf("fts 检索: %w", err)
+		return nil, fmt.Errorf("fts 检索：%w", err)
 	}
 	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("扫描 fts 结果: %w", err)
+			return nil, fmt.Errorf("扫描 fts 结果：%w", err)
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历 fts 结果: %w", err)
+		return nil, fmt.Errorf("遍历 fts 结果：%w", err)
 	}
 
 	now := s.now()
@@ -209,7 +209,7 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]*Entry, 
 		if _, err := s.db.ExecContext(ctx,
 			`UPDATE long_term_memories SET use_count = use_count + 1, last_used_at = ? WHERE id = ?`,
 			now.Unix(), id); err != nil {
-			return nil, fmt.Errorf("强化命中: %w", err)
+			return nil, fmt.Errorf("强化命中：%w", err)
 		}
 		e.UseCount++
 		e.LastUsedAt = now
@@ -225,7 +225,7 @@ func (s *Store) Update(ctx context.Context, e *Entry) error {
 	now := s.now().Unix()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("开启事务: %w", err)
+		return fmt.Errorf("开启事务：%w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
@@ -235,7 +235,7 @@ func (s *Store) Update(ctx context.Context, e *Entry) error {
 		 WHERE id = ?`,
 		e.Title, e.Content, string(e.Category), e.Importance, sig, nullTTL(e.TTLDays), marshalTags(e.Tags), now, e.ID)
 	if err != nil {
-		return fmt.Errorf("更新记忆: %w", err)
+		return fmt.Errorf("更新记忆：%w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
@@ -256,13 +256,13 @@ func (s *Store) Update(ctx context.Context, e *Entry) error {
 func (s *Store) SoftDelete(ctx context.Context, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("开启事务: %w", err)
+		return fmt.Errorf("开启事务：%w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 	res, err := tx.ExecContext(ctx,
 		`UPDATE long_term_memories SET disabled = 1, signature = NULL, updated_at = ? WHERE id = ?`, s.now().Unix(), id)
 	if err != nil {
-		return fmt.Errorf("软删除: %w", err)
+		return fmt.Errorf("软删除：%w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
@@ -278,14 +278,14 @@ func (s *Store) queryEntries(ctx context.Context, where string, args ...any) ([]
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+entryColumns+` FROM long_term_memories WHERE `+where, args...)
 	if err != nil {
-		return nil, fmt.Errorf("查询记忆列表: %w", err)
+		return nil, fmt.Errorf("查询记忆列表：%w", err)
 	}
 	defer rows.Close()
 	var result []*Entry
 	for rows.Next() {
 		e, err := scanEntry(rows)
 		if err != nil {
-			return nil, fmt.Errorf("扫描记忆: %w", err)
+			return nil, fmt.Errorf("扫描记忆：%w", err)
 		}
 		result = append(result, e)
 	}
@@ -313,7 +313,7 @@ func (s *Store) PurgeExpired(ctx context.Context) (int, error) {
 		`UPDATE long_term_memories SET disabled = 1, signature = NULL
 		 WHERE disabled = 0 AND ttl_days IS NOT NULL AND updated_at + ttl_days * 86400 < ?`, nowUnix)
 	if err != nil {
-		return 0, fmt.Errorf("回收过期记忆: %w", err)
+		return 0, fmt.Errorf("回收过期记忆：%w", err)
 	}
 	// 同步清理 FTS：仅删除本次刚被回收的条目（与 UPDATE 条件保持一致，避免扫描全量历史软删除行）。
 	if _, err := s.db.ExecContext(ctx,
@@ -345,7 +345,7 @@ func (s *Store) Get(ctx context.Context, id string) (*Entry, error) {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("查询记忆: %w", err)
+		return nil, fmt.Errorf("查询记忆：%w", err)
 	}
 	return e, nil
 }

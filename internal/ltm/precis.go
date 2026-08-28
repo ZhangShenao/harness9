@@ -35,14 +35,14 @@ func NewPrecis(store *Store, path string, maxBytes int) *Precis {
 func (p *Precis) Regenerate(ctx context.Context) error {
 	entries, err := p.store.List(ctx, precisMaxEntries)
 	if err != nil {
-		return fmt.Errorf("拉取精华条目: %w", err)
+		return fmt.Errorf("拉取精华条目：%w", err)
 	}
 	content := renderPrecis(entries, p.maxBytes)
 	if err := os.MkdirAll(filepath.Dir(p.path), 0700); err != nil {
-		return fmt.Errorf("创建精华目录: %w", err)
+		return fmt.Errorf("创建精华目录：%w", err)
 	}
 	if err := os.WriteFile(p.path, []byte(content), 0600); err != nil {
-		return fmt.Errorf("写入精华文件: %w", err)
+		return fmt.Errorf("写入精华文件：%w", err)
 	}
 	return nil
 }
@@ -54,7 +54,7 @@ func (p *Precis) Read() (string, error) {
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("读取精华文件: %w", err)
+		return "", fmt.Errorf("读取精华文件：%w", err)
 	}
 	return string(data), nil
 }

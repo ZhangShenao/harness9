@@ -1,7 +1,7 @@
 // Package main 实现 SWE-bench Lite benchmark runner，
 // 用于评估 harness9 在真实 GitHub Issue 修复任务上的 Agent 能力。
 //
-// 用法:
+// 用法：
 //
 //	go run ./cmd/swebench --dataset swe-bench-lite.jsonl --sample 10 --output ./results
 //
@@ -9,7 +9,7 @@
 //
 //	OPENAI_API_KEY        LLM Provider API Key（必填）
 //	OPENAI_BASE_URL       自定义 OpenAI 兼容 API 地址（可选，用于 OpenRouter / Azure 等）
-//	LLM_MODEL             模型名称（默认: openai/gpt-4o-mini）
+//	LLM_MODEL             模型名称（默认：openai/gpt-4o-mini）
 //	SANDBOX_IMAGE         Docker 镜像（默认 python:3.11；高保真可设为官方每实例镜像
 //	                      swebench/sweb.eval.x86_64.<instance>，仓库与依赖已预装）
 //	SANDBOX_BOOTSTRAP_CMD 容器就绪后、Agent 启动前执行的依赖安装命令（默认自举：
@@ -59,7 +59,7 @@ func main() {
 	flag.Parse()
 
 	if cfg.DatasetPath == "" {
-		fmt.Fprintln(os.Stderr, "错误: --dataset 必填")
+		fmt.Fprintln(os.Stderr, "错误：--dataset 必填")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -88,7 +88,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "加载数据集失败: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "数据集加载完成: %d 条 instances\n", len(allInstances))
+	fmt.Fprintf(os.Stderr, "数据集加载完成：%d 条 instances\n", len(allInstances))
 
 	// 解析实际使用的模型名（用于填写 predictions.jsonl 的 model_name_or_path 字段）
 	modelName := resolveModelName(cfg.Model)
@@ -96,7 +96,7 @@ func main() {
 
 	// 按 repo 采样（固定 seed → 可复现；--resume 时同 seed 自然复现同一实例集）
 	instances := sampleByRepo(allInstances, cfg.SampleN, cfg.Seed)
-	fmt.Fprintf(os.Stderr, "采样完成: %d 条（每 repo 最多 %d 条，seed=%d）\n", len(instances), cfg.SampleN, cfg.Seed)
+	fmt.Fprintf(os.Stderr, "采样完成：%d 条（每 repo 最多 %d 条，seed=%d）\n", len(instances), cfg.SampleN, cfg.Seed)
 
 	// 加载已有结果（--resume 模式）
 	predictionsPath := filepath.Join(cfg.OutputDir, "predictions.jsonl")
@@ -107,7 +107,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "读取已有结果失败: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "断点续跑: 跳过 %d 个已有结果\n", len(skipIDs))
+		fmt.Fprintf(os.Stderr, "断点续跑：跳过 %d 个已有结果\n", len(skipIDs))
 	}
 
 	// 为本次运行分配 RunID（时间戳），trajectory 日志写入 logs/<RunID>/，
@@ -191,19 +191,19 @@ func main() {
 // preflight 在启动前验证必要条件，任一失败则终止程序。
 func preflight(cfg Config) error {
 	if cfg.Parallel <= 0 {
-		return fmt.Errorf("--parallel 必须 >= 1，当前值: %d", cfg.Parallel)
+		return fmt.Errorf("--parallel 必须 >= 1，当前值：%d", cfg.Parallel)
 	}
 	if cfg.SampleN <= 0 {
-		return fmt.Errorf("--sample 必须 >= 1，当前值: %d", cfg.SampleN)
+		return fmt.Errorf("--sample 必须 >= 1，当前值：%d", cfg.SampleN)
 	}
 	if os.Getenv("OPENAI_API_KEY") == "" {
 		return fmt.Errorf("OPENAI_API_KEY 未配置")
 	}
 	if _, err := os.Stat(cfg.DatasetPath); err != nil {
-		return fmt.Errorf("dataset 文件不可读: %w", err)
+		return fmt.Errorf("dataset 文件不可读：%w", err)
 	}
 	if _, err := exec.LookPath("git"); err != nil {
-		return fmt.Errorf("git 命令不可用: %w", err)
+		return fmt.Errorf("git 命令不可用：%w", err)
 	}
 	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer checkCancel()
@@ -212,7 +212,7 @@ func preflight(cfg Config) error {
 	}
 	parent := filepath.Dir(cfg.OutputDir)
 	if _, err := os.Stat(parent); err != nil {
-		return fmt.Errorf("输出目录的父路径不存在: %w", err)
+		return fmt.Errorf("输出目录的父路径不存在：%w", err)
 	}
 	return nil
 }

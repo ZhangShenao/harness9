@@ -199,7 +199,7 @@ M1 终于达成了。它不是一张漂亮的功能清单，而是很多次认�
 >
 > ```
 > Use case: illustration-story
-> Asset type: Chinese technical blog cover image and social sharing card for the article “M1 完成之后：harness9 为什么要走向本地 Agent OS”.
+> Asset type: Chinese technical blog cover image and social sharing card for the article“M1 完成之后：harness9 为什么要走向本地 Agent OS”.
 > Primary request: A warm, cinematic narrative illustration that conveys a long-running local developer project reaching a meaningful milestone and setting out toward a hopeful next chapter. At dawn, a small handcrafted workshop glows on a quiet hill. A developer and a gentle small robot companion stand at its open doorway, looking toward a distant landscape where several softly lit paths converge into a new horizon. On the workbench behind them are subtle paper notes, a lantern, and a few tiny wooden mechanisms, suggesting careful craft and many nights of work. The mood is quiet pride, relief, gratitude, and renewed curiosity—not triumphalism.
 > Scene/backdrop: misty mountains, early golden sunlight, a calm sky, wild grass and lanterns along the path.
 > Style/medium: original hand-painted cinematic animation illustration, soft watercolor and gouache textures, rich layered foreground/midground/background, elegant and emotionally resonant; not a technical diagram.

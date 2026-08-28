@@ -18,7 +18,7 @@ harness9 计划在现有飞书 Bot 之外，增加本地 TUI（Terminal User Int
 
 ## 2. 各框架详析
 
-### 2.1 DeepAgents（LangChain）
+### 2.1 DeepAgents (LangChain)
 
 **CLI 发布方式**
 
@@ -399,7 +399,7 @@ function TextInput({ value, onChange }: TextInputProps) {
 
 ---
 
-### 2.6 Claude Code（Anthropic）
+### 2.6 Claude Code (Anthropic)
 
 > 核心渲染代码闭源，以下基于 CHANGELOG、文档、社区反馈推断
 
@@ -504,14 +504,14 @@ if event::poll(tick)? { /* handle events */ }
 | 维度 | DeepAgents | OpenHarness | OpenCode | OpenClaw | HermesAgent | Claude Code | Codex CLI |
 |------|:----------:|:-----------:|:--------:|:--------:|:-----------:|:-----------:|:---------:|
 | **语言** | Python | Python+Node | TS(Bun) | TS(Node) | Python+Node | Node.js | Rust+TS |
-| **TUI 库** | Textual | prompt_toolkit+Ink | 自研(SolidJS) | 自研 | 自研(React+Ink) | 自研(闭源) | Ratatui |
-| **布局模式** | 全屏CSS | 全屏/inline | 分屏Footer | 三区域 | 全屏/inline | 多面板 | 双区域 |
-| **流式渲染** | RichLog追加 | Ink组件 | SSE+追加 | ANSI直写 | Ink+信号 | 逐token | XTSYNCU |
-| **工具进度** | spinner+状态行 | inline状态 | Footer状态 | inline spinner | 状态组件 | 颜色+折叠 | active_cell |
-| **WorkDir分离** | 参数/chdir | 环境变量 | 自动检测+C/S | cwd+参数 | 参数 | cwd+--add-dir | 参数+landlock |
-| **发布方式** | pip | pip+npm | bun/安装脚本 | npm/brew | npm(含py) | npm/npx | npm/cargo |
-| **CJK支持** | ✅ | ⚠️ | ✅ | ❌ | ✅(Segmenter) | ✅ | ✅ |
-| **vim模式** | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| **TUI 库** | Textual | prompt_toolkit+Ink | 自研 (SolidJS) | 自研 | 自研 (React+Ink) | 自研 (闭源) | Ratatui |
+| **布局模式** | 全屏 CSS | 全屏/inline | 分屏 Footer | 三区域 | 全屏/inline | 多面板 | 双区域 |
+| **流式渲染** | RichLog 追加 | Ink 组件 | SSE+ 追加 | ANSI 直写 | Ink+ 信号 | 逐 token | XTSYNCU |
+| **工具进度** | spinner+ 状态行 | inline 状态 | Footer 状态 | inline spinner | 状态组件 | 颜色 + 折叠 | active_cell |
+| **WorkDir 分离** | 参数/chdir | 环境变量 | 自动检测+C/S | cwd+ 参数 | 参数 | cwd+--add-dir | 参数+landlock |
+| **发布方式** | pip | pip+npm | bun/安装脚本 | npm/brew | npm(含 py) | npm/npx | npm/cargo |
+| **CJK 支持** | ✅ | ⚠️ | ✅ | ❌ | ✅(Segmenter) | ✅ | ✅ |
+| **vim 模式** | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
 | **开源** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 
 ---

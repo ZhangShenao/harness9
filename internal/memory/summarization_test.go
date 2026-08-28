@@ -127,7 +127,7 @@ func TestSummarizationCompactor_CallsProviderAndInjectsSummary(t *testing.T) {
 	if len(p.calls) != 1 {
 		t.Fatalf("expected 1 provider call, got %d", len(p.calls))
 	}
-	// 结果: [system, summary, tail0, tail1]
+	// 结果：[system, summary, tail0, tail1]
 	if len(got) != 4 {
 		t.Fatalf("want 4 msgs (system+summary+2tail), got %d", len(got))
 	}

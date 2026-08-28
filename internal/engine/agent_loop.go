@@ -434,7 +434,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		}
 		select {
 		case <-ctx.Done():
-			interactionErr = fmt.Errorf("context 已取消: %w", ctx.Err())
+			interactionErr = fmt.Errorf("context 已取消：%w", ctx.Err())
 			return interactionErr
 		default:
 		}
