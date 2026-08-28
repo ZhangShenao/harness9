@@ -169,8 +169,10 @@ comments_json=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" 2>/
 comment_id=$(printf '%s' "$comments_json" | jq -r --arg m "$MARKER" '[.[] | select(.body | startswith($m))][0].id // empty' 2>/dev/null || true)
 
 if [ -n "$comment_id" ]; then
-  gh api -X PATCH "repos/$REPO/issues/$PR_NUMBER/comments/$comment_id" --input "$tmp_payload" >/dev/null
-  echo "quality-report: 已更新 sticky 评论（id=$comment_id）"
+  # 注意：更新评论必须用 /issues/comments/{id} 直连形式——
+  # /issues/{n}/comments/{id} 路由不支持 PATCH，返回 404
+  gh api -X PATCH "repos/$REPO/issues/comments/$comment_id" --input "$tmp_payload" >/dev/null
+  echo "quality-report: 已更新 sticky 评论（id=${comment_id}）"
 else
   gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" --input "$tmp_payload" >/dev/null
   echo "quality-report: 已创建 sticky 评论"
