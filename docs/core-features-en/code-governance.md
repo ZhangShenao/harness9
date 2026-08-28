@@ -34,7 +34,8 @@ The configuration lives in `.jscpd.json` at the repository root and is shared by
 | `minTokens` | `50` | A segment needs at least 50 tokens to count as a clone (filters trivial short repeats) |
 | `minLines` | `5` | ... and at least 5 lines |
 | `threshold` | `5` | Upper bound on duplicated-lines percentage; exceeding it exits 1 (blocks CI) |
-| `reporters` | `["consoleFull"]` | Full console report |
+| `reporters` | `["consoleFull", "json"]` | Full console report plus a JSON report (the data source for the quality report) |
+| `output` | `jscpd-report` | Directory where the JSON report lands (actual file: `jscpd-report/jscpd-report.json`) |
 | `gitignore` | `true` | Honor `.gitignore`; generated artifacts are excluded automatically |
 | `ignore` | `["**/*_test.go"]` | File-level exclusion of test code |
 
@@ -250,6 +251,23 @@ All governance-related checks in `.github/workflows/ci.yml`:
 | lint | Doc drift | `scripts/check-doc-drift.sh` (`DOC_DRIFT_STRICT: "0"`) | Warning only, non-blocking |
 | duplication | Code duplication | `npx jscpd@5.0.16 .` (threshold 5) | Blocking + Step Summary report |
 | build | Compilation | `go build ./...` | Blocking |
-| test | Tests | `go test -race ./...` | Blocking |
+| test | Tests | `go test -race ./...` (with coverage collection) | Blocking |
+| quality-report | Quality report | `scripts/quality-report.sh` (sticky comment) | Non-blocking; see next section |
 
-Planned evolution: flip `DOC_DRIFT_STRICT` to `1` once the warn observation period ends, and tighten the jscpd threshold as the baseline drops. Both are one-line config changes — no structural work required.
+### CI Quality Report
+
+The `quality-report` job runs after all four gate jobs (lint / build / test / duplication) of a pull request have finished (`if: always()`, so a partial failure still produces a report; pushes to master never trigger it). It consolidates the quality signals scattered across jobs into a single markdown comment posted to the PR — and keeps **updating that same comment**:
+
+| Metric | Source | Notes |
+|--------|--------|-------|
+| Gate matrix | Each job's result | One row per gate: ✅ success / ❌ failure / ⏭ skipped at a glance |
+| Unit test coverage | `coverage.out` (test job artifact) | Total coverage plus a per-package breakdown table (ascending); **reference value only, no threshold gate** |
+| Code duplication | jscpd metrics JSON (duplication job artifact) | Percentage vs. threshold comparison, clone count and duplicated lines |
+| Doc drift warnings | The lint job's `drifts` output | Warn-mode count, with a hint to fix via `/sync-docs` |
+| Eval status | `gh api` lookup of the Eval CI run by head SHA (best-effort) | Conclusion badge plus a run link; a failed lookup degrades to a single hint line without breaking the report |
+
+The update mechanism relies on an HTML marker at the top of the comment (`<!-- harness9-ci-quality-report -->`): the script first lists the PR's comments, PATCHes the existing report when the marker matches, and only POSTs a new comment when none is found — repeated pushes to the same PR keep exactly one report comment instead of flooding the thread.
+
+Data pipeline: the test job uploads `coverage.out` and the duplication job uploads the jscpd metrics JSON as artifacts; the `quality-report` job pulls both via `actions/download-artifact` and hands them to `scripts/quality-report.sh` for rendering. Both artifacts are gitignored. Inside the script every best-effort query fails independently — only a failure of the comment operation itself can fail the job — and the comment payload is built with `jq -n --arg` to rule out injection.
+
+Planned evolution: flip `DOC_DRIFT_STRICT` to `1` once the warn observation period ends, tighten the jscpd threshold as the baseline drops, and evaluate a coverage threshold once the numbers stabilize. All three are one-line config changes — no structural work required.

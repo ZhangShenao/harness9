@@ -4,7 +4,8 @@
   "minTokens": 50,
   "minLines": 5,
   "threshold": 5,
-  "reporters": ["consoleFull"],
+  "reporters": ["consoleFull", "json"],
+  "output": "jscpd-report",
   "gitignore": true,
   "ignore": ["**/*_test.go"]
 }

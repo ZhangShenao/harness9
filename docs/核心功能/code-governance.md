@@ -34,7 +34,8 @@ harness9 的代码治理由**三项自动化质量门禁**（jscpd 重复度、a
 | `minTokens` | `50` | 片段至少 50 个 token 才计为 clone（过滤无意义的短重复） |
 | `minLines` | `5` | 且至少 5 行 |
 | `threshold` | `5` | 重复行百分比上限，超过则 exit 1（CI 阻断） |
-| `reporters` | `["consoleFull"]` | 控制台输出完整报告 |
+| `reporters` | `["consoleFull", "json"]` | 控制台输出完整报告 + 生成 JSON 报告（质量报告的数据源） |
+| `output` | `jscpd-report` | JSON 报告落盘目录（实测产物为 `jscpd-report/jscpd-report.json`） |
 | `gitignore` | `true` | 遵循 `.gitignore`，生成产物自动排除 |
 | `ignore` | `["**/*_test.go"]` | 文件级排除测试代码 |
 
@@ -250,6 +251,23 @@ CI 中的 jscpd 已锁定为同一版本（`npx jscpd@5.0.16`）；升级 jscpd 
 | lint | 文档漂移 | `scripts/check-doc-drift.sh`（`DOC_DRIFT_STRICT: "0"`） | warn 告警，不阻断 |
 | duplication | 代码重复度 | `npx jscpd@5.0.16 .`（threshold 5） | 阻断 + Step Summary 报告 |
 | build | 编译 | `go build ./...` | 阻断 |
-| test | 测试 | `go test -race ./...` | 阻断 |
+| test | 测试 | `go test -race ./...`（附覆盖率采集） | 阻断 |
+| quality-report | 质量报告 | `scripts/quality-report.sh`（sticky 评论） | 不阻断，见下节 |
 
-后续演进方向：漂移检测结束 warn 观察期后将 `DOC_DRIFT_STRICT` 反转为 `1`；threshold 随基线下降逐步收紧。两者都只改配置值，不动结构。
+### CI 质量报告
+
+`quality-report` job 在 PR 的四个门禁 job（lint / build / test / duplication）全部结束后运行（`if: always()`，部分失败也会出报告；push 到 master 不触发）。它把分散在各 job 的质量信号聚合成一条 markdown 评论，发到 PR 内并**持续更新同一条**：
+
+| 指标 | 来源 | 说明 |
+|------|------|------|
+| 门禁矩阵 | 四个 job 的 result | 每个门禁一行，✅ success / ❌ failure / ⏭ skipped 一目了然 |
+| 单元测试覆盖率 | `coverage.out`（test job artifact） | 总覆盖率 + 按包聚合明细表（升序）；**当前为参考值，不设阈值门禁** |
+| 代码重复率 | jscpd metrics json（duplication job artifact） | 百分比与 threshold 的对比、clone 数与重复行数 |
+| 文档漂移警告数 | lint job 的 `drifts` 输出 | warn 模式计数，提示用 `/sync-docs` 修复 |
+| Eval 状态 | `gh api` 按 head SHA 查 Eval CI run（best-effort） | 结论徽标 + 运行链接；查询失败降级为一行提示，不影响报告 |
+
+更新机制依赖评论开头的 HTML marker（`<!-- harness9-ci-quality-report -->`）：脚本先列出 PR 评论，按 marker 找到既有报告则 PATCH 更新，找不到才 POST 创建——同一个 PR 反复 push 只会有一条报告评论，不会刷屏。
+
+数据管线：test job 把 `coverage.out`、duplication job 把 jscpd metrics json 分别作为 artifact 上传，`quality-report` job 通过 `actions/download-artifact` 拉取后交给 `scripts/quality-report.sh` 渲染。两个产物都已加入 `.gitignore`。脚本内部所有 best-effort 查询单独容错，只有评论操作本身失败才会导致 job 失败；评论 payload 用 `jq -n --arg` 构造，杜绝注入。
+
+后续演进方向：漂移检测结束 warn 观察期后将 `DOC_DRIFT_STRICT` 反转为 `1`；threshold 随基线下降逐步收紧；覆盖率观察稳定后可评估是否引入阈值。三者都只改配置值，不动结构。

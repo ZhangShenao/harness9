@@ -10,6 +10,8 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    outputs:
+      drifts: ${{ steps.drift.outputs.drifts }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,12 +51,15 @@ jobs:
         uses: crate-ci/typos@v1.49.1
 
       - name: Check doc drift
+        id: drift
         run: |
           if [ -n "${{ github.base_ref }}" ]; then
-            scripts/check-doc-drift.sh "origin/${{ github.base_ref }}"
+            OUT=$(scripts/check-doc-drift.sh "origin/${{ github.base_ref }}" 2>&1) || true
           else
-            scripts/check-doc-drift.sh "origin/master"
+            OUT=$(scripts/check-doc-drift.sh "origin/master" 2>&1) || true
           fi
+          echo "$OUT"
+          echo "drifts=$(echo "$OUT" | grep -c '^DRIFT:' || true)" >> "$GITHUB_OUTPUT"
         env:
           DOC_DRIFT_STRICT: "0"
 
@@ -84,7 +89,14 @@ jobs:
           cache: true
 
       - name: Test
-        run: go test -race ./...
+        run: go test -race ./... -covermode=atomic -coverprofile=coverage.out
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-profile
+          path: coverage.out
+          retention-days: 14
 
   duplication:
     name: Duplication Check
@@ -100,8 +112,50 @@ jobs:
         shell: bash
         run: set -o pipefail; npx jscpd@5.0.16 . 2>&1 | tee jscpd-output.txt
 
+      - name: Upload jscpd metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jscpd-metrics
+          path: jscpd-report/jscpd-report.json
+          retention-days: 14
+
       - name: Report summary
         if: always()
         run: |
           echo "## Duplication Report" >> $GITHUB_STEP_SUMMARY
           grep -E "Clone|duplicated" jscpd-output.txt | head -50 >> $GITHUB_STEP_SUMMARY || true
+
+  quality-report:
+    name: Quality Report
+    runs-on: ubuntu-latest
+    needs: [lint, build, test, duplication]
+    if: always() && github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "{coverage-profile,jscpd-metrics}"
+          merge-multiple: true
+
+      - name: Build and post quality report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          DUP_RESULT: ${{ needs.duplication.result }}
+          DRIFTS: ${{ needs.lint.outputs.drifts }}
+          PR_NUMBER: ${{ github.event.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: scripts/quality-report.sh
