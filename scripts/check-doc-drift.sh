@@ -18,9 +18,9 @@ command -v jq >/dev/null 2>&1 || { echo "check-doc-drift: 缺少 jq 依赖" >&2;
 [ -f "$MAP_FILE" ] || { echo "check-doc-drift: 未找到 $MAP_FILE" >&2; exit 2; }
 
 if [ -n "$BASE" ]; then
-  CHANGED=$(git diff --name-only "$BASE...HEAD")
+  CHANGED=$(git -c core.quotepath=off diff --name-only "$BASE...HEAD")
 else
-  CHANGED=$(git diff --name-only master...HEAD 2>/dev/null || git diff --name-only HEAD)
+  CHANGED=$(git -c core.quotepath=off diff --name-only master...HEAD 2>/dev/null || git -c core.quotepath=off diff --name-only HEAD)
 fi
 
 if [ -z "$CHANGED" ]; then
@@ -40,6 +40,8 @@ while IFS= read -r entry; do
       case "$f" in *_test.go) continue ;; esac
       # shellcheck disable=SC2254
       case "$f" in $pat) TOUCHED=1; break 2 ;; esac
+      # 目录前缀匹配：pattern 为目录时命中其下所有文件（引号关闭 glob，仅保留显式 / *）
+      case "$f" in "$pat"/*) TOUCHED=1; break 2 ;; esac
     done <<<"$CHANGED"
   done <<<"$(jq -r '.paths[]' <<<"$entry")"
   [ "$TOUCHED" -eq 1 ] || continue
