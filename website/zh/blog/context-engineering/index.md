@@ -220,7 +220,7 @@ func repairOrphanedToolPairs(msgs []schema.Message) []schema.Message {
 
 ## OffloadHook：防止 Context 被单次输出撑爆
 
-仅有 Context Compation 机制，还无法保证绝对安全。试想下面的场景：
+仅有 Context Compaction 机制，还无法保证绝对安全。试想下面的场景：
 一个 `bash("cat large_file.log")` 可以输出几十万字节。如果这个输出直接进 contextHistory，不仅吃掉大量 token 预算，还会立即触发压缩，把有价值的历史对话挤掉。
 
 为了解决这个问题，我们引入了 Hook 机制：

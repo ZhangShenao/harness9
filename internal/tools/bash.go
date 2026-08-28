@@ -88,13 +88,13 @@ func (t *BashTool) Name() string { return "bash" }
 func (t *BashTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name:        t.Name(),
-		Description: "在当前工作区执行任意的 bash 命令。支持链式命令(如 &&)。返回标准输出(stdout)和标准错误(stderr)的合并内容。",
+		Description: "在当前工作区执行任意的 bash 命令。支持链式命令 (如 &&)。返回标准输出 (stdout) 和标准错误 (stderr) 的合并内容。",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"command": map[string]interface{}{
 					"type":        "string",
-					"description": "要执行的 bash 命令，例如: ls -la 或 go test ./... 等等",
+					"description": "要执行的 bash 命令，例如：ls -la 或 go test ./... 等等",
 				},
 				"timeout_secs": map[string]interface{}{
 					"type":        "integer",
@@ -114,7 +114,7 @@ type bashArgs struct {
 func (t *BashTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input bashArgs
 	if err := json.Unmarshal(args, &input); err != nil {
-		return "", fmt.Errorf("参数解析失败: %w", err)
+		return "", fmt.Errorf("参数解析失败：%w", err)
 	}
 	if input.Command == "" {
 		return "Error: 命令为空字符串", nil
@@ -166,7 +166,7 @@ func (t *BashTool) runInSandbox(ctx context.Context, cmd string, timeout time.Du
 func (t *BashTool) runLocal(ctx context.Context, cmd string, timeout time.Duration) (string, error) {
 	tmp, err := os.CreateTemp("", "harness9-bash-*.log")
 	if err != nil {
-		return "", fmt.Errorf("创建临时输出文件失败: %w", err)
+		return "", fmt.Errorf("创建临时输出文件失败：%w", err)
 	}
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
@@ -179,7 +179,7 @@ func (t *BashTool) runLocal(ctx context.Context, cmd string, timeout time.Durati
 
 	out, readErr := os.ReadFile(tmp.Name())
 	if readErr != nil {
-		return "", fmt.Errorf("读取命令输出失败: %w", readErr)
+		return "", fmt.Errorf("读取命令输出失败：%w", readErr)
 	}
 	outputStr := string(out)
 

@@ -16,7 +16,7 @@ func TestToolCalling(t *testing.T) {
 	evals.SetupHermeticEnv(t)
 
 	cases := []*evals.Case{
-		// 用例1：bash 基础调用
+		// 用例 1：bash 基础调用
 		{
 			ID:       "tool_calling/bash_basic",
 			Category: "tool_calling",
@@ -35,7 +35,7 @@ func TestToolCalling(t *testing.T) {
 				&evals.MaxTurnsAssertion{Max: 3},
 			},
 		},
-		// 用例2：read_file 调用
+		// 用例 2：read_file 调用
 		{
 			ID:       "tool_calling/read_file",
 			Category: "tool_calling",
@@ -53,7 +53,7 @@ func TestToolCalling(t *testing.T) {
 				&evals.NoErrorAssertion{},
 			},
 		},
-		// 用例3：write_file 后 read_file（多工具顺序调用）
+		// 用例 3：write_file 后 read_file（多工具顺序调用）
 		{
 			ID:       "tool_calling/write_then_read",
 			Category: "tool_calling",
@@ -78,7 +78,7 @@ func TestToolCalling(t *testing.T) {
 				&evals.MaxTurnsAssertion{Max: 4},
 			},
 		},
-		// 用例5：edit_file 模糊匹配（缩进不一致触发 L4）端到端不破坏循环。
+		// 用例 5：edit_file 模糊匹配（缩进不一致触发 L4）端到端不破坏循环。
 		// 先 write_file 写入带 4/8 空格缩进的 Python 方法；随后 edit_file 用 0/4 缩进的
 		// source_text（与文件缩进不一致 → 走 L4 逐行去缩进匹配 + 重缩进），验证编辑成功、
 		// 引擎不因模糊匹配/缩进重排而报错（覆盖 fuzzyReplaceWithLevel + reindentBlock 路径）。
@@ -110,7 +110,7 @@ func TestToolCalling(t *testing.T) {
 				&evals.MaxTurnsAssertion{Max: 4},
 			},
 		},
-		// 用例4：纯对话，不应调用工具
+		// 用例 4：纯对话，不应调用工具
 		{
 			ID:       "tool_calling/no_tool_conversation",
 			Category: "tool_calling",
@@ -125,7 +125,7 @@ func TestToolCalling(t *testing.T) {
 				&evals.NoErrorAssertion{},
 			},
 		},
-		// 用例6：同一 Turn 内并行调用两个工具。
+		// 用例 6：同一 Turn 内并行调用两个工具。
 		// 引擎会并发执行这两个工具调用（preallocated slice + index write 保证结果顺序），
 		// 该用例在 go test -race 下同时是 recordingHook 并发写竞争的回归测试。
 		{
@@ -169,5 +169,5 @@ func TestToolCalling(t *testing.T) {
 			t.Logf("   ⚠️ %s: %s", r.Case.ID, w.Error())
 		}
 	}
-	t.Logf("工具调用评估: %d/%d 通过", passed, passed+failed)
+	t.Logf("工具调用评估：%d/%d 通过", passed, passed+failed)
 }

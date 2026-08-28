@@ -59,7 +59,7 @@ type rpcError struct {
 type StdioTransport struct {
 	command string
 	args    []string
-	env     []string // 格式: ["KEY=VALUE", ...]
+	env     []string // 格式：["KEY=VALUE", ...]
 
 	cmd     *exec.Cmd
 	enc     *json.Encoder // 写入 stdin（由 writeMu 保护）

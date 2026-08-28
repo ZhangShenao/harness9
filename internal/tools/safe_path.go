@@ -82,7 +82,7 @@ func safePath(workDir, inputPath string) (string, error) {
 		var err error
 		absPath, err = filepath.Abs(filepath.Join(cleanWorkDir, inputPath))
 		if err != nil {
-			return "", fmt.Errorf("解析路径失败: %w", err)
+			return "", fmt.Errorf("解析路径失败：%w", err)
 		}
 	}
 

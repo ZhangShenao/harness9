@@ -13,7 +13,7 @@ func TestPlanning(t *testing.T) {
 	evals.SetupHermeticEnv(t)
 
 	cases := []*evals.Case{
-		// 用例1：通过 todo_write 生成计划
+		// 用例 1：通过 todo_write 生成计划
 		{
 			ID:       "planning/plan_generated",
 			Category: "planning",
@@ -35,7 +35,7 @@ func TestPlanning(t *testing.T) {
 				&evals.NoErrorAssertion{},
 			},
 		},
-		// 用例2：Plan Mode 下不应调用 write_file/edit_file
+		// 用例 2：Plan Mode 下不应调用 write_file/edit_file
 		{
 			ID:       "planning/no_write_in_plan_mode",
 			Category: "planning",
@@ -83,7 +83,7 @@ func TestPlanning(t *testing.T) {
 			t.Logf("   ⚠️ %s: %s", r.Case.ID, w.Error())
 		}
 	}
-	t.Logf("Planning 评估: %d/%d 通过", passed, passed+failed)
+	t.Logf("Planning 评估：%d/%d 通过", passed, passed+failed)
 }
 
 // TestPlanningExecution 验证从计划生成到执行的完整流程（2 个黄金用例）。
@@ -91,7 +91,7 @@ func TestPlanningExecution(t *testing.T) {
 	evals.SetupHermeticEnv(t)
 
 	cases := []*evals.Case{
-		// 用例3：先用 todo_write 生成计划，再写入文件执行第一个 todo 项。
+		// 用例 3：先用 todo_write 生成计划，再写入文件执行第一个 todo 项。
 		// 验证 AutoEdit 模式下 Planning + 执行的完整链路。
 		{
 			ID:       "planning/plan_then_execute",
@@ -124,7 +124,7 @@ func TestPlanningExecution(t *testing.T) {
 			},
 		},
 
-		// 用例4：pure 探索模式——只用只读工具收集信息，不做任何写操作。
+		// 用例 4：pure 探索模式——只用只读工具收集信息，不做任何写操作。
 		// 验证 LLM 在被明确要求"只分析不修改"时遵守约束。
 		{
 			ID:       "planning/exploration_only",

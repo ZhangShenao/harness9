@@ -88,7 +88,7 @@ func TestTrackerSetNotify(t *testing.T) {
 	id := tr.Start("x", "p")
 	tr.Finish(id, "r", false)
 	if n != 1 {
-		t.Fatalf("notify 应在 Finish 时触发 1 次, 得 %d", n)
+		t.Fatalf("notify 应在 Finish 时触发 1 次，得 %d", n)
 	}
 }
 

@@ -38,7 +38,7 @@ const stallNudgeText = "你已连续多轮只在静态读代码 / grep，却没�
 	"(1) 运行与改动相关的真实测试以获取反馈；(2) 若已定位问题，做出最小修改后用真实测试验证。不要继续空转重读。"
 
 // verifyGateText 是验证关卡续跑提示：当整条轨迹从未运行过任何测试便自然结束时注入一次，
-// 要求 Agent 真正验证后再收尾（轨迹分析 R2：8/8 失败实例均零验证即交卷）。
+// 要求 Agent 真正验证后再收尾（轨迹分析 R2:8/8 失败实例均零验证即交卷）。
 const verifyGateText = "你似乎尚未运行过任何测试就准备结束。请先在沙箱里复现该 Issue，并运行与你改动相关的现有测试来验证修复是否真的生效" +
 	"（必要时用 `python -m ensurepip --upgrade && python -m pip install -e . pytest` 安装依赖、用 timeout_secs 放宽超时）。" +
 	"验证通过、或确认环境确实无法运行测试并说明原因后，再结束。"
@@ -132,7 +132,7 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	// 1. 创建隔离临时目录
 	tmpDir, err := os.MkdirTemp("", "swebench-"+inst.InstanceID+"-*")
 	if err != nil {
-		return RunResult{Instance: inst, Error: fmt.Errorf("创建临时目录失败: %w", err), Duration: time.Since(start)}
+		return RunResult{Instance: inst, Error: fmt.Errorf("创建临时目录失败：%w", err), Duration: time.Since(start)}
 	}
 	defer os.RemoveAll(tmpDir)
 
@@ -179,7 +179,7 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	defer sandboxCancel()
 	env, err := mgr.Create(sandboxCtx, tmpDir)
 	if err != nil {
-		return RunResult{Instance: inst, Error: fmt.Errorf("sandbox 创建失败: %w", err), Duration: time.Since(start)}
+		return RunResult{Instance: inst, Error: fmt.Errorf("sandbox 创建失败：%w", err), Duration: time.Since(start)}
 	}
 	defer func() {
 		cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -198,7 +198,7 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	}
 	for _, t := range toolList {
 		if err := registry.Register(t); err != nil {
-			return RunResult{Instance: inst, Error: fmt.Errorf("注册工具失败: %w", err), Duration: time.Since(start)}
+			return RunResult{Instance: inst, Error: fmt.Errorf("注册工具失败：%w", err), Duration: time.Since(start)}
 		}
 	}
 	hookReg := hooks.NewHookRegistry(registry)
@@ -207,12 +207,12 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	// MaxTurns=0 时不传 WithMaxTurns，沿用引擎默认值（500）。
 	llm, err := newProvider(cfg.Model)
 	if err != nil {
-		return RunResult{Instance: inst, Error: fmt.Errorf("创建 LLM provider 失败: %w", err), Duration: time.Since(start)}
+		return RunResult{Instance: inst, Error: fmt.Errorf("创建 LLM provider 失败：%w", err), Duration: time.Since(start)}
 	}
 	// 上下文窗口与压缩器：此前 benchmark 未配置 compactor，长轨迹上下文无界增长，
 	// 触及模型窗口后 API 返回 400（prompt too long），在无重试时直接杀实例。
 	// 这里用无需 LLM、无需 session 的 TokenBudgetCompactor 做字符级裁剪；
-	// 预算取上下文窗口的 55%，为工具定义(~25K) + 输出预留 + chars/4 估算误差留足余量。
+	// 预算取上下文窗口的 55%，为工具定义 (~25K) + 输出预留 + chars/4 估算误差留足余量。
 	lim := provider.GetModelLimits(resolveModelName(cfg.Model))
 	compactor := &memory.TokenBudgetCompactor{
 		MaxTokens:       lim.ContextTokens * 55 / 100,

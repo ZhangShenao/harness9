@@ -32,7 +32,7 @@ func LoadSkills(skillsDir string) (*Index, error) {
 		return &Index{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("读取 skills 目录失败: %w", err)
+		return nil, fmt.Errorf("读取 skills 目录失败：%w", err)
 	}
 
 	var loaded []Skill

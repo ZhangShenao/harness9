@@ -39,7 +39,7 @@ Sub-Agent（子代理）是 Agent Harness 框架中最具技术深度的模块�
 
 ## 2. 各框架逐项分析
 
-### 2.1 Claude Agent SDK（Anthropic）
+### 2.1 Claude Agent SDK (Anthropic)
 
 **基础信息**：GitHub 星数未单独统计（内嵌于 Claude Code），Python + TypeScript 双 SDK，官方文档站 code.claude.com。
 
@@ -246,7 +246,7 @@ if hasattr(message, 'parent_tool_use_id') and message.parent_tool_use_id:
 
 ---
 
-### 2.2 OpenHarness（HKUDS）
+### 2.2 OpenHarness (HKUDS)
 
 **基础信息**：Python，★13,310，内置"个人代理 Ohmo"，活跃开发中（最近推送 2026-05-27）。核心多代理模块在 `src/openharness/swarm/`。
 
@@ -371,7 +371,7 @@ class TeammateMessage:
 
 ---
 
-### 2.3 HermesAgent（NousResearch）
+### 2.3 HermesAgent (NousResearch)
 
 **基础信息**：Python，★172,963，描述为"the agent that grows with you"，面向多平台消息（Discord/Slack/Telegram 等），包含 Kanban、Cron、Skills 等完整生态。
 
@@ -502,7 +502,7 @@ Worker 状态机：`pending` → `claimed` → `complete` / `blocked`
 
 ---
 
-### 2.4 OpenCode（Anomaly）
+### 2.4 OpenCode (Anomaly)
 
 **基础信息**：TypeScript，★167,199，描述为"The open source coding agent"，开发分支为 `dev`，活跃度极高。
 
@@ -622,7 +622,7 @@ const nextSession = await sessions.create({
 
 ---
 
-### 2.5 DeepAgents（LangChain）
+### 2.5 DeepAgents (LangChain)
 
 **基础信息**：Python + TypeScript，★23,550，"batteries-included agent harness"，建立在 LangGraph 之上，适合生产部署。
 
@@ -780,7 +780,7 @@ provider = "none"
 **Session 隔离级别**：
 - `main`：所有私信合并为单一 session
 - `per-peer`：每个联系人独立 session
-- `per-channel-peer`：按频道+用户隔离
+- `per-channel-peer`：按频道 + 用户隔离
 - `per-account-channel-peer`：完全隔离
 
 #### 2.6.3 Agent 间通信、Handoff、协作

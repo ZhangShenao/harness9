@@ -102,7 +102,7 @@ func TestRunLoopWithCompactor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// MaxMessages=5: system(1) + 最多4条历史 + new_user → ≤6
+	// MaxMessages=5: system(1) + 最多 4 条历史 + new_user → ≤6
 	if capturedLen > 6 {
 		t.Errorf("compactor did not apply: got %d msgs in context, want ≤6", capturedLen)
 	}

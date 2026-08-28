@@ -21,7 +21,7 @@
 
 ## 2. 各框架实现概述
 
-### 2.1 DeepAgents（LangChain）
+### 2.1 DeepAgents (LangChain)
 
 **项目定位**：Python + TypeScript，"batteries-included" Agent Harness，以 LangGraph 为编排基础。Stars：24,444（截至调研日）。
 
@@ -44,7 +44,7 @@ DeepAgents 的内置工具集仅包含文件操作（`ls`/`read_file`/`write_fil
 
 ---
 
-### 2.2 OpenHarness（HKUDS）
+### 2.2 OpenHarness (HKUDS)
 
 **项目定位**：Python，"Open Agent Harness with a Built-in Personal Agent (Ohmo)"。Stars：13,757。
 
@@ -105,7 +105,7 @@ class WebFetchToolInput(BaseModel):
 
 ---
 
-### 2.3 OpenCode（Anomaly）
+### 2.3 OpenCode (Anomaly)
 
 **项目定位**：TypeScript，Monorepo，"The open source coding agent"，主攻编码场景。Stars：173,001。
 
@@ -121,7 +121,7 @@ class WebFetchToolInput(BaseModel):
 
 ---
 
-### 2.4 OpenClaw（OpenClaw）
+### 2.4 OpenClaw (OpenClaw)
 
 **项目定位**：TypeScript，"Your own personal AI assistant"，全能个人助手，跨平台。Stars：378,109，是调研框架中 Stars 最多的。
 
@@ -221,7 +221,7 @@ interface FetchFirecrawlContentParams {
 
 ---
 
-### 2.5 HermesAgent（NousResearch）
+### 2.5 HermesAgent (NousResearch)
 
 **项目定位**：Python，"The agent that grows with you"，全能个人助手，Stars：190,498，工具集最为丰富。
 
@@ -365,7 +365,7 @@ sub_agent_interaction:
 
 ---
 
-### 2.6 Claude Agent SDK（Anthropic）
+### 2.6 Claude Agent SDK (Anthropic)
 
 **项目定位**：Python + TypeScript，"Build production AI agents with Claude Code as a library"。使用 Claude Code 的完整能力作为库。
 
@@ -472,7 +472,7 @@ options=ClaudeAgentOptions(
 
 | 框架 | 搜索工具参数 | 抓取工具参数 | 返回格式 |
 |------|------------|------------|---------|
-| OpenHarness | `query`, `max_results`(1-10), `search_url` | `url`, `max_chars`(500-50000, 默认12000) | 纯文本（数字编号列表 / 截断文本） |
+| OpenHarness | `query`, `max_results`(1-10), `search_url` | `url`, `max_chars`(500-50000, 默认 12000) | 纯文本（数字编号列表 / 截断文本） |
 | OpenClaw | 依后端而定（由 provider 定义） | `url`, `extractMode`(markdown/text), provider-specific 参数 | Markdown 或纯文本 |
 | HermesAgent | `query`, `limit`(max 20, 默认 5) | `urls`(max 5), `format`(markdown/html/text), `use_llm_processing`, `model` | JSON 结构化结果 / Markdown |
 | Claude Agent SDK | 由 Claude 决策 | 由 Claude 决策 | 由底层实现决定，开发者透明 |
@@ -633,16 +633,16 @@ type WebFetchArgs struct {
 
 ```go
 // web_search 返回：结构化 JSON 文本（LLM 可直接理解）
-// [1] 标题: ...
+// [1] 标题：...
 // URL: ...
-// 摘要: ...
+// 摘要：...
 //
-// [2] 标题: ...
+// [2] 标题：...
 // ...
 
 // web_fetch 返回：Markdown 格式文本
 // # 页面标题
-// > 来源: https://...
+// > 来源：https://...
 //
 // ... 主内容（Markdown）...
 //

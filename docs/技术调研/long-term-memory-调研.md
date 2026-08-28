@@ -54,7 +54,7 @@ Long-Term Memory（长期记忆）是 Agent Harness 框架的核心差异化能�
 
 ---
 
-### 2.1 DeepAgents（LangChain）
+### 2.1 DeepAgents (LangChain)
 
 **仓库**：https://github.com/langchain-ai/deepagents
 
@@ -139,7 +139,7 @@ backend = CompositeBackend(
 
 ---
 
-### 2.2 OpenHarness（HKUDS）
+### 2.2 OpenHarness (HKUDS)
 
 **仓库**：https://github.com/HKUDS/OpenHarness
 
@@ -246,13 +246,13 @@ tags: ["tag1", "tag2"]
 
 - **冲突解决**：SHA256 签名去重（内容相同不创建新条目）；无两条记忆内容冲突时的自动仲裁
 - **TTL**：frontmatter 中的 `ttl_days` 字段 + `is_memory_expired()` 检查（以 `updated_at` 或 `created_at` 为基准），扫描时自动过滤已过期条目
-- **陈旧记忆识别**：`find_stale_memory_candidates()` 识别 importance ≤ 1、60天未更新、use_count=0 的条目作为清理候选
+- **陈旧记忆识别**：`find_stale_memory_candidates()` 识别 importance ≤ 1、60 天未更新、use_count=0 的条目作为清理候选
 - **软删除**：`disabled: true` 标记，不物理删除，便于审计
 - **遗忘/衰减**：无自动遗忘曲线；依赖 TTL 和人工/LLM 主动清理
 
 ---
 
-### 2.3 OpenCode（Anomaly）
+### 2.3 OpenCode (Anomaly)
 
 **仓库**：https://github.com/anomalyco/opencode
 
@@ -317,7 +317,7 @@ OpenClaw 是本次调研中触发机制**最丰富**的框架，支持以下路�
     └── .dreams/               # 短期记忆缓存（dreaming 待处理队列）
 ```
 
-第1层为 Session Context（JSONL 对话记录，存于运行时 context window）。
+第 1 层为 Session Context（JSONL 对话记录，存于运行时 context window）。
 
 **向量存储**：OpenClaw 内置 SQLite + 向量索引（多 embedding 后端可选）：
 
@@ -358,7 +358,7 @@ MEMORY.md 全量注入是"token bomb"——文件增大后每个 turn 都要携�
 
 ---
 
-### 2.5 HermesAgent（NousResearch）
+### 2.5 HermesAgent (NousResearch)
 
 **仓库**：https://github.com/NousResearch/hermes-agent
 
@@ -476,7 +476,7 @@ MEMORY.md 内容格式使用 `§` 作为条目分隔符，每条记忆可多行�
 
 ---
 
-### 2.6 Claude Agent SDK（Anthropic）
+### 2.6 Claude Agent SDK (Anthropic)
 
 **文档**：https://platform.claude.com/docs/en/managed-agents/memory
 
@@ -512,7 +512,7 @@ ASSUME INTERRUPTION: Your context window might be reset at any moment.
 **`memory_20250818` 工具**：
 
 - **生成**：LLM 自主判断，无规则化提取
-- **更新命令**（6个）：`view`、`create`、`str_replace`（子字符串精确替换）、`insert`（行号插入）、`delete`、`rename`
+- **更新命令**（6 个）：`view`、`create`、`str_replace`（子字符串精确替换）、`insert`（行号插入）、`delete`、`rename`
 - `str_replace` 要求 old_str 在文件中唯一；多处匹配时拒绝执行，防止错误覆写
 
 **Managed Agents Memory Stores**：
@@ -616,8 +616,8 @@ Memory 和 Compaction 协同形成"不可压缩的持久层"：Compaction 压缩
 | OpenHarness | 本地 Markdown 文件 | YAML Frontmatter + Markdown body | 无（关键词启发式）| 中（schema-v1 含 14 字段）|
 | OpenCode | 本地 Markdown（MEMORY.md）| 推测为 flat Markdown | 未确认 | 未确认 |
 | OpenClaw | 本地 Markdown + SQLite 向量索引 | 分层 Markdown + Embedding | ✅（Vector + BM25 混合）| 中 |
-| HermesAgent | 本地文件 + SQLite（FTS5）+ 外部提供者（8种）| §分隔条目 + SQL + 各提供者自定义 | ✅（外部提供者，如 Mem0/Honcho/RetainDB）| 高（多层混合）|
-| Claude Agent SDK | 服务端托管存储（Managed Stores）+ 客户端自控（memory tool）| 路径寻址文件系统 | 无内置（可外部实现）| 低（简洁路径+内容）|
+| HermesAgent | 本地文件 + SQLite（FTS5）+ 外部提供者（8 种）| §分隔条目 + SQL + 各提供者自定义 | ✅（外部提供者，如 Mem0/Honcho/RetainDB）| 高（多层混合）|
+| Claude Agent SDK | 服务端托管存储（Managed Stores）+ 客户端自控（memory tool）| 路径寻址文件系统 | 无内置（可外部实现）| 低（简洁路径 + 内容）|
 
 ### 3.4 注入 Context 方式对比
 
@@ -635,7 +635,7 @@ Memory 和 Compaction 协同形成"不可压缩的持久层"：Compaction 压缩
 | 框架 | 冲突解决 | TTL/遗忘 | 衰减机制 | 审计/版本 |
 |------|---------|---------|---------|---------|
 | DeepAgents | Last-Write-Wins | 无内置 | 无 | 无 |
-| OpenHarness | SHA256 去重；软删除 | ✅（frontmatter ttl_days）| 使用频次权重 + 陈旧识别（60天）| 版本迁移（schema-v1）|
+| OpenHarness | SHA256 去重；软删除 | ✅（frontmatter ttl_days）| 使用频次权重 + 陈旧识别（60 天）| 版本迁移（schema-v1）|
 | OpenCode | 未确认 | 未确认 | 未确认 | 未确认 |
 | OpenClaw | 无自动仲裁；人工管理 | 无明确 TTL | Dreaming 门控（间接）| DREAMS.md 人工审查 |
 | HermesAgent | 子字符串替换；Mem0/Hindsight 自动去重 | 无内置 TTL（confidence + last_reinforced 可外部实现）| 无自动衰减 | SQLite 对话历史永久保留 |
@@ -653,7 +653,7 @@ Memory 和 Compaction 协同形成"不可压缩的持久层"：Compaction 压缩
 
 **共同规律**：
 - 文件命名为 `MEMORY.md`（或 `CLAUDE.md`、`AGENTS.md`）作为持久化入口
-- 文件大小通常受限（100 行/25KB/2200字符），超出则截断或归档
+- 文件大小通常受限（100 行/25KB/2200 字符），超出则截断或归档
 - LLM 直接用文本编辑工具（str_replace、edit_file）操作，无需额外 API
 
 ### 模式二：三层记忆架构（短期→工作→长期）
@@ -815,7 +815,7 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(
 
 推荐 **混合注入策略**（参考 HermesAgent + OpenClaw）：
 
-1. **MEMORY.md 全量注入**：在 `DefaultPromptBuilder` 中，将 `~/.harness9/memories/MEMORY.md` 的内容（≤200行 / ≤5000字节）追加到 System Prompt 的固定位置，并利用 Anthropic 的 `cache_control` breakpoint 降低重复 token 成本。
+1. **MEMORY.md 全量注入**：在 `DefaultPromptBuilder` 中，将 `~/.harness9/memories/MEMORY.md` 的内容（≤200 行 / ≤5000 字节）追加到 System Prompt 的固定位置，并利用 Anthropic 的 `cache_control` breakpoint 降低重复 token 成本。
 
 2. **按需 FTS 检索（工具）**：通过新增 `memory_search(query)` 工具，利用 SQLite FTS5 进行全文检索，搜索结果以工具返回值形式注入当前 turn。
 
@@ -835,13 +835,13 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(
 
 建议分三阶段实现：
 
-**Phase 1（1-2周）：MEMORY.md 读写**
+**Phase 1（1-2 周）：MEMORY.md 读写**
 
 - 新增 `memory_write` 工具（向 `~/.harness9/memories/MEMORY.md` 追加或替换条目）
 - 在 `DefaultPromptBuilder` 中注入 MEMORY.md 内容
 - 在 `SummarizationCompactor` 中增加 pre-compaction nudge 提示
 
-**Phase 2（2-3周）：结构化存储 + FTS**
+**Phase 2（2-3 周）：结构化存储 + FTS**
 
 - 在 `state.db` 中新增 `long_term_memories` + FTS5 表
 - 新增 `memory_search(query)` 工具

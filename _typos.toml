@@ -1,0 +1,13 @@
+# typos 拼写检查配置（https://github.com/crate-ci/typos）
+# 项目专有术语白名单：随实际误报逐步补充
+[default]
+extend-ignore-identifiers-re = [
+  "UDDG",       # DuckDuckGo 加密 URL 参数名（decodeUDDG）
+  "harness9",
+  "Ratatui",    # Rust TUI 框架名（ratatui），非 Ratatouille 拼写错误
+  "HASS",       # Home Assistant 令牌前缀（HASS_TOKEN）
+  "provid",     # AGENTS.md 架构图 ASCII 盒子里 provider 的有意截断
+]
+
+[default.extend-words]
+harness9 = "harness9"

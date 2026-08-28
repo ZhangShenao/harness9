@@ -166,7 +166,7 @@ func (m *Manager) Create(ctx context.Context, workDir string) (Environment, erro
 	// ...（测试注入用的 runnerFactory 分支略）
 	c := newContainer(id, workDir, m.cfg, run)
 	if err := c.Start(ctx); err != nil {
-		return nil, fmt.Errorf("sandbox: 启动容器失败: %w", err)
+		return nil, fmt.Errorf("sandbox: 启动容器失败：%w", err)
 	}
 	env := newDockerEnvironment(c.DockerID(), id, workDir, run)
 
@@ -325,7 +325,7 @@ sandboxEnv, sandboxErr = sandboxMgr.Create(ctx, workDir)
 if r.sandboxMgr != nil {
 	sandboxEnv, err := r.sandboxMgr.Create(ctx, r.workDir)
 	if err != nil {
-		return SubAgentResult{}, fmt.Errorf("sandbox: 为子代理创建环境失败: %w", err)
+		return SubAgentResult{}, fmt.Errorf("sandbox: 为子代理创建环境失败：%w", err)
 	}
 	defer r.sandboxMgr.Destroy(r.baseCtx, sandboxEnv.ID())
 	effectiveBaseTools = wrapToolsWithSandbox(r.baseTools, sandboxEnv, r.workDir)

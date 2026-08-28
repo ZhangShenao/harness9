@@ -148,7 +148,7 @@ if e.maxTurns > 0 && turnCount > e.maxTurns {
 ```go
 select {
 case <-ctx.Done():
-    return fmt.Errorf("context 已取消: %w", ctx.Err())
+    return fmt.Errorf("context 已取消：%w", ctx.Err())
 default:
 }
 ```

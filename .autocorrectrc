@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://huacnlee.github.io/autocorrect/schema.json
+# AutoCorrect 配置：中英文混排空格 + 标点全角/半角自动纠正
+# 规则级别: 0 - off, 1 - error, 2 - warning
+rules:
+  # CJK 与英文单词之间补空格
+  space-word: 1
+  # CJK 与部分标点之间补空格
+  space-punctuation: 1
+  # CJK 附近的括号 () [] 补空格
+  space-bracket: 1
+  # CJK 附近的反引号 `` 补空格
+  space-backticks: 1
+  space-dash: 0
+  space-dollar: 0
+  # CJK 附近标点转全角
+  fullwidth: 1
+  # 全角标点附近去空格
+  no-space-fullwidth: 1
+  # 全角字母数字转半角
+  halfwidth-word: 1
+  # 英文语境标点转半角
+  halfwidth-punctuation: 1
+  # 拼写检查关闭——由 typos 专职负责
+  spellcheck: 0
+context:
+  # Markdown 代码块内容不纠正
+  codeblock: 1

@@ -29,9 +29,9 @@
 | **Token 计算方式** | count_tokens_approximately（LangChain 方法） | 估算 | Token.estimate()（字符估算） | 调用方提供 currentTokenCount | 字符数 ÷ 4，图片固定 1600 tokens | API 返回的 usage 字段 | API 返回 |
 | **Compaction 触发时机** | 预飞检测 + ContextOverflowError 响应式 | 每次调用前检查阈值 | 流式处理中检测 overflow，中断流重触发 | 预飞（assemble 前）+ budget/threshold 两种目标 | 预飞多 pass（最多 3 次），API 报错后响应式 | 每 turn 结束后（可自定义 lambda） | 服务端实时检测 |
 | **动态感知 context window** | model.profile["max_input_tokens"] | context_window_tokens 配置参数 | model.limit.context（来自 models.dev） | tokenBudget 由 runner 注入 | 10 步骤查询链（OpenRouter→硬编码→fallback 256K） | API 返回的 usage 数据 | 模型元数据 |
-| **Tool-Call 裁剪** | read_file 截断 4K 字符，其余 offload 到文件 | 工具结果单独处理 | 2000 字符上限，prune 标记旧工具输出 | 支持 tokensBefore/tokensAfter 跟踪 | 3 轮预处理（去重→1行摘要→截断参数） | 通过 compacted 候选项跟踪 | 服务端处理 |
+| **Tool-Call 裁剪** | read_file 截断 4K 字符，其余 offload 到文件 | 工具结果单独处理 | 2000 字符上限，prune 标记旧工具输出 | 支持 tokensBefore/tokensAfter 跟踪 | 3 轮预处理（去重→1 行摘要→截断参数） | 通过 compacted 候选项跟踪 | 服务端处理 |
 | **孤立 tool_result 修复** | 过滤孤立 ToolMessage | sanitize_conversation_messages() | prune 停在 summary 边界，保留完整对 | 委托给 runtime | 压缩后主动插入 stub result / 删除孤立 use | responses.compact 内部处理 | API 内部处理 |
-| **File System Offload** | FilesystemMiddleware：工具结果超 20K tokens 写入 /large_tool_results/ | 无明确证据 | 无（压缩+截断策略） | 无明确证据 | @file:/@folder: 引用，50%/25% context 配额 | 无 | 无 |
+| **File System Offload** | FilesystemMiddleware：工具结果超 20K tokens 写入 /large_tool_results/ | 无明确证据 | 无（压缩 + 截断策略） | 无明确证据 | @file:/@folder: 引用，50%/25% context 配额 | 无 | 无 |
 | **MCP 支持** | 有 | 有 | 有 | 有 | 有 | 有 | 有 |
 | **语言** | Python | Python | TypeScript | TypeScript | Python | Python | — |
 
@@ -470,7 +470,7 @@ def sanitize_conversation_messages(messages):
 # 工具结果 > 20,000 tokens 时立即写入文件系统
 tool_token_limit_before_evict = 20000
 # 写入：/large_tool_results/{tool_call_id}
-# 消息替换为：预览（头5行+尾5行）+ 文件路径引用
+# 消息替换为：预览（头 5 行 + 尾 5 行）+ 文件路径引用
 ```
 
 **被动 offload（LLM 调用前）**：

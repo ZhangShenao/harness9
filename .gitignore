@@ -21,6 +21,9 @@ reports/
 # 本地临时目录
 tmp/
 
+# git worktree 隔离工作区（superpowers 工作流使用）
+.worktrees/
+
 # autodev：git worktree 临时工作区（/autodev 命令生成）
 .autodev/
 
@@ -54,3 +57,7 @@ __pycache__/
 
 # 本地分析缓存（Go 模块缓存等生成物，体积大，不纳入版本控制）
 .analysis-cache/
+
+# CI 质量报告数据管线生成物（覆盖率 profile、jscpd json 报告）
+coverage.out
+jscpd-report/

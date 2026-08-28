@@ -44,7 +44,7 @@ func TestStoreAddAndGet(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	if fetched.Content != "项目使用 Go 1.25.3" || fetched.Importance != 7 {
-		t.Errorf("Get 内容不符: %+v", fetched)
+		t.Errorf("Get 内容不符：%+v", fetched)
 	}
 }
 
@@ -116,7 +116,7 @@ func TestStoreUpdate(t *testing.T) {
 	}
 	got, _ := s.Get(ctx, e.ID)
 	if got.Title != "新标题" || got.Content != "新内容" || got.Importance != 9 {
-		t.Errorf("更新未生效: %+v", got)
+		t.Errorf("更新未生效：%+v", got)
 	}
 	if got.Signature != Signature("新内容") {
 		t.Error("更新内容应重算签名")

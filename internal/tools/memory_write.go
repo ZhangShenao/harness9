@@ -76,7 +76,7 @@ type memoryWriteArgs struct {
 func (t *MemoryWriteTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var in memoryWriteArgs
 	if err := json.Unmarshal(args, &in); err != nil {
-		return "", fmt.Errorf("参数解析失败: %w", err)
+		return "", fmt.Errorf("参数解析失败：%w", err)
 	}
 
 	var result string
@@ -90,7 +90,7 @@ func (t *MemoryWriteTool) Execute(ctx context.Context, args json.RawMessage) (st
 			Importance: in.Importance, TTLDays: in.TTLDays, Tags: in.Tags,
 		})
 		if err != nil {
-			return "", fmt.Errorf("写入记忆失败: %w", err)
+			return "", fmt.Errorf("写入记忆失败：%w", err)
 		}
 		result = mustJSON(e)
 	case "update":
@@ -104,7 +104,7 @@ func (t *MemoryWriteTool) Execute(ctx context.Context, args json.RawMessage) (st
 		// 如需设为 0，需先 remove 再 add。这是简化设计的权衡，LLM 极少需要将重要度降为 0。
 		existing, err := t.store.Get(ctx, in.ID)
 		if err != nil {
-			return "", fmt.Errorf("查询待更新记忆失败: %w", err)
+			return "", fmt.Errorf("查询待更新记忆失败：%w", err)
 		}
 		if in.Title != "" {
 			existing.Title = in.Title
@@ -125,7 +125,7 @@ func (t *MemoryWriteTool) Execute(ctx context.Context, args json.RawMessage) (st
 			existing.Tags = in.Tags
 		}
 		if err := t.store.Update(ctx, existing); err != nil {
-			return "", fmt.Errorf("更新记忆失败: %w", err)
+			return "", fmt.Errorf("更新记忆失败：%w", err)
 		}
 		result = mustJSON(existing)
 	case "remove":
@@ -133,7 +133,7 @@ func (t *MemoryWriteTool) Execute(ctx context.Context, args json.RawMessage) (st
 			return "", fmt.Errorf("remove 需要 id")
 		}
 		if err := t.store.SoftDelete(ctx, in.ID); err != nil {
-			return "", fmt.Errorf("删除记忆失败: %w", err)
+			return "", fmt.Errorf("删除记忆失败：%w", err)
 		}
 		result = mustJSON(map[string]string{"status": "removed", "id": in.ID})
 	default:

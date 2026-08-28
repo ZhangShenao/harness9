@@ -48,7 +48,7 @@ func TestSampleByRepo(t *testing.T) {
 
 	sampled := sampleByRepo(instances, 2, 42)
 
-	// django 3条取2, astropy 2条取2, flask 1条取1 → 共 5 条
+	// django 3 条取 2, astropy 2 条取 2, flask 1 条取 1 → 共 5 条
 	if len(sampled) != 5 {
 		t.Fatalf("want 5 sampled instances, got %d", len(sampled))
 	}

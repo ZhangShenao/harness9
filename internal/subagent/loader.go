@@ -28,7 +28,7 @@ func (r *Registry) LoadFromDir(dir string) error {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("读取 agents 目录失败: %w", err)
+		return fmt.Errorf("读取 agents 目录失败：%w", err)
 	}
 
 	for _, entry := range entries {

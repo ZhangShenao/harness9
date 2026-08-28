@@ -31,7 +31,7 @@ Build a REST API server
 The project uses Go 1.25 with chi router. Main file is cmd/server/main.go.
 
 ## Offloaded References
-- .harness9/tool_results/sess1/call_1.txt (bash, 150行) - ls output`
+- .harness9/tool_results/sess1/call_1.txt (bash, 150 行) - ls output`
 
 	anchors, summary := memory.ParseAnchorsAndSummary(input)
 	if len(anchors) != 5 {

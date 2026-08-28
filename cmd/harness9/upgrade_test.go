@@ -275,7 +275,7 @@ func TestFetchLatestRelease(t *testing.T) {
 		t.Fatalf("期望 %q，得到 %q", rel.TagName, got.TagName)
 	}
 	if len(got.Assets) != 1 || got.Assets[0].Name != rel.Assets[0].Name {
-		t.Fatalf("Assets 不匹配: %+v", got.Assets)
+		t.Fatalf("Assets 不匹配：%+v", got.Assets)
 	}
 }
 

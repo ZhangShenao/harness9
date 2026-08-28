@@ -1,0 +1,11 @@
+{
+  "path": ["internal", "cmd"],
+  "formats": ["go"],
+  "minTokens": 50,
+  "minLines": 5,
+  "threshold": 5,
+  "reporters": ["consoleFull", "json"],
+  "output": "jscpd-report",
+  "gitignore": true,
+  "ignore": ["**/*_test.go"]
+}

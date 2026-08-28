@@ -68,7 +68,7 @@ func TestBuildPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("非空数据以M开头且area以Z闭合", func(t *testing.T) {
+	t.Run("非空数据以 M 开头且 area 以 Z 闭合", func(t *testing.T) {
 		points := []dailyPoint{
 			{Date: day(t, "2026-05-01"), Count: 1},
 			{Date: day(t, "2026-05-02"), Count: 2},

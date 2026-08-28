@@ -45,7 +45,7 @@
 
 ## 2. 各框架调研
 
-### 2.1 DeepAgents（LangChain）
+### 2.1 DeepAgents (LangChain)
 
 **基础信息**
 
@@ -212,7 +212,7 @@ assert os.environ.get("LANGSMITH_TRACING"), "LangSmith tracing required"
 
 ---
 
-### 2.2 OpenHarness（HKUDS）
+### 2.2 OpenHarness (HKUDS)
 
 **基础信息**
 
@@ -313,7 +313,7 @@ failure_stages = [
 
 ---
 
-### 2.3 OpenCode（Anomaly）
+### 2.3 OpenCode (Anomaly)
 
 **基础信息**
 
@@ -451,7 +451,7 @@ advisory_flag: true  # non-critical provider 测试不阻塞发布
 
 ---
 
-### 2.5 HermesAgent（NousResearch）
+### 2.5 HermesAgent (NousResearch)
 
 **基础信息**
 
@@ -598,7 +598,7 @@ env:
 
 ---
 
-### 2.6 Claude Agent SDK（Anthropic）
+### 2.6 Claude Agent SDK (Anthropic)
 
 **基础信息**
 
@@ -768,7 +768,7 @@ for await (const message of query({
 | Sub-Agent 追踪 | LangSmith | 团队状态 | 无 | agent_id 事件 | 无 | ✅ Span 嵌套 |
 | W3C Trace Context | 无 | 无 | 无 | 无 | 无 | ✅ 自动传播 |
 | 第三方平台接入 | LangSmith | 无 | 无 | 无 | 无 | Langfuse/DD/Grafana |
-| 开箱即用程度 | 中（需 LangSmith账号） | 低 | 低 | 中（需集成事件） | 低 | 高（环境变量启用） |
+| 开箱即用程度 | 中（需 LangSmith 账号） | 低 | 低 | 中（需集成事件） | 低 | 高（环境变量启用） |
 
 ### 3.3 CI/CD 对比
 
@@ -790,7 +790,7 @@ for await (const message of query({
 | 接入成熟生态（LangSmith） | DeepAgents | 开箱即用 UI；历史数据对比；多人协作 | 外部依赖；数据出境；月费 |
 | 接入成熟生态（OpenTelemetry） | Claude Agent SDK | 标准化；接入任意 OTEL 兼容后端 | 需自建收集器；Traces 仍是 Beta |
 | 自研可观测层 | OpenClaw（CoreAgentHarness） | 完全掌控；无外部依赖；深度定制 | 开发成本高；功能难追主流工具 |
-| 混合（日志+基础指标） | HermesAgent | 成本低；简单 | 可视化差；跨 session 分析困难 |
+| 混合（日志 + 基础指标） | HermesAgent | 成本低；简单 | 可视化差；跨 session 分析困难 |
 
 ---
 

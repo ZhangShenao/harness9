@@ -605,7 +605,7 @@ class TodoStore:
     def format_for_injection(self) -> str:
         """格式化为字符串，注入到上下文压缩后的消息中"""
         # 只包含 pending/in_progress 状态的任务
-        # 格式: [x] completed, [>] in_progress, [ ] pending, [~] cancelled
+        # 格式：[x] completed, [>] in_progress, [ ] pending, [~] cancelled
         ...
 ```
 
@@ -957,7 +957,7 @@ graph TB
 | **Human-in-Loop** | ✗ | ✓（blocked 状态） | ✓（plan review dialog） | ✓（blocked 状态） | ✓（blocked 状态） | ✓（plan review+auto mode fallback） |
 | **并行执行** | ✓（Async Sub-agents） | 否（串行） | ✗ | ✓（多 Flow 并发） | ✓（多 Worker） | ✓（multi-agent） |
 | **云端 Planning** | ✗ | ✗ | ✗ | ✗ | ✗ | ✓（Ultraplan） |
-| **Plan 文档输出** | ✗ | ✗ | ✓（.opencode/plans/） | ✗ | ✓（.plans/） | ✓（直接展示+编辑） |
+| **Plan 文档输出** | ✗ | ✗ | ✓（.opencode/plans/） | ✗ | ✓（.plans/） | ✓（直接展示 + 编辑） |
 
 ### 设计模式提炼
 

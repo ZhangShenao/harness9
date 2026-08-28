@@ -63,7 +63,7 @@ func (t *BashTool) runLocal(ctx context.Context, cmd string, timeout time.Durati
 
 问题出在 bash 的后台任务（job control）语义：形如 `A && B &` 时，`&` 作用于**整个 `A && B` 复合列表**，bash 会为这个复合列表 fork 一个子 shell 去异步执行，父 shell 立即返回。`nohup python server.py > /app/server.log 2>&1` 这部分内部命令的 stdout/stderr 确实被 `nohup` 正确重定向到了文件——但 fork 出来执行 `cd /app && nohup ... &` 这个复合列表的中间子 shell 进程，在 fork 那一刻已经**继承**了顶层 `bash -c` 进程的 stdout/stderr pipe 写端副本，且这一层不会被 `nohup` 的重定向影响（重定向只发生在 `nohup` exec 替换之后的最终进程里）。只要这个中间层/最终的后台进程还活着，pipe 写端就还有存活的持有者，Go 侧的 `Wait()` 就会一直阻塞。
 
-`echo "PID: $!"` 这条同一命令里的后续语句会立即执行并打印，但因为它和 `&` 之前的整段命令是**同一次 `bash -c` 调用**，Go 侧看到的不是"某一行的输出"，而是整个进程的"退出+关闭所有 fd"，只要背景进程还没退出，`Wait()` 就不会返回，`echo` 的输出也无法被读到——因为 `CombinedOutput()` 是"进程退出后一次性读取全部缓冲"的模式，不是流式的。
+`echo "PID: $!"` 这条同一命令里的后续语句会立即执行并打印，但因为它和 `&` 之前的整段命令是**同一次 `bash -c` 调用**，Go 侧看到的不是"某一行的输出"，而是整个进程的"退出 + 关闭所有 fd"，只要背景进程还没退出，`Wait()` 就不会返回，`echo` 的输出也无法被读到——因为 `CombinedOutput()` 是"进程退出后一次性读取全部缓冲"的模式，不是流式的。
 
 ### 1.3 最小复现（已验证，非源码阅读猜测）
 
@@ -144,7 +144,7 @@ out, err := c.CombinedOutput()
 ### P2 — 低风险收敛项
 
 6. **kv-store-grpc 类"启动后台服务"场景的 prompt 引导**（可选，缓解而非根治）：`internal/context/builder.go` 的 `DefaultPromptBuilder` 可以补充一条通用建议——"启动长期运行的后台进程时，优先用 `setsid cmd < /dev/null > out.log 2>&1 &` 或将进程组隔离交给外层脚本处理，避免复合命令整体被 `&&` 链接后台化"。这只是缓解手段，**不能替代 P0 的工具层修复**，因为不能假设所有场景下 LLM 都会主动选用这种更安全的模式（本次 kv-store-grpc 两次轨迹里 LLM 用的都是最直觉、最常见的 `nohup ... &` 写法，这恰恰是大多数人类工程师也会写的模式）。
-7. **错误消息可观测性**：R2 命中的三个任务里，harness9 进程非零退出前打印的最终一行是"错误: 模型生成失败 (turn 1): ..."，这条信息在 Harbor 的 `result.json` 里被归入笼统的 `RuntimeError`/退出码，不便于批量筛查"这是 TLS 类基础设施故障还是真实任务失败"。建议为 `generateWithRetry` 耗尽后的最终错误加一个机器可读的错误分类前缀（如 `[NETWORK]`/`[AUTH]`/`[UNKNOWN]`），便于评测脚本自动过滤基础设施噪声、不需要每次都靠人工读日志判断。
+7. **错误消息可观测性**：R2 命中的三个任务里，harness9 进程非零退出前打印的最终一行是"错误：模型生成失败 (turn 1): ..."，这条信息在 Harbor 的 `result.json` 里被归入笼统的 `RuntimeError`/退出码，不便于批量筛查"这是 TLS 类基础设施故障还是真实任务失败"。建议为 `generateWithRetry` 耗尽后的最终错误加一个机器可读的错误分类前缀（如 `[NETWORK]`/`[AUTH]`/`[UNKNOWN]`），便于评测脚本自动过滤基础设施噪声、不需要每次都靠人工读日志判断。
 
 ---
 

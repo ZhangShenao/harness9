@@ -42,6 +42,6 @@ func TestRegistryListSorted(t *testing.T) {
 	_ = r.Register(validDef("mike"))
 	list := r.List()
 	if len(list) != 3 || list[0].Name != "alpha" || list[1].Name != "mike" || list[2].Name != "zebra" {
-		t.Fatalf("List 未按名称排序: %+v", list)
+		t.Fatalf("List 未按名称排序：%+v", list)
 	}
 }

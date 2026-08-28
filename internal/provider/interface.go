@@ -24,7 +24,7 @@ import (
 type LLMProvider interface {
 	// Generate 将对话历史和可用工具定义发送给 LLM，返回模型的完整响应 Message 和 token 用量。
 	//
-	// 参数:
+	// 参数：
 	//   - ctx: 控制底层 HTTP 调用的取消和超时
 	//   - messages: 完整的对话上下文，包含 system prompt、之前的 user/assistant 消息、
 	//     以及工具 Observation

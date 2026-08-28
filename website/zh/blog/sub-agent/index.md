@@ -31,7 +31,7 @@ harness9 是一款 Local-First、轻量级、功能完备、生产可用的通�
 
 ## 本文你将学到
 
-- 读完开篇就能建立起"如何创建SubAgent"和"如何委派SubAgent"的完整心智模型，不用读到文末才拼出全貌
+- 读完开篇就能建立起"如何创建 SubAgent"和"如何委派 SubAgent"的完整心智模型，不用读到文末才拼出全貌
 - 看清 `task` 工具的参数 schema 怎么设计、`Execute` 怎么在前台阻塞与后台立即返回之间切换，以及为什么委派被做成一个普通 tool 而非新协议
 - 看清 `ResolveTools` 如何保证委派链上权限只能收紧、不能扩张
 - 掌握 Runner 中前台/后台两种 execCtx 派生策略，以及为什么要绕开父工具的 60s 超时
@@ -52,7 +52,7 @@ stream, err := sub.RunStream(execCtx, prompt)
 
 `Runner.Run` 里这两行就是 SubAgent 的全部执行内核。没有单独的 SubAgent Loop，没有专门调度器。SubAgent 和 MainAgent 所执行的的是同一个标准 ReAct 循环，区别只在工具集更窄、Session 更干净、Context 派生方式不同。
 
-![主代理与SubAgent共用同一套 AgentEngine 执行内核](/blog/sub-agent/images/shared-engine-kernel-01.png)
+![主代理与 SubAgent 共用同一套 AgentEngine 执行内核](/blog/sub-agent/images/shared-engine-kernel-01.png)
 
 
 ---
@@ -95,7 +95,7 @@ func (r *Registry) List() []SubAgentDefinition
 | `task` 工具 | 主 LLM 的 ToolCall | 是——LLM 自主选择 `subagent_type` 与 `prompt` | 前台阻塞（默认）或后台异步（`background=true`） |
 | `@agent` 直跑 | 用户输入框 `@agent-name 任务描述` | 否——完全绕开 LLM 工具决策 | 仅前台阻塞 |
 
-`task` 工具是委派系统对主 LLM 暴露的唯一接口，既是发起委派的入口，也是选前台还是后台的开关。`@agent` 是给人类留的旁路，用于"我现在就要看到这个SubAgent 实时输出"的场景，代价是只支持前台。
+`task` 工具是委派系统对主 LLM 暴露的唯一接口，既是发起委派的入口，也是选前台还是后台的开关。`@agent` 是给人类留的旁路，用于"我现在就要看到这个 SubAgent 实时输出"的场景，代价是只支持前台。
 
 两条路最终都会走到同一个 `Runner.Run`——委派的"决策"可以有两种发起方式，但"执行"只有一套实现。
 
@@ -117,7 +117,7 @@ func (t *TaskTool) Definition() schema.ToolDefinition {
     defs := t.reg.List()
     names := make([]string, 0, len(defs))
     var sb strings.Builder
-    sb.WriteString("把一个边界清晰的任务委派给专门的SubAgent执行。SubAgent拥有独立上下文与受限工具集。\n可用SubAgent：\n")
+    sb.WriteString("把一个边界清晰的任务委派给专门的 SubAgent 执行。SubAgent 拥有独立上下文与受限工具集。\n可用 SubAgent：\n")
     for _, d := range defs {
         names = append(names, d.Name)
         fmt.Fprintf(&sb, "- %s: %s\n", d.Name, d.Description)
@@ -130,14 +130,14 @@ func (t *TaskTool) Definition() schema.ToolDefinition {
             "properties": map[string]any{
                 "subagent_type": map[string]any{
                     "type": "string", "enum": names,
-                    "description": "要调用的SubAgent类型名称",
+                    "description": "要调用的 SubAgent 类型名称",
                 },
                 "description": map[string]any{
                     "type": "string", "description": "任务的简短标题（3-5 词，用于 UI 展示）",
                 },
                 "prompt": map[string]any{
                     "type":        "string",
-                    "description": "传给SubAgent的完整任务描述。SubAgent看不到主对话历史，所有必要信息（文件路径、背景、要求）都要写在这里。",
+                    "description": "传给 SubAgent 的完整任务描述。SubAgent 看不到主对话历史，所有必要信息（文件路径、背景、要求）都要写在这里。",
                 },
                 "background": map[string]any{
                     "type":        "boolean",
@@ -152,7 +152,7 @@ func (t *TaskTool) Definition() schema.ToolDefinition {
 
 四个参数各司其职，没一个多余：
 
-- `subagent_type` 是唯一必填枚举，`enum` 数组直接从 `Registry.List()` 现算，所以永远和实际注册的SubAgent保持同步——新增一个 `.harness9/agents/*.md` 文件不用改任何 schema 代码。这也是"创建"和"委派"两个阶段的直接接口：`Registry` 里有什么，`task` 就能委派给什么。
+- `subagent_type` 是唯一必填枚举，`enum` 数组直接从 `Registry.List()` 现算，所以永远和实际注册的 SubAgent 保持同步——新增一个 `.harness9/agents/*.md` 文件不用改任何 schema 代码。这也是"创建"和"委派"两个阶段的直接接口：`Registry` 里有什么，`task` 就能委派给什么。
 - `prompt` 是唯一必填的自由文本参数，是父子之间的唯一信息通道，description 里直接写明"SubAgent 看不到主对话历史"——把架构约束翻译成 LLM 能懂的提示词。
 - `description` 只是 UI 装饰字段，展示用，不参与执行逻辑，跟机制字段分得很干净。
 - `background` 默认 `false`（阻塞），用于控制 SubAgent 的执行模式（前台/后台）
@@ -167,7 +167,7 @@ func (t *TaskTool) Definition() schema.ToolDefinition {
 func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
     var a taskArgs
     if err := json.Unmarshal(args, &a); err != nil {
-        return "", fmt.Errorf("参数解析失败: %w", err)
+        return "", fmt.Errorf("参数解析失败：%w", err)
     }
     if a.SubAgentType == "" {
         return "", fmt.Errorf("subagent_type 不能为空")
@@ -220,7 +220,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 `TaskTool` 唯一的特殊之处，是它实现了 `tools.BaseTool` 接口——`Name()` / `Definition()` / `Execute()`，跟 `bash`、`read_file`、`write_file` 长得一模一样。这个决定看着朴素，其实是整个委派系统能零侵入接入 Engine 的关键：
 
 - Engine 的主循环、Hook 链、超时控制、并发调度、审批弹窗、TUI 渲染，全都是围绕"工具调用"这一个抽象写的。委派要复用这套基建，最省事的办法就是让它长得像一次工具调用。
-- `HookRegistry` 不用为 `task` 写任何特殊分支。`danger_hook`、`offload_hook` 该怎么包 `bash` 就怎么包 `task`——`task` 唯一被特殊对待的地方在SubAgent内部（`denyTaskHook` 拒绝再调用它），对父代理这层它就是个普通工具。
+- `HookRegistry` 不用为 `task` 写任何特殊分支。`danger_hook`、`offload_hook` 该怎么包 `bash` 就怎么包 `task`——`task` 唯一被特殊对待的地方在 SubAgent 内部（`denyTaskHook` 拒绝再调用它），对父代理这层它就是个普通工具。
 - LLM 侧也不用学新协议。模型早就会发 ToolCall，把委派做成工具调用就不用额外的 prompt 工程去教它一种新交互模式——调用 `task` 和调用 `bash` 走的是同一个认知路径。
 
 一句话：**把委派做成 tool，是用一个已经验证过的抽象（工具调用）去承载新能力（SubAgent 委派），而不是另起炉灶发明新抽象**。这跟 harness9"最小化抽象层"的理念完全一致。
@@ -253,7 +253,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 ```go
 subAgentReg.Register(subagent.SubAgentDefinition{
     Name:         "general-purpose",
-    Description:  "通用SubAgent，处理需要兼顾探索与修改、复杂推理或多步依赖的任务...",
+    Description:  "通用 SubAgent，处理需要兼顾探索与修改、复杂推理或多步依赖的任务...",
     SystemPrompt: generalPurposeSystemPrompt,
     Source:       "builtin", // Tools/Model/MaxTurns 均留空
 })
@@ -261,7 +261,7 @@ subAgentReg.Register(subagent.SubAgentDefinition{
 
 `Tools` 留空 = 继承父代理**全部**可用工具；`Model` 留空 = 继承父代理模型；`MaxTurns` 留空 = 继承引擎默认轮数。它不缩小能力边界，只缩小**上下文范围**——委派给它的价值不在限制它能做什么，而在把冗长中间过程隔离在子会话里，只回传一份结论。
 
-当需要特定领域的 SubAgent （安全审计、文档撰写）时，harness9 的建议是走文件式定义，别往内核里堆更多编程式内置——保持核心精简，专门化交给项目侧。
+当需要特定领域的 SubAgent（安全审计、文档撰写）时，harness9 的建议是走文件式定义，别往内核里堆更多编程式内置——保持核心精简，专门化交给项目侧。
 
 ---
 
@@ -303,7 +303,7 @@ func parseAgentFile(content string) (SubAgentDefinition, error) {
 
 没引入 YAML 库，因为 frontmatter 字段集合固定又扁平，手写解析比引入 `gopkg.in/yaml.v3` 更符合"最小化抽象层"的原则。`LoadFromDir` 扫描时，目录不存在就静默返回 nil——零配置也能跑；单文件解析失败只记 warning 不中断；文件定义覆盖同名编程式定义（记日志），所以项目可以直接用文件定义盖掉内置的 `general-purpose`。
 
-![文件式SubAgent定义从 Markdown 到注册表的加载路径](/blog/sub-agent/images/file-based-agent-loading-04.png)
+![文件式 SubAgent 定义从 Markdown 到注册表的加载路径](/blog/sub-agent/images/file-based-agent-loading-04.png)
 
 
 ---
@@ -356,7 +356,7 @@ type denyTaskHook struct{}
 
 func (denyTaskHook) BeforeExecute(ctx context.Context, tc schema.ToolCall) (context.Context, hooks.HookDecision, error) {
     if tc.Name == "task" {
-        return ctx, hooks.Deny("SubAgent不允许再派生SubAgent"), nil
+        return ctx, hooks.Deny("SubAgent 不允许再派生 SubAgent"), nil
     }
     return ctx, hooks.Allow(), nil
 }
@@ -401,7 +401,7 @@ func (b *promptBuilder) Build() string {
 
 `promptBuilder` 通过结构类型隐式满足 `engine.PromptBuilder` 接口，不用 `import engine`——这是 harness9 一贯避免循环依赖的手法（subagent 依赖 engine，engine 不反向依赖 subagent）。
 
-说白了，**SubAgent 启动时对父对话一无所知。`task` 工具的 `prompt` 参数是父子之间唯一的信息通道**——文件路径、背景信息、任务要求，全得靠 LLM 显式写进 prompt 字符串。这不是遗漏，是刻意的约束：**上下文隔离的价值就在于强制主 LLM 把任务描述清楚，而不是指望"SubAgent反正能看到全部历史**。
+说白了，**SubAgent 启动时对父对话一无所知。`task` 工具的 `prompt` 参数是父子之间唯一的信息通道**——文件路径、背景信息、任务要求，全得靠 LLM 显式写进 prompt 字符串。这不是遗漏，是刻意的约束：**上下文隔离的价值就在于强制主 LLM 把任务描述清楚，而不是指望"SubAgent 反正能看到全部历史**。
 
 ---
 
@@ -420,7 +420,7 @@ case engine.EventApprovalRequired:
     }
     if background || parentApproval == nil {
         req.ResponseCh <- hooks.ApprovalResponse{Approved: false,
-            Feedback: "SubAgent无可用审批通道，已自动拒绝"}
+            Feedback: "SubAgent 无可用审批通道，已自动拒绝"}
     } else {
         req.ResponseCh <- parentApproval(execCtx, req.ToolCall, req.Reason, req.RiskLevel)
     }

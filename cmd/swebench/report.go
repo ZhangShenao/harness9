@@ -44,7 +44,7 @@ func loadExistingIDs(path string) (map[string]bool, error) {
 func appendPrediction(path string, p Prediction) error {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("打开 predictions 文件失败: %w", err)
+		return fmt.Errorf("打开 predictions 文件失败：%w", err)
 	}
 	defer f.Close()
 	data, err := json.Marshal(p)
@@ -59,12 +59,12 @@ const summaryTmpl = `# SWE-bench Lite Run Summary
 
 - RunID: {{.RunID}}
 - 采样 seed: {{.Seed}}（同 seed 可复现同一实例集）
-- 开始时间: {{.StartTime}}
-- 结束时间: {{.EndTime}}
-- 总实例数: {{.Total}}
+- 开始时间：{{.StartTime}}
+- 结束时间：{{.EndTime}}
+- 总实例数：{{.Total}}
 - 成功生成 patch: {{.WithPatch}} / {{.Total}}
 - 空 patch（agent 无改动）: {{.EmptyPatch}}
-- 运行出错: {{.Errors}}
+- 运行出错：{{.Errors}}
 
 ## 按 Repo 分布
 

@@ -79,14 +79,14 @@ func RunUpgrade(currentVersion string) error {
 	// 下载到临时目录
 	tmpDir, err := os.MkdirTemp("", "harness9-upgrade-*")
 	if err != nil {
-		return fmt.Errorf("创建临时目录失败: %w", err)
+		return fmt.Errorf("创建临时目录失败：%w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	fmt.Printf("正在下载 %s...\n", tarballName)
 	tarballPath := filepath.Join(tmpDir, tarballName)
 	if err := downloadFile(tarballURL, tarballPath); err != nil {
-		return fmt.Errorf("下载失败: %w", err)
+		return fmt.Errorf("下载失败：%w", err)
 	}
 
 	// SHA256 校验（若 checksumURL 不为空）
@@ -97,7 +97,7 @@ func RunUpgrade(currentVersion string) error {
 		} else {
 			fmt.Println("正在校验 SHA256...")
 			if err := verifySHA256(tarballPath, tarballName, checksumPath); err != nil {
-				return fmt.Errorf("SHA256 校验失败: %w", err)
+				return fmt.Errorf("SHA256 校验失败：%w", err)
 			}
 		}
 	}
@@ -109,7 +109,7 @@ func RunUpgrade(currentVersion string) error {
 		return err
 	}
 	if err := os.Chmod(binaryPath, 0755); err != nil {
-		return fmt.Errorf("设置执行权限失败: %w", err)
+		return fmt.Errorf("设置执行权限失败：%w", err)
 	}
 
 	// 原子替换当前可执行文件
@@ -136,7 +136,7 @@ func fetchLatestRelease() (*githubRelease, error) {
 	url := "https://api.github.com/repos/" + githubRepo + "/releases/latest"
 	resp, err := httpClient.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("请求 GitHub API 失败: %w", err)
+		return nil, fmt.Errorf("请求 GitHub API 失败：%w", err)
 	}
 	defer resp.Body.Close()
 
@@ -146,7 +146,7 @@ func fetchLatestRelease() (*githubRelease, error) {
 
 	var rel githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return nil, fmt.Errorf("解析版本信息失败: %w", err)
+		return nil, fmt.Errorf("解析版本信息失败：%w", err)
 	}
 	return &rel, nil
 }
@@ -235,13 +235,13 @@ func readExpectedChecksum(checksumPath, tarballName string) (string, error) {
 func extractBinary(tarballPath, binaryName, destPath string) error {
 	f, err := os.Open(tarballPath)
 	if err != nil {
-		return fmt.Errorf("打开压缩包失败: %w", err)
+		return fmt.Errorf("打开压缩包失败：%w", err)
 	}
 	defer f.Close()
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return fmt.Errorf("解压 gzip 失败: %w", err)
+		return fmt.Errorf("解压 gzip 失败：%w", err)
 	}
 	defer gz.Close()
 
@@ -252,7 +252,7 @@ func extractBinary(tarballPath, binaryName, destPath string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("读取 tar 失败: %w", err)
+			return fmt.Errorf("读取 tar 失败：%w", err)
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			continue
@@ -263,12 +263,12 @@ func extractBinary(tarballPath, binaryName, destPath string) error {
 
 		out, err := os.Create(destPath)
 		if err != nil {
-			return fmt.Errorf("创建输出文件失败: %w", err)
+			return fmt.Errorf("创建输出文件失败：%w", err)
 		}
 		_, copyErr := io.Copy(out, tr)
 		out.Close()
 		if copyErr != nil {
-			return fmt.Errorf("写入二进制文件失败: %w", copyErr)
+			return fmt.Errorf("写入二进制文件失败：%w", copyErr)
 		}
 		return nil
 	}
@@ -278,11 +278,11 @@ func extractBinary(tarballPath, binaryName, destPath string) error {
 func resolveExecutablePath() (string, error) {
 	p, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("获取当前可执行文件路径失败: %w", err)
+		return "", fmt.Errorf("获取当前可执行文件路径失败：%w", err)
 	}
 	p, err = filepath.EvalSymlinks(p)
 	if err != nil {
-		return "", fmt.Errorf("解析符号链接失败: %w", err)
+		return "", fmt.Errorf("解析符号链接失败：%w", err)
 	}
 	return p, nil
 }

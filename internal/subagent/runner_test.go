@@ -43,7 +43,7 @@ func TestRunnerForegroundOutlivesParentToolTimeout(t *testing.T) {
 
 // 说明：前台对"真正取消"（Ctrl+C，Cause != DeadlineExceeded）的传播由 Runner 的 watcher
 // goroutine 负责（见 runner.go），其将取消转发给从 baseCtx 派生的 execCtx，子引擎 runLoop
-// 在每轮顶部检查 ctx.Done() 而中止。该路径依赖 provider 调用honor ctx；当前 mock 的 fn 无 ctx
+// 在每轮顶部检查 ctx.Done() 而中止。该路径依赖 provider 调用 honor ctx；当前 mock 的 fn 无 ctx
 // 参数、无法在同步 Sleep 中响应取消，故不在此用例中断言（真实 provider 的 HTTP 调用会 honor ctx）。
 
 // fakeTool 是一个名称可配置的最小工具，Execute 返回固定文本。
@@ -217,7 +217,7 @@ func TestRunnerForegroundApprovalBridge(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if calls != 1 {
-		t.Fatalf("前台应恰好桥接一次审批到父级, 得 %d", calls)
+		t.Fatalf("前台应恰好桥接一次审批到父级，得 %d", calls)
 	}
 	if sawTool != "read_file" {
 		t.Fatalf("审批工具名应为 read_file, 得 %q", sawTool)
@@ -249,7 +249,7 @@ func TestRunnerBackgroundFailClosed(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if calls != 0 {
-		t.Fatalf("后台模式绝不应升级审批到父级, 但被调用 %d 次", calls)
+		t.Fatalf("后台模式绝不应升级审批到父级，但被调用 %d 次", calls)
 	}
 }
 

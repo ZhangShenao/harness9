@@ -99,7 +99,7 @@ type editFileArgs struct {
 func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var input editFileArgs
 	if err := json.Unmarshal(args, &input); err != nil {
-		return "", fmt.Errorf("参数解析失败: %w", err)
+		return "", fmt.Errorf("参数解析失败：%w", err)
 	}
 
 	fullPath, err := safePath(t.workDir, input.Path)
@@ -112,7 +112,7 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 
 	contentBytes, err := os.ReadFile(fullPath)
 	if err != nil {
-		return "", fmt.Errorf("读取文件失败，请确认路径是否正确: %w", err)
+		return "", fmt.Errorf("读取文件失败，请确认路径是否正确：%w", err)
 	}
 	originalContent := string(contentBytes)
 
@@ -122,7 +122,7 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	}
 
 	if err := os.WriteFile(fullPath, []byte(newContent), 0644); err != nil {
-		return "", fmt.Errorf("写回文件失败: %w", err)
+		return "", fmt.Errorf("写回文件失败：%w", err)
 	}
 
 	// level==1（精确匹配）时改动字节与意图完全一致，可声明权威无需复核；

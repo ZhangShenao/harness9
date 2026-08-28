@@ -139,7 +139,7 @@ func TestSlidingWindow_NoSystemMessage(t *testing.T) {
 // 窗口内保留了 assistant(tool_call)，但其 tool_result 被截出窗口，
 // repairOrphanedToolPairs 应插入占位 tool_result，避免 Anthropic API 400。
 //
-// 布局（6条消息）：
+// 布局（6 条消息）：
 //
 //	[sys, user_old, assistant(tc_done), result(tc_done), assistant(tc_pending), user_latest]
 //
@@ -181,7 +181,7 @@ func TestSlidingWindow_BTypeOrphan_ToolCallWithoutResult(t *testing.T) {
 // 向前回溯逻辑（backward scan）遇到非 tool_result 消息即停止，
 // 导致 result 落入窗口但其 call 仍在 head 中，repairOrphanedToolPairs 应删除该孤立 result。
 //
-// 布局（5条消息）：
+// 布局（5 条消息）：
 //
 //	[sys, assistant(tc_a), user_middle, result(tc_a), user_latest]
 //

@@ -121,7 +121,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, msgs []schema.Message,
 
 	resp, err := p.client.Messages.New(ctx, params)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Anthropic 兼容 API 请求失败: %w", err)
+		return nil, nil, fmt.Errorf("Anthropic 兼容 API 请求失败：%w", err)
 	}
 
 	usage := &schema.Usage{
@@ -418,7 +418,7 @@ func extractSchemaFields(input interface{}) (map[string]any, []string, error) {
 			for _, item := range v {
 				s, ok := item.(string)
 				if !ok {
-					return nil, nil, fmt.Errorf("required 数组中包含非字符串元素: %T", item)
+					return nil, nil, fmt.Errorf("required 数组中包含非字符串元素：%T", item)
 				}
 				required = append(required, s)
 			}

@@ -170,7 +170,7 @@ harness9   # 沙箱根目录 = /your/project
 
 ---
 
-## Project Guidelines（AGENTS.md）
+## Project Guidelines (AGENTS.md)
 
 在项目根目录放置 `AGENTS.md` 文件，Agent 启动时会自动将其内容注入 System Prompt，作为项目级规范和上下文指南。
 

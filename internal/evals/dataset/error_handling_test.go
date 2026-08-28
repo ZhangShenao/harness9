@@ -17,7 +17,7 @@ func TestErrorHandling(t *testing.T) {
 	evals.SetupHermeticEnv(t)
 
 	cases := []*evals.Case{
-		// 用例1：工具失败后改用替代方案。
+		// 用例 1：工具失败后改用替代方案。
 		// 第一次 bash 调用会因命令不存在返回 IsError=true，
 		// 引擎将错误作为 Observation 回传；脚本化的 LLM 随后改用 echo 命令。
 		// 验证：引擎不会因工具 IsError 终止，RunError 仍为 nil。
@@ -49,7 +49,7 @@ func TestErrorHandling(t *testing.T) {
 			},
 		},
 
-		// 用例2：文件写入失败后优雅降级（不再重试写操作）。
+		// 用例 2：文件写入失败后优雅降级（不再重试写操作）。
 		// 验证 LLM 能接受工具错误并给出说明，不陷入无限重试循环。
 		{
 			ID:       "error_handling/write_failure_graceful_stop",
@@ -74,7 +74,7 @@ func TestErrorHandling(t *testing.T) {
 			},
 		},
 
-		// 用例3：MaxTurns 保护——引擎在达到最大轮数时正常终止（不 panic）。
+		// 用例 3：MaxTurns 保护——引擎在达到最大轮数时正常终止（不 panic）。
 		// 使用 MaxTurns=3 的 Case，脚本化的 LLM 连续发起工具调用，
 		// 超过限制后引擎返回 error，RunError 应非 nil（符合预期的受控终止）。
 		{
@@ -119,5 +119,5 @@ func TestErrorHandling(t *testing.T) {
 			t.Logf("   ⚠️ %s: %s", r.Case.ID, w.Error())
 		}
 	}
-	t.Logf("Error Handling 评估: %d/%d 通过", passed, passed+failed)
+	t.Logf("Error Handling 评估：%d/%d 通过", passed, passed+failed)
 }

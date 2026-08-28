@@ -46,7 +46,7 @@
 | **R3** | **HintsText 被丢弃**：`dataset.go` 解析了 `hints_text` 但 `prompt.go` 从未注入；维护者讨论里常含决定性 API 设计（如 flask `text=True`） | runner/prompt | flask-4992 等 | confirmed（独立 bug） |
 | **R4** | **dataset 字段缺失**：未解析 `version`/`environment_setup_commit`/`FAIL_TO_PASS`/`test_patch`，无法 provision、无法选对 Python 版本、无法把测试命令告诉 Agent | runner | 8/8 | confirmed |
 | **R5** | **prompt 反向引导**：`prompt.go:32/48/61` 明示"依赖可能没有、pip 可能不可用，退化为静态分析"，把"放弃验证"写成了官方逃生门 | prompt | 8/8 | confirmed |
-| **R6** | **盲目空转到 max_turns**：无执行反馈时反复静态重读，xarray-3364、pylint-7080 烧满 80 轮被 guillotine 截断，交出臃肿错patch | engine | 2/8 | confirmed |
+| **R6** | **盲目空转到 max_turns**：无执行反馈时反复静态重读，xarray-3364、pylint-7080 烧满 80 轮被 guillotine 截断，交出臃肿错 patch | engine | 2/8 | confirmed |
 | **R7** | **合理但错位的修复**：模型常给出"plausible-but-wrong"补丁——错位置（pylint 应改 `expand_modules` 却改 `pylinter`）、自创 API（flask `mode=` vs gold `text=`）、改行为而非加 DeprecationWarning（xarray-4493） | model→prompt | 6/8 | confirmed（harness 杠杆=验证闭环 + minimal-diff 引导） |
 | **R8** | **edit_file 成功提示抑制验证**：`edit_file.go` 精确匹配时输出"无需额外 grep/sed/read_file 再次确认"，助长"改完即完成"心态 | tools | 多数 | confirmed（措辞需收敛） |
 
@@ -64,9 +64,9 @@
 | flask-4992 | 错 API | 13 | R1/R3/R7 | 自创 `mode="t"`（且 `open(f,"t")` 直接 ValueError）；gold 是 `text=True` —— 决定性命名藏在 **hints_text**，而 hints 从未注入 |
 | flask-5063 | 不完整 | 38 | R1/R2/R7 | 只做了 subdomain 的 "Domain" 列；gold 同时处理 `host_matching`，表头按模式取 "Subdomain"/"Host"。隐藏测试断言这两个字符串 |
 | requests-1963 | 环境主导 | 9 | R1 | 我们的 redirect 修复**可能是对的**；6/7 FAIL_TO_PASS 是无关的 digest-auth 测试，只有真实环境能过 |
-| xarray-3364 | 错位置+超轮 | **80** | R1/R2/R6 | 在 `concat_over` 路径加了 67 行填充；gold 是 `variables_to_merge` 路径删 6 行 `raise`。锚定了**将被 test_patch 删除**的旧断言，刻意保留错误 |
+| xarray-3364 | 错位置 + 超轮 | **80** | R1/R2/R6 | 在 `concat_over` 路径加了 67 行填充；gold 是 `variables_to_merge` 路径删 6 行 `raise`。锚定了**将被 test_patch 删除**的旧断言，刻意保留错误 |
 | xarray-4493 | 错机制 | 50 | R1/R2/R7 | 静默抽取 `.variable`；gold 是发 `DeprecationWarning`。隐藏测试 `pytest.warns(DeprecationWarning)` |
-| pylint-7080 | 错位置+超轮 | **80** | R1/R2/R6 | 在 `pylinter.py` 加一大坨 ignore 检查；gold 仅在 `expand_modules._is_ignored_file` 加一行 `element = os.path.normpath(element)` |
+| pylint-7080 | 错位置 + 超轮 | **80** | R1/R2/R6 | 在 `pylinter.py` 加一大坨 ignore 检查；gold 仅在 `expand_modules._is_ignored_file` 加一行 `element = os.path.normpath(element)` |
 
 ---
 
@@ -97,6 +97,6 @@
 - `read_file` 行号前缀模式（精确定位、减少 edit 多匹配失败）；
 - 并行工具探索（一轮多 grep/read）；
 - "阅读但不修改现有测试"引导（对齐隐藏测试的最强可见信号）；
-- 当前的指数退避生成重试、bash 头+尾截断、safePath 绝对路径分支（均为上一轮 hardening 成果，本轮未再现相关故障）。
+- 当前的指数退避生成重试、bash 头 + 尾截断、safePath 绝对路径分支（均为上一轮 hardening 成果，本轮未再现相关故障）。
 
 所有 P0/P1/P2 改动均为**新增验证能力 + 增强提示**，不削减上述探索能力——成功路径不应回归。

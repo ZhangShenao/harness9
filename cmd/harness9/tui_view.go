@@ -340,7 +340,7 @@ func (m tuiModel) renderTaskPanel() string {
 		return "（无任务）"
 	}
 	if m.taskDetailID == "" {
-		sb.WriteString(m.accentStyle().Render("后台子代理任务  （↑↓ 选择，Enter 查看，Esc 关闭）") + "\n\n")
+		sb.WriteString(m.accentStyle().Render("后台子代理任务（↑↓ 选择，Enter 查看，Esc 关闭）") + "\n\n")
 		list := m.subAgentTracker.List()
 		if len(list) == 0 {
 			sb.WriteString(dimStyle.Render("  暂无后台任务") + "\n")
@@ -508,10 +508,10 @@ func (m tuiModel) renderApprovalDialog() string {
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render(fmt.Sprintf("⚠  工具审批请求 [%s]", riskLabel)))
 	sb.WriteString("\n\n")
-	sb.WriteString(dimStyle.Render("工具: ") + lipgloss.NewStyle().Bold(true).Render(req.ToolCall.Name))
+	sb.WriteString(dimStyle.Render("工具：") + lipgloss.NewStyle().Bold(true).Render(req.ToolCall.Name))
 	if req.Reason != "" {
 		sb.WriteString("\n")
-		sb.WriteString(dimStyle.Render("原因: ") + req.Reason)
+		sb.WriteString(dimStyle.Render("原因：") + req.Reason)
 	}
 	sb.WriteString("\n\n")
 
@@ -625,7 +625,7 @@ func (m tuiModel) View() string {
 }
 
 // renderSandboxBar 渲染 Sandbox 状态栏，仅在有活跃 Sandbox 时显示。
-// 格式: [Sandbox] 3a2f (main) Running │ 7b1c (sub-1) Running
+// 格式：[Sandbox] 3a2f (main) Running │ 7b1c (sub-1) Running
 func (m tuiModel) renderSandboxBar() string {
 	if len(m.sandboxes) == 0 {
 		return ""
@@ -672,7 +672,7 @@ func (m tuiModel) renderSandboxBar() string {
 }
 
 // renderMCPBar 渲染 MCP Server 状态栏，仅在有 MCP Server 时显示。
-// 格式: [MCP] context7 ● 2 tools │ other-server ✗ failed
+// 格式：[MCP] context7 ● 2 tools │ other-server ✗ failed
 func (m tuiModel) renderMCPBar() string {
 	if len(m.mcpServers) == 0 {
 		return ""

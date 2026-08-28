@@ -191,7 +191,7 @@ func (t *TaskTracker) Get(id string) (TaskDetail, bool) {
 // RunningCount 返回运行中任务数。
 func (t *TaskTracker) RunningCount() int { return t.countState(TaskRunning) }
 
-// DoneCount 返回已结束（完成+失败）任务数。
+// DoneCount 返回已结束（完成 + 失败）任务数。
 func (t *TaskTracker) DoneCount() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()

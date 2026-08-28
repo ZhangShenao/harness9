@@ -321,7 +321,7 @@ func (idx *Index) GetFullContent(name string) (string, error) {
 func (t *UseSkillTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
     var a useSkillArgs
     if err := json.Unmarshal(args, &a); err != nil {
-        return "", fmt.Errorf("参数解析失败: %w", err)
+        return "", fmt.Errorf("参数解析失败：%w", err)
     }
     if a.SkillName == "" {
         return "", fmt.Errorf("skill_name 不能为空")
@@ -419,7 +419,7 @@ LLM 自主判断，通过 `use_skill` 工具调用触发。这是生产场景的
 
 **路径二：Slash Command（人工快速通道）**
 
-![图：通过Slash Command执行Skill](/blog/agent-skills/images/slash-command-skill.png)
+![图：通过 Slash Command 执行 Skill](/blog/agent-skills/images/slash-command-skill.png)
 
 CLI REPL 模式下，用户可以直接输入 `/skill-name` 绕过 LLM 判断：
 

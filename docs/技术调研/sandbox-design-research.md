@@ -55,7 +55,7 @@
 
 ## 3. 各框架深度分析
 
-### 3.1 DeepAgents（LangChain）
+### 3.1 DeepAgents (LangChain)
 
 **仓库**：https://github.com/langchain-ai/deepagents  
 **Stars**：~23,897 | 语言：Python | 许可：MIT | 状态：活跃
@@ -149,7 +149,7 @@ composite = CompositeBackend(
 
 ---
 
-### 3.2 OpenHarness（HKUDS）
+### 3.2 OpenHarness (HKUDS)
 
 **仓库**：https://github.com/HKUDS/OpenHarness  
 **Stars**：~13,535 | 语言：Python | 许可：MIT | 状态：活跃
@@ -614,9 +614,9 @@ docker exec -i {container_id} bash -c {command}
 
 ```python
 sandbox.exec.aio()  → _ThreadedProcessHandle
-# 取消: sandbox.terminate.aio()
+# 取消：sandbox.terminate.aio()
 # stdin: heredoc 模式（1MB 块，绕过 Modal 2MB 上限）
-# 大文件: gzip tar + base64，绕过 ARG_MAX_BYTES 限制
+# 大文件：gzip tar + base64，绕过 ARG_MAX_BYTES 限制
 ```
 
 **清理与快照**：
@@ -684,7 +684,7 @@ sandbox.exec.aio()  → _ThreadedProcessHandle
 
 ---
 
-### 3.6 Claude Agent SDK（Anthropic）
+### 3.6 Claude Agent SDK (Anthropic)
 
 **文档**：https://code.claude.com/docs/en/agent-sdk/overview  
 **语言**：Python + TypeScript | 状态：活跃
@@ -1037,7 +1037,7 @@ dockerArgs := []string{
 
 ```go
 type ToolGuardrail struct {
-    // 精确失败计数（相同工具+参数）
+    // 精确失败计数（相同工具 + 参数）
     exactFailures map[string]int
     // 同工具失败计数
     toolFailures  map[string]int

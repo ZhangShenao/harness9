@@ -44,7 +44,7 @@ func (s *SQLiteSession) GetMessages(ctx context.Context, limit int) ([]schema.Me
 			ORDER BY id ASC`, s.sessionID)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("查询消息: %w", err)
+		return nil, fmt.Errorf("查询消息：%w", err)
 	}
 	defer rows.Close()
 
@@ -57,7 +57,7 @@ func (s *SQLiteSession) GetMessages(ctx context.Context, limit int) ([]schema.Me
 			toolCallID  sql.NullString
 		)
 		if err := rows.Scan(&roleStr, &content, &toolCallsJS, &toolCallID); err != nil {
-			return nil, fmt.Errorf("扫描消息: %w", err)
+			return nil, fmt.Errorf("扫描消息：%w", err)
 		}
 		msg := schema.Message{
 			Role:    schema.Role(roleStr),
@@ -74,7 +74,7 @@ func (s *SQLiteSession) GetMessages(ctx context.Context, limit int) ([]schema.Me
 		msgs = append(msgs, msg)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("迭代消息: %w", err)
+		return nil, fmt.Errorf("迭代消息：%w", err)
 	}
 
 	if limit > 0 {
@@ -93,7 +93,7 @@ func (s *SQLiteSession) AddMessages(ctx context.Context, msgs []schema.Message) 
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("开始事务: %w", err)
+		return fmt.Errorf("开始事务：%w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
@@ -116,13 +116,13 @@ func (s *SQLiteSession) AddMessages(ctx context.Context, msgs []schema.Message) 
 			 VALUES (?, ?, ?, ?, ?, ?)`,
 			s.sessionID, string(msg.Role), msg.Content, toolCallsJSON, toolCallID, now)
 		if err != nil {
-			return fmt.Errorf("插入消息: %w", err)
+			return fmt.Errorf("插入消息：%w", err)
 		}
 	}
 	_, err = tx.ExecContext(ctx,
 		`UPDATE sessions SET updated_at = ? WHERE id = ?`, now, s.sessionID)
 	if err != nil {
-		return fmt.Errorf("更新会话时间: %w", err)
+		return fmt.Errorf("更新会话时间：%w", err)
 	}
 	return tx.Commit()
 }
@@ -131,7 +131,7 @@ func (s *SQLiteSession) AddMessages(ctx context.Context, msgs []schema.Message) 
 func (s *SQLiteSession) PopMessage(ctx context.Context) (*schema.Message, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("开始事务: %w", err)
+		return nil, fmt.Errorf("开始事务：%w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
@@ -150,7 +150,7 @@ func (s *SQLiteSession) PopMessage(ctx context.Context) (*schema.Message, error)
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("查询最新消息: %w", err)
+		return nil, fmt.Errorf("查询最新消息：%w", err)
 	}
 
 	msg := &schema.Message{Role: schema.Role(roleStr), Content: content}
@@ -164,10 +164,10 @@ func (s *SQLiteSession) PopMessage(ctx context.Context) (*schema.Message, error)
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, id); err != nil {
-		return nil, fmt.Errorf("删除消息: %w", err)
+		return nil, fmt.Errorf("删除消息：%w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("提交事务: %w", err)
+		return nil, fmt.Errorf("提交事务：%w", err)
 	}
 	return msg, nil
 }
@@ -176,7 +176,7 @@ func (s *SQLiteSession) PopMessage(ctx context.Context) (*schema.Message, error)
 func (s *SQLiteSession) Clear(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE session_id = ?`, s.sessionID)
 	if err != nil {
-		return fmt.Errorf("清空消息: %w", err)
+		return fmt.Errorf("清空消息：%w", err)
 	}
 	return nil
 }
@@ -213,7 +213,7 @@ func (s *SQLiteSession) GetTodos(ctx context.Context) ([]planning.TodoItem, erro
 func (s *SQLiteSession) SaveTodos(ctx context.Context, items []planning.TodoItem) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("开始事务: %w", err)
+		return fmt.Errorf("开始事务：%w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 

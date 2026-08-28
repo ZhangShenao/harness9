@@ -19,7 +19,7 @@ func TestMemory(t *testing.T) {
 	evals.SetupHermeticEnv(t)
 
 	cases := []*evals.Case{
-		// 用例1：通过 memory_write 写入记忆
+		// 用例 1：通过 memory_write 写入记忆
 		{
 			ID:       "memory/write_memory",
 			Category: "memory",
@@ -37,7 +37,7 @@ func TestMemory(t *testing.T) {
 				&evals.NoErrorAssertion{},
 			},
 		},
-		// 用例2：通过 memory_search 检索记忆
+		// 用例 2：通过 memory_search 检索记忆
 		{
 			ID:       "memory/search_memory",
 			Category: "memory",
@@ -76,5 +76,5 @@ func TestMemory(t *testing.T) {
 			t.Logf("   ⚠️ %s: %s", r.Case.ID, w.Error())
 		}
 	}
-	t.Logf("Memory 评估: %d/%d 通过", passed, passed+failed)
+	t.Logf("Memory 评估：%d/%d 通过", passed, passed+failed)
 }

@@ -41,7 +41,7 @@ func NewFilePlanWriter(workDir, homeDir, sessionID string) (*FilePlanWriter, err
 	}
 
 	if err := os.MkdirAll(base, 0700); err != nil {
-		return nil, fmt.Errorf("创建计划目录失败: %w", err)
+		return nil, fmt.Errorf("创建计划目录失败：%w", err)
 	}
 
 	return &FilePlanWriter{
