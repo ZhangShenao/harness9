@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -45,6 +47,16 @@ jobs:
 
       - name: Typos spell check
         uses: crate-ci/typos@v1.49.1
+
+      - name: Check doc drift
+        run: |
+          if [ -n "${{ github.base_ref }}" ]; then
+            scripts/check-doc-drift.sh "origin/${{ github.base_ref }}"
+          else
+            scripts/check-doc-drift.sh
+          fi
+        env:
+          DOC_DRIFT_STRICT: "0"
 
   build:
     name: Build
