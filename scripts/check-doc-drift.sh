@@ -2,12 +2,12 @@
 #
 # check-doc-drift.sh — 代码模块与技术方案文档的同步漂移检测
 #
-# 用法:
+# 用法：
 #   scripts/check-doc-drift.sh [<base-ref>]   # 默认比较 master...HEAD
 #   DOC_DRIFT_STRICT=1 时漂移导致退出码 1（CI 阻断），默认仅警告
 #
-# 依赖: git, jq
-# 退出码: 0 通过（或 warn 模式下有漂移） / 1 strict 模式漂移 / 2 环境错误
+# 依赖：git, jq
+# 退出码：0 通过（或 warn 模式下有漂移） / 1 strict 模式漂移 / 2 环境错误
 set -euo pipefail
 
 MAP_FILE="docs/doc-map.json"
