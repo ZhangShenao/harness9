@@ -1,0 +1,11 @@
+# 嵌套 git worktree（完整仓库副本，禁止扫描）
+.worktrees/
+
+# 评测数据与产物（.gitignore 已覆盖大部分，此处显式兜底）
+benchmarks/
+swebench-baseline-v1/
+test_fixtures/
+
+# 非文案类资产
+*.svg
+*.png
