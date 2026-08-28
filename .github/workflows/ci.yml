@@ -73,3 +73,23 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+  duplication:
+    name: Duplication Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run jscpd
+        shell: bash
+        run: set -o pipefail; npx jscpd@latest . 2>&1 | tee jscpd-output.txt
+
+      - name: Report summary
+        if: always()
+        run: |
+          echo "## Duplication Report" >> $GITHUB_STEP_SUMMARY
+          grep -E "Clone|duplicated" jscpd-output.txt | head -50 >> $GITHUB_STEP_SUMMARY || true
