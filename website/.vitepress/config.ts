@@ -120,6 +120,7 @@ export default defineConfig({
                 { text: 'Observability：给 Agent 装一台看清内部运转的望远镜', link: '/zh/blog/observability/' },
                 { text: 'Benchmark 不只测分数 — harness9 如何用轨迹驱动迭代', link: '/zh/blog/benchmark-driven-iteration/' },
                 { text: 'M1 完成之后：harness9 为什么要走向本地 Agent OS', link: '/zh/blog/m1-to-local-agent-os/' },
+                { text: 'Agent 失控时，谁来踩刹车？', link: '/zh/blog/agent-loop-guardrails/' },
               ],
             },
           ],
