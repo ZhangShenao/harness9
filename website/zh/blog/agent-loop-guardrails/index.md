@@ -53,7 +53,7 @@ Agent 干活的样子是一个循环：想一想 → 动手 → 看结果 → �
 | 烧钱型 | 每轮全量上下文进 LLM | Token 账单线性上涨 |
 | 超时型 | 单次 Run 没有时间上限 | 墙钟（Wall-clock）失控 |
 
-![图：Agent 死循环空转，烧满 80 轮](/website/public/blog/agent-loop-guardrails/images/runaway-loop-01.png)
+![图：Agent 死循环空转，烧满 80 轮](/blog/agent-loop-guardrails/images/runaway-loop-01.png)
 
 
 ## 谁来踩刹车？
@@ -88,7 +88,7 @@ type GuardConfig struct {
 | Token 预算 | `WithTokenBudget` | 不限 | Turn 开始 |
 | 重复死循环 | `WithRepetitionReminder(window, threshold)` | 关闭 | Turn 开始 |
 
-![图：loopGuard 四维熔断与 Turn 边界检查点](/website/public/blog/agent-loop-guardrails/images/loop-guard-four-fuses-02.png)
+![图：loopGuard 四维熔断与 Turn 边界检查点](/blog/agent-loop-guardrails/images/loop-guard-four-fuses-02.png)
 
 
 ### 为什么在 Turn 边界动手？
@@ -113,7 +113,7 @@ if rem, ok := guard.Remaining(); ok && (toolBudget <= 0 || rem < toolBudget) {
 
 Token 预算同样讲究：优先累计 API 实际返回的 `usage.InputTokens`；Provider 不吐 usage 时，用本轮发给模型的上下文估算值兜底。预算约束不因 Provider 差异而失效。
 
-![图：Turn 边界裁决与工具超时熔断](/website/public/blog/agent-loop-guardrails/images/turn-boundary-checkpoint-03.png)
+![图：Turn 边界裁决与工具超时熔断](/blog/agent-loop-guardrails/images/turn-boundary-checkpoint-03.png)
 
 
 ## 循环现在在哪一步？
@@ -165,7 +165,7 @@ setState := func(to LoopState) {
 
 TUI 拿到 `EventStateChange` 后做了件小但聪明的事：spinner 动词前进一步。原来靠定时器轮换的加载动画，现在由真实状态驱动。状态机成了动画的事件源——可观测性不只给监控看，也给屏幕前的用户看。
 
-![图：LoopState 七态状态机](/website/public/blog/agent-loop-guardrails/images/loop-state-machine-04.png)
+![图：LoopState 七态状态机](/blog/agent-loop-guardrails/images/loop-state-machine-04.png)
 
 
 ## 先提醒，再熔断
@@ -230,10 +230,10 @@ const repetitionReminderFmt = "系统检测：你在当前工作周期内已累�
 
 解法是进展打破：一旦某轮包含 `edit_file` / `write_file`，全部签名计数和停滞计数清零，开启新工作周期。"改一下、跑一次"不会触发；"原地踏步跑十次"才会被拦下。
 
-![图：Reminder 三源仲裁漏斗](/website/public/blog/agent-loop-guardrails/images/reminder-three-source-arbitration-05.png)
+![图：Reminder 三源仲裁漏斗](/blog/agent-loop-guardrails/images/reminder-three-source-arbitration-05.png)
 
 
-![图：签名计算与进展打破规则](/website/public/blog/agent-loop-guardrails/images/signature-progress-break-06.png)
+![图：签名计算与进展打破规则](/blog/agent-loop-guardrails/images/signature-progress-break-06.png)
 
 
 
@@ -293,7 +293,7 @@ ReasonTokenBudget    = "token_budget"    // Token 预算耗尽
 ReasonRepetitionLoop = "repetition_loop" // 重复死循环且提醒无效
 ```
 
-![图：统一受控终止出口](/website/public/blog/agent-loop-guardrails/images/terminate-unified-exit-07.png)
+![图：统一受控终止出口](/blog/agent-loop-guardrails/images/terminate-unified-exit-07.png)
 
 
 ## 三层防线的分工
@@ -309,7 +309,7 @@ ReasonRepetitionLoop = "repetition_loop" // 重复死循环且提醒无效
 三层的时序也咬合得很紧：Reminder 在熔断之前给模型一次自救机会；状态机让每次熔断留下精确现场（哪个状态、哪一轮）；统一出口保证终止本身是干净的——轨迹还在，复盘可做。
 
 
-![图：三层防线协同全景](/website/public/blog/agent-loop-guardrails/images/three-layer-defense-08.png)
+![图：三层防线协同全景](/blog/agent-loop-guardrails/images/three-layer-defense-08.png)
 
 
 ## 结语
