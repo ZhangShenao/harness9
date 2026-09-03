@@ -548,7 +548,7 @@ The root cause was in the runner: after clone+checkout, there was **no dependenc
 | **Wire up dependency bootstrap**: the runner now sets `BootstrapCmd` by default for every instance (ensurepip + `pip install -e .` + pytest), default image changed to `python:3.11` (full buildpack image, with pip and a compiler) | `runner.go` | R1/R4 |
 | **Verification gate**: when the Agent naturally concludes without ever having run a test, inject one continuation prompt demanding real verification (reusing the in-memory session to continue history, at most once, backstopped by timeout/turn cap) | `runner.go` | R2 |
 | **HintsText injection** + dataset parsing of evaluation fields (`FAIL_TO_PASS`/`test_patch` for analysis only, never exposed to or applied during runtime) | `prompt.go` `dataset.go` | R3/R4 |
-| **Stagnation nudge `WithStallNudge`**: injects one nudge to break the idle loop when N consecutive turns show no edit/write progress tool calls (defensive copy, not persisted) | `engine/agent_loop.go` | R6 |
+| **Stagnation nudge `WithStallNudge`**: injects one nudge to break the idle loop when N consecutive turns show no edit/write progress tool calls (defensive copy, not persisted) | `engine/options.go` + `engine/planmode.go` | R6 |
 | **Prompt rebalancing**: removed the "default fallback to static analysis" escape hatch; added minimal/error-site-local fix bias, searching tests by symbol name, DeprecationWarning convention hints | `prompt.go` | R5/R7 |
 | **edit_file banner tightened**: "no need to confirm again" → explicit "bytes written ≠ behavior correct, tests still required" | `tools/edit_file.go` | R8 |
 

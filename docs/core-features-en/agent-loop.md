@@ -40,9 +40,15 @@ The core of harness9 is a **standard ReAct loop** engine: each Turn executes one
 | `OpenAIProvider` | `internal/provider/openai.go` | OpenAI-compatible API adapter (OpenAI / OpenRouter / Azure) |
 | `AnthropicProvider` | `internal/provider/anthropic.go` | Anthropic-compatible API adapter (Anthropic / OpenRouter) |
 | `Registry` | `internal/tools/registry.go` | Decouples tool discovery from execution |
-| `AgentEngine.Run` | `internal/engine/agent_loop.go` | Blocking ReAct main loop |
+| `AgentEngine.Run` | `internal/engine/agent_loop.go` | Blocking ReAct main loop (orchestrator + emitter definition) |
 | `AgentEngine.RunStream` | `internal/engine/stream.go` | Streaming ReAct main loop, token-by-token output |
 | `engine.Event` | `internal/engine/stream.go` | Client-facing streaming event type from the engine |
+| `runLoop phased implementation` | `internal/engine/loop_phases.go` | Private methods for each loop phase: initialization / turn preamble / preprocessing / generation / stall detection / Observation injection / teardown |
+| `With* options` | `internal/engine/options.go` | Functional options and runtime `SetSession` / `SetPlanMode` |
+| `generateWithRetry` | `internal/engine/retry.go` | Dual-tier LLM retry (default budget / network-transport budget) + network error classification |
+| `History load & persist` | `internal/engine/history.go` | Session history load/save, system prompt building, compaction adapter |
+| `Plan Mode filtering` | `internal/engine/planmode.go` | Read-only tool whitelist, planning prefix, progress-tool & nudge detection |
+| `executeTools` | `internal/engine/tools_exec.go` | Concurrent tool scheduling within a turn (semaphore + per-tool timeout) |
 | `env` | `internal/env/env.go` | Environment variable configuration loading based on .env files |
 
 ## 2. ReAct Design Philosophy
@@ -183,6 +189,23 @@ Turn 2:
 
 ## 4. Agent Loop Cycle Flow
 
+The loop is orchestrated by the `runLoop` orchestrator (`agent_loop.go`), which dispatches to independent private methods defined in `loop_phases.go`, one per phase, all sharing a `loopContext` that aggregates the interaction state:
+
+```
+beginInteraction      Initialization: observer hookup, state snapshot, todo restore,
+                      Plan Mode prefix, history loading
+for {
+    beginTurn          Turn counter + dual termination checks (MaxTurns / ctx cancel)
+    prepareTurnInput   Tool filtering + compaction check + token estimate report + nudge injection
+    generateTurn       LLM call with retry + actual usage report
+    (termination check) Converge and exit when the model issues no tool calls
+    executeTools       Concurrent tool scheduling (tools_exec.go)
+    injectObservations Observation injection
+}
+saveHistory / saveTodos   Teardown: history persists only on the natural-termination path;
+                          todos persist on every exit path
+```
+
 ```
                      ┌─────────────────────┐
                      │   Initialize context  │
@@ -231,7 +254,7 @@ When the engine starts, it constructs the initial conversation context via `load
 // and appends the user input.
 // startLen marks the starting position of new messages (existing history + system prompt are not persisted),
 // used by saveHistoryWith to save only msgs[startLen:].
-func (e *AgentEngine) loadHistoryWith(ctx context.Context, userPrompt string, sess memory.Session) ([]schema.Message, int) {
+func (e *AgentEngine) loadHistoryWith(ctx context.Context, userPrompt string, sess memory.Session, logPrefix string) ([]schema.Message, int) {
     var history []schema.Message
     if sess != nil {
         msgs, err := sess.GetMessages(ctx, 0) // 0 = return all history
@@ -321,14 +344,19 @@ go func(idx int, tc schema.ToolCall) {
 
 ### 4.5 Observation Phase
 
-After tool execution completes, the results are appended to the context in their original order:
+After tool execution completes, `injectObservations` appends the results to the context in their original order. Empty outputs fall back to a placeholder message (some backends reject tool_result with empty content, returning 400, and an empty Observation carries no information for the model to reason about); `IsError` is passed through so the Provider can set `tool_result.is_error` (strengthening the self-healing signal):
 
 ```go
-for i, toolCall := range responseMsg.ToolCalls {
-    contextHistory = append(contextHistory, schema.Message{
+for i, toolCall := range toolCalls {
+    content := results[i].Output
+    if content == "" {
+        content = "[tool completed with no output]" // empty-output fallback, avoids 400s and wasted turns
+    }
+    history = append(history, schema.Message{
         Role:       schema.RoleUser,        // Observation is passed back with the user role
-        Content:    results[i].Output,
+        Content:    content,
         ToolCallID: toolCall.ID,             // Links to the original request
+        IsError:    results[i].IsError,      // Passes the error signal through for Provider is_error marking
     })
 }
 ```

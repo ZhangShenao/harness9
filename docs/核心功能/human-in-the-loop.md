@@ -20,7 +20,8 @@ internal/permission/
 
 internal/engine/
 ├── stream.go        # EventApprovalRequired + ApprovalRequest 载荷
-├── agent_loop.go    # emitter.approval 字段 + executeTools 注入 ApprovalFunc
+├── agent_loop.go    # emitter.approval 字段（emitter 定义）
+├── tools_exec.go    # executeTools 将 ApprovalFunc 注入工具执行 context
 └── permission.go    # PermissionMode 枚举
 
 internal/tools/

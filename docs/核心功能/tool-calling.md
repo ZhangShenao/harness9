@@ -509,6 +509,7 @@ LLM 的工具结果通过文本通道传递。无论工具输出是命令行输�
 | `internal/provider/anthropic.go` | Anthropic 兼容 API 适配器 |
 | `internal/provider/tool_call_accumulator.go` | OpenAI/Anthropic 共享的流式工具调用参数累积器 |
 | `internal/provider/providertest/mock.go` | 测试用 Mock Provider（`_test` 编译单元，不进入生产二进制） |
-| `internal/engine/agent_loop.go` | Agent 主循环，编排 Tool Calling 全流程 + 块状日志格式化 |
+| `internal/engine/agent_loop.go` | Agent 主循环编排器（Run + runLoop + emitter 定义）+ 块状日志格式化 |
+| `internal/engine/tools_exec.go` | executeTools：同 Turn 多工具并发调度（信号量 + 每工具独立超时） |
 | `internal/engine/stream.go` | 流式（Streaming）模式的 Tool Calling 编排 |
 | `internal/engine/agent_loop_test.go` | 主循环单元测试 |

@@ -187,13 +187,22 @@ harness9/
 │       ├── main.go                  # CLI 入口：仓库名 / 输出路径 / 颜色参数
 │       └── render.go                # SVG 渲染：时间序列曲线 + 标注 + 主题
 ├── internal/
-│   ├── engine/                      # Agent 核心引擎 — 标准 ReAct 主循环
-│   │   ├── agent_loop.go            # 共享 runLoop 主循环内核 + 阻塞式 Run
-│   │   ├── agent_loop_test.go       # 主循环单元测试
-│   │   ├── compact.go               # Compact 方法：TUI /compact 命令触发的手动强制压缩
+│   ├── engine/                      # Agent 核心引擎 — 标准 ReAct 主循环（按职责拆分为多个文件）
+│   │   ├── agent_loop.go            # 引擎结构 + NewAgentEngine + emitter 定义 + 阻塞式 Run + runLoop 阶段编排器
+│   │   ├── options.go               # With* 函数式配置选项 + 运行期 SetSession/SetPlanMode + PromptBuilder 接口
+│   │   ├── retry.go                 # LLM 生成调用双档重试（默认预算/网络传输预算）+ backoffDelay 封顶 + isTransientNetworkError
+│   │   ├── loop_phases.go           # runLoop 阶段化实现：beginInteraction/beginTurn/prepareTurnInput/generateTurn/trackStall/injectObservations/saveHistory/saveTodos
+│   │   ├── history.go               # 会话历史加载/持久化（loadHistoryWith/saveHistoryWith）+ system prompt 构建 + 压缩适配
+│   │   ├── planmode.go              # Plan Mode 只读工具白名单 + 规划前缀 + 进展工具判定 + appendUserNudge
+│   │   ├── tools_exec.go            # executeTools：同 Turn 多工具并发调度（信号量 + 每工具独立超时）
+│   │   ├── compact.go               # Compact 方法：TUI /compact 命令触发的手动强制压缩（写回失败自动回滚）
 │   │   ├── observer.go              # EngineObserver 接口 + noopObserver（可观测层无侵入接入点）
 │   │   ├── permission.go            # PermissionMode 枚举（Default/AutoApprove/ReadOnly/BypassAll）+ WithPermissionMode
 │   │   ├── stream.go                # 流式入口 RunStream + engine.Event 事件类型 + ToolResultData
+│   │   ├── agent_loop_test.go       # 主循环单元测试（重试/终止保障/Plan Mode/nudge）
+│   │   ├── loop_phases_test.go      # 阶段方法单元测试（退避计算/空响应防护/压缩视图隔离/Observation 注入）
+│   │   ├── compact_test.go          # Compact 单元测试
+│   │   ├── memory_test.go           # Session 集成测试（历史持久化/加载/压缩器）
 │   │   └── stream_test.go           # 流式接口单元测试
 │   ├── hooks/                       # 工具拦截器（Hooks）— 文件系统能力
 │   │   ├── hook.go                  # ToolHook 接口 + HookRegistry（洋葱模型）+ ApprovalFunc context 工具
@@ -440,7 +449,7 @@ harness9/
 |------|------|:----:|
 | **cmd/harness9** | 主入口：TTY 自动检测选择 TUI / CLI；`--help` / `--version` flag；`upgrade` 子命令；初始化 Memory Manager + SummarizationCompactor + Session + OffloadHook + FilePlanWriter + HookRegistry | ✅ |
 | **tui** | 全屏 TUI（Bubbletea）：WelcomeBanner + 对话页双 Phase、Spinner 动词轮换、内置命令 Tab 补全 + Skills 补全、Markdown 渲染、会话管理、状态栏 token 用量实时展示（颜色告警）+ 压缩通知 + Plan Mode 色调 + 审查对话框 + autoExecuting 续跑；ToolResultData 携带引擎侧精确耗时；Thinking 块流式渲染（EventThinkingDelta → 深灰 │ 前缀行，flushPendingThinking 在工具/正文边界自动关闭）；Shell 执行模式（`!` 前缀 → dispatchShellCommand → tea.Cmd 异步 → shellResultMsg → pendingShellOutput 注入 LLM 上下文） | ✅ |
-| **engine** | 标准 ReAct 主循环，阻塞 + 流式双模式，并发工具调度，Session/Compactor 集成，EventTokenUpdate / EventCompaction / EventToolResult（ToolResultData）/ EventThinkingDelta 事件，WithContextWindow 选项，PlanMode 工具过滤 + prompt 注入，TodoStore 跨会话持久化，WithMemoryNudge（每 N 轮向防御性副本注入长期记忆提示，不持久化），WithStallNudge（连续 N 轮无进展工具（edit_file/write_file）调用时注入一次停滞提示打断空转，防御性副本，不持久化） | ✅ |
+| **engine** | 标准 ReAct 主循环（按职责拆分：agent_loop.go 编排器 + loop_phases.go 阶段方法 + options/retry/history/planmode/tools_exec 子模块），阻塞 + 流式双模式，并发工具调度，Session/Compactor 集成，EventTokenUpdate / EventCompaction / EventToolResult（ToolResultData）/ EventThinkingDelta 事件，WithContextWindow 选项，双档 LLM 重试（默认/网络预算），PlanMode 工具过滤 + prompt 注入，TodoStore 跨会话持久化，Compact 写回失败自动回滚，WithMemoryNudge（每 N 轮向防御性副本注入长期记忆提示，不持久化），WithStallNudge（连续 N 轮无进展工具（edit_file/write_file）调用时注入一次停滞提示打断空转，防御性副本，不持久化），provider 空响应防御（转为可重试错误而非 panic） | ✅ |
 | **hooks** | 文件系统能力：ToolHook 接口 + HookRegistry（洋葱模型）；OffloadHook（超大输出 offload 到 `~/.harness9/tool_results/`，fail-open）；FilePlanWriter（todo 计划持久化为 markdown，git 项目写入 workDir/.harness9/plans/） | ✅ |
 | **planning** | PlanMode 枚举（Default/Plan/AutoEdit）、PlanWriter 接口（解耦 TodoWriteTool 与 FilePlanWriter）、TodoStore（线程安全，全量替换）、TodoItem 状态机、todo_write 工具（状态转换校验 + WithPlanWriter 注入） | ✅ |
 | **subagent** | Sub-Agent 子代理委派：SubAgentDefinition（ResolveTools 白名单∩全集-黑名单-task）、Registry（编程式 + `.harness9/agents/*.md` 文件式定义）、Runner（构建隔离子引擎 + RunStream + 桥接审批与进度）、TaskTool（task 工具，前台/后台双模式）、TaskTracker（后台任务单一事实源）；内置 general-purpose 通用子代理（继承父全部可用工具与模型）；防递归 + 权限不扩权 + 上下文隔离 | ✅ |

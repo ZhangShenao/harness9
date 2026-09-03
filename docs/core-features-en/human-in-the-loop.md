@@ -20,7 +20,8 @@ internal/permission/
 
 internal/engine/
 ├── stream.go        # EventApprovalRequired + ApprovalRequest payload
-├── agent_loop.go    # emitter.approval field + executeTools injects ApprovalFunc
+├── agent_loop.go    # emitter.approval field (emitter definition)
+├── tools_exec.go    # executeTools injects ApprovalFunc into the tool execution context
 └── permission.go    # PermissionMode enum
 
 internal/tools/

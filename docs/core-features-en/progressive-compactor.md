@@ -325,7 +325,8 @@ Each Turn: estimate tokens -> `applyCompactionWith` -> emit `EventCompaction` if
 | `internal/memory/compaction_offloader.go` | CompactionOffloader + OffloadEntry |
 | `internal/memory/record_store.go` | CompactionRecord + CompactionTier + RecordStore + FileRecordStore |
 | `internal/memory/compaction.go` | RecordedCompactor interface + repairOrphanedToolPairs |
-| `internal/engine/agent_loop.go` | applyCompactionWith type assertion + runLoop integration |
+| `internal/engine/history.go` | applyCompactionWith type assertion (compaction adapter) |
+| `internal/engine/loop_phases.go` | runLoop compaction integration inside prepareTurnInput |
 | `internal/engine/stream.go` | EventCompaction carrying CompactionRecord |
 | `internal/engine/compact.go` | Manual /compact adapts to RecordedCompactor |
 | `internal/memory/manager.go` | WithCompactionRecordsDir + cascade GC |

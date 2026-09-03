@@ -548,7 +548,7 @@ go run ./cmd/swebench --help
 | **接通依赖自举**：runner 为每实例默认设 `BootstrapCmd`（ensurepip + `pip install -e .` + pytest），默认镜像改 `python:3.11`（buildpack 全镜像，带 pip 与编译器）| `runner.go` | R1/R4 |
 | **验证关卡**：Agent 自然结束却全程未跑过测试时，注入一次续跑提示要求真实验证（复用内存会话延续历史，至多一次，超时/turn 兜底）| `runner.go` | R2 |
 | **HintsText 注入** + dataset 解析评测字段（`FAIL_TO_PASS`/`test_patch` 仅供分析，绝不在运行时暴露/应用）| `prompt.go` `dataset.go` | R3/R4 |
-| **停滞提示 `WithStallNudge`**：连续 N 轮无 edit/write 进展工具调用时注入一次提示打断空转（防御性副本，不持久化）| `engine/agent_loop.go` | R6 |
+| **停滞提示 `WithStallNudge`**：连续 N 轮无 edit/write 进展工具调用时注入一次提示打断空转（防御性副本，不持久化）| `engine/options.go` + `engine/planmode.go` | R6 |
 | **prompt 重平衡**：删「默认退化静态分析」逃生门；加最小化/错误点局部修复偏置、按符号名查测试、DeprecationWarning 约定提示 | `prompt.go` | R5/R7 |
 | **edit_file banner 收敛**：「无需再确认」→ 明确「字节写入≠行为正确，仍需跑测试」| `tools/edit_file.go` | R8 |
 

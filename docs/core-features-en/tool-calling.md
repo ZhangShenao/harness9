@@ -509,6 +509,7 @@ Error information is valuable context for the LLM. When a tool execution fails, 
 | `internal/provider/anthropic.go` | Anthropic-compatible API adapter |
 | `internal/provider/tool_call_accumulator.go` | Streaming tool call argument accumulator shared by OpenAI/Anthropic |
 | `internal/provider/providertest/mock.go` | Test Mock Provider (`_test` compilation unit, does not ship in the production binary) |
-| `internal/engine/agent_loop.go` | Agent main loop, orchestrates the full Tool Calling flow + block-style log formatting |
+| `internal/engine/agent_loop.go` | Agent main loop orchestrator (Run + runLoop + emitter definition) + block-style log formatting |
+| `internal/engine/tools_exec.go` | executeTools: concurrent tool scheduling within a turn (semaphore + per-tool timeout) |
 | `internal/engine/stream.go` | Tool Calling orchestration for streaming mode |
 | `internal/engine/agent_loop_test.go` | Main loop unit tests |
