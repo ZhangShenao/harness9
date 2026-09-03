@@ -3,8 +3,11 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -130,7 +133,7 @@ func TestPrepareTurnInput_CompactionDoesNotMutateHistory(t *testing.T) {
 	}
 	before := append([]schema.Message(nil), lc.history...)
 
-	input, _ := lc.prepareTurnInput()
+	input := lc.prepareTurnInput()
 
 	if len(input.history) > 3 {
 		t.Errorf("发送视图应被压缩到 ≤3 条，实际 %d", len(input.history))
@@ -215,5 +218,84 @@ func TestApplyPlanModePrefix(t *testing.T) {
 	}
 	if len(plan) <= len(prompt) || plan[len(plan)-len(prompt):] != prompt {
 		t.Error("原始 prompt 应保留在前缀之后")
+	}
+}
+
+// ctxMarkKey 是 ctx 传播回归测试的自定义 key（模拟 observer 注入的 Span 等值）。
+type ctxMarkKey struct{}
+
+// markingObserver 在 OnInteractionStart 向 ctx 注入标记，并检测 OnTurnStart
+// 是否仍能读到。回归背景：runLoop 阶段化拆分时曾把原始 ctx 而非 obsCtx 传给
+// beginTurn/saveTodos/saveHistory——OTELEngineObserver 的 interaction→turn
+// Span 父子关系依赖 OnInteractionStart 注入 ctx 值，断链后所有 Span 退化为
+// 根 Span，Langfuse trace 分组静默失效。
+type markingObserver struct {
+	noopObserver
+	turnStartSawMark bool
+}
+
+func (m *markingObserver) OnInteractionStart(ctx context.Context, _, _ string) context.Context {
+	return context.WithValue(ctx, ctxMarkKey{}, "marked")
+}
+
+func (m *markingObserver) OnTurnStart(ctx context.Context, _ int) context.Context {
+	if _, ok := ctx.Value(ctxMarkKey{}).(string); ok {
+		m.turnStartSawMark = true
+	}
+	return ctx
+}
+
+// TestRunLoop_ObserverCtxPropagation 验证 observer 不变量：OnInteractionStart
+// 注入的 ctx 值必须在 OnTurnStart 阶段仍可读——runLoop 必须向所有阶段传递
+// obsCtx 而非原始 ctx。
+func TestRunLoop_ObserverCtxPropagation(t *testing.T) {
+	p := &countingProvider{
+		responses: []func([]schema.ToolDefinition) *schema.Message{
+			func(_ []schema.ToolDefinition) *schema.Message {
+				return &schema.Message{Role: schema.RoleAssistant, Content: "done"}
+			},
+		},
+	}
+	reg := &staticRegistry{output: "ok"}
+	obs := &markingObserver{}
+	eng := NewAgentEngine(p, reg, "/test", WithEngineObserver(obs))
+
+	if err := eng.Run(context.Background(), "hello"); err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	if !obs.turnStartSawMark {
+		t.Error("OnTurnStart 应能读到 OnInteractionStart 注入的 ctx 值（obsCtx 必须贯穿所有阶段）")
+	}
+}
+
+// TestGenerateRetry_UsesLogPrefix 验证重试日志使用调用方传入的 logPrefix
+// （流式模式为 "engine-stream"），而非硬编码 "engine"。
+func TestGenerateRetry_UsesLogPrefix(t *testing.T) {
+	var buf bytes.Buffer
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) }()
+
+	eng := NewAgentEngine(&countingProvider{}, &staticRegistry{output: "ok"}, "/test",
+		WithGenerateRetry(2, time.Millisecond))
+	calls := 0
+	em := emitter{generate: func(context.Context, int, []schema.Message, []schema.ToolDefinition) (*schema.Message, *schema.Usage, error) {
+		calls++
+		if calls == 1 {
+			return nil, nil, fmt.Errorf("transient failure")
+		}
+		return &schema.Message{Role: schema.RoleAssistant, Content: "ok"}, nil, nil
+	}}
+
+	msg, _, err := eng.generateWithRetry(context.Background(), em, 1, "engine-stream", nil, nil)
+	if err != nil {
+		t.Fatalf("generateWithRetry 应在重试后恢复: %v", err)
+	}
+	if msg == nil || msg.Content != "ok" {
+		t.Errorf("应返回重试成功的响应，got %+v", msg)
+	}
+	if !strings.Contains(buf.String(), "engine-stream") {
+		t.Errorf("重试日志应使用传入的 logPrefix %q，实际输出: %q", "engine-stream", buf.String())
 	}
 }

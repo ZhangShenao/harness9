@@ -40,7 +40,10 @@ type retryBudget struct {
 //   - 其余错误视为可能瞬时，按错误类别选用预算（网络错误用独立宽松预算），
 //     退避后重试，直到耗尽 attempts；
 //   - 退避期间感知 ctx 取消，避免无谓等待。
-func (e *AgentEngine) generateWithRetry(ctx context.Context, em emitter, turn int, history []schema.Message, toolDefs []schema.ToolDefinition) (*schema.Message, *schema.Usage, error) {
+//
+// logPrefix 用于重试日志前缀（阻塞模式 "engine"，流式模式 "engine-stream"），
+// 与 runLoop 的其余日志保持同一前缀约定。
+func (e *AgentEngine) generateWithRetry(ctx context.Context, em emitter, turn int, logPrefix string, history []schema.Message, toolDefs []schema.ToolDefinition) (*schema.Message, *schema.Usage, error) {
 	defaultBudget := retryBudget{
 		maxAttempts: max(e.generateRetries, 1),
 		baseDelay:   orDefault(e.generateRetryBase, time.Second),
@@ -84,7 +87,7 @@ func (e *AgentEngine) generateWithRetry(ctx context.Context, em emitter, turn in
 		}
 
 		delay := backoffDelay(budget.baseDelay, attempt, budget.capDelay)
-		log.Print(logfmt.FormatMsg("engine", fmt.Sprintf(
+		log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf(
 			"LLM 生成失败 (turn %d, 尝试 %d/%d)，%s 后重试: %v", turn, attempt, budget.maxAttempts, delay, err)))
 		select {
 		case <-ctx.Done():

@@ -88,6 +88,10 @@ func (e *AgentEngine) beginInteraction(ctx context.Context, userPrompt, logPrefi
 	}
 	e.mu.RUnlock()
 	lc.obsCtx = lc.obs.OnInteractionStart(ctx, sessIDForObs, userPrompt)
+	// 后续所有阶段（Todo 恢复 / 历史加载 / Turn / 收尾）统一使用 obsCtx：
+	// observer 可能在 OnInteractionStart 中注入 Span 或其他值，若继续使用原始 ctx，
+	// 这些注入会丢失（OTELEngineObserver 的 interaction→turn Span 父子关系即依赖此传播）。
+	ctx = lc.obsCtx
 
 	// 在循环开始时快照 session/compactor/planMode/todoStore，避免与 TUI goroutine 的
 	// SetSession/SetPlanMode 产生数据竞争。
@@ -146,7 +150,9 @@ func (lc *loopContext) beginTurn(ctx context.Context) (context.Context, error) {
 //  3. token 估算上报：压缩后消息 + 工具定义的估算值（LLM 调用后由实际用量覆盖）
 //  4. nudge 注入：记忆 nudge（周期性）与停滞 nudge（无进展检测），
 //     均只注入发送副本，绝不写入 lc.history（因此不会被持久化、不会累积）
-func (lc *loopContext) prepareTurnInput() (turnInput, *memory.CompactionRecord) {
+//
+// 压缩审计记录在方法内部经 em.compaction 上报后即完成使命，不再外泄给调用方。
+func (lc *loopContext) prepareTurnInput() turnInput {
 	e := lc.engine
 
 	// 1. 工具列表每轮重新读取：注册表内容可能在运行期变化（如 MCP 异步注入）。
@@ -178,7 +184,7 @@ func (lc *loopContext) prepareTurnInput() (turnInput, *memory.CompactionRecord) 
 		lc.turnsSinceProgress = 0
 	}
 
-	return turnInput{history: compactedHistory, toolDefs: availableTools}, record
+	return turnInput{history: compactedHistory, toolDefs: availableTools}
 }
 
 // generateTurn 执行一次带重试的 LLM 调用（计时仅覆盖生成本身）。
@@ -186,7 +192,7 @@ func (lc *loopContext) prepareTurnInput() (turnInput, *memory.CompactionRecord) 
 // （完整历史，而非压缩/nudge 副本）。失败时记录 interactionErr 并返回包装后的错误。
 func (lc *loopContext) generateTurn(turnCtx context.Context, in turnInput) (*schema.Message, time.Duration, error) {
 	llmStart := time.Now()
-	responseMsg, usage, err := lc.engine.generateWithRetry(turnCtx, lc.em, lc.turns, in.history, in.toolDefs)
+	responseMsg, usage, err := lc.engine.generateWithRetry(turnCtx, lc.em, lc.turns, lc.logPrefix, in.history, in.toolDefs)
 	if err != nil {
 		lc.interactionErr = err
 		return nil, 0, fmt.Errorf("模型生成失败 (turn %d): %w", lc.turns, err)

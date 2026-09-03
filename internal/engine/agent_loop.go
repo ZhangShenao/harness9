@@ -167,16 +167,20 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 	//   OnInteractionEnd 先注册 → 交互结束时最后执行，确保 span 覆盖 todos 持久化；
 	//   saveTodos 后注册 → 所有退出路径最先执行，保证规划进度不因异常退出丢失。
 	defer func() { lc.obs.OnInteractionEnd(lc.obsCtx, lc.turns, lc.interactionErr) }()
-	defer lc.saveTodos(ctx)
+	// 所有阶段与收尾均传递 obsCtx（observer 增强后的 ctx），确保 Span/值注入
+	// 在整个交互生命周期内持续传播（与重构前 ctx 重新赋值的语义一致）。
+	defer lc.saveTodos(lc.obsCtx)
 
 	for {
-		turnCtx, err := lc.beginTurn(ctx)
+		turnCtx, err := lc.beginTurn(lc.obsCtx)
 		if err != nil {
 			return err
 		}
 
+		input := lc.prepareTurnInput()
+		// turnStart 在预处理（含压缩）之后计时：FormatObservation 记录的耗时口径
+		// 保持为"本 Turn 的 LLM + 工具执行"，不含压缩预处理（与重构前一致）。
 		turnStart := time.Now()
-		input, _ := lc.prepareTurnInput()
 		log.Print(logfmt.FormatTurnStart(logPrefix, lc.turns, len(input.history), len(input.toolDefs)))
 
 		responseMsg, llmDuration, err := lc.generateTurn(turnCtx, input)
@@ -203,7 +207,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		lc.obs.OnTurnEnd(turnCtx, lc.turns, true)
 	}
 
-	lc.saveHistory(ctx)
+	lc.saveHistory(lc.obsCtx)
 	log.Print(logfmt.FormatLoopEnd(logPrefix, lc.turns, time.Since(lc.overallStart)))
 	return nil
 }
