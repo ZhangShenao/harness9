@@ -47,7 +47,7 @@ func TestBackoffDelay(t *testing.T) {
 		{"第 4 次失败 8 倍", 1 * time.Second, 4, 30 * time.Second, 8 * time.Second},
 		{"超过上限按上限封顶", 1 * time.Second, 10, 30 * time.Second, 30 * time.Second},
 		{"移位溢出防护：超大 attempt 取上限而非 0", 1 * time.Second, 100, 30 * time.Second, 30 * time.Second},
-		{"移位溢出防护： attempt 恰在位宽边界", 1 * time.Second, 64, 60 * time.Second, 60 * time.Second},
+		{"移位溢出防护：attempt 恰在位宽边界", 1 * time.Second, 64, 60 * time.Second, 60 * time.Second},
 		{"负数 attempt 按第 1 次处理", 500 * time.Millisecond, -3, 30 * time.Second, 500 * time.Millisecond},
 	}
 	for _, tt := range tests {
