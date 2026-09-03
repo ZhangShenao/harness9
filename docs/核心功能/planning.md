@@ -17,8 +17,9 @@ internal/tools/
 └── todo_write.go # todo_write 工具：读写 TodoStore + 批量防作弊校验
 
 internal/engine/
-└── agent_loop.go # filterReadOnlyTools（工具层权限过滤）+ Plan Mode prompt 注入
-                  # runLoop 中 TodoStore 的加载 / 保存（跨会话持久化）
+├── planmode.go   # filterReadOnlyTools（工具层权限过滤）+ Plan Mode prompt 前缀
+├── loop_phases.go # beginInteraction / saveTodos：TodoStore 的加载 / 保存（跨会话持久化）
+└── agent_loop.go # runLoop 编排器
 
 cmd/harness9/
 ├── tui_update.go # execPrompt / execContinuePrompt 常量
@@ -257,7 +258,7 @@ if directCompletions > 1 {
 Plan Mode 下，`write_file` 和 `edit_file` 从工具列表中**完全移除**，而不是通过 prompt 声明"不要创建文件"。
 
 ```go
-// agent_loop.go
+// planmode.go
 var planModeWhitelist = map[string]bool{
     "read_file":  true,
     "bash":       true,
@@ -266,7 +267,7 @@ var planModeWhitelist = map[string]bool{
 }
 
 func filterReadOnlyTools(tools []schema.ToolDefinition) []schema.ToolDefinition {
-    var result []schema.ToolDefinition
+    result := make([]schema.ToolDefinition, 0, len(tools))
     for _, t := range tools {
         if planModeWhitelist[t.Name] {
             result = append(result, t)
@@ -275,8 +276,9 @@ func filterReadOnlyTools(tools []schema.ToolDefinition) []schema.ToolDefinition 
     return result
 }
 
-// runLoop 中
-if planMode == planning.PlanModePlan {
+// loop_phases.go — prepareTurnInput 中（每轮 LLM 调用前）
+availableTools := e.registry.GetAvailableTools()
+if lc.planMode == planning.PlanModePlan {
     availableTools = filterReadOnlyTools(availableTools)
 }
 ```
@@ -294,15 +296,14 @@ Prompt 是软约束。LLM 会忘记 prompt 中的限制（尤其在上下文压�
 工具层的过滤无法表达"bash 只能用于只读命令"这类行为约束，因此 `runLoop` 在 Plan Mode 下对用户 prompt 追加前缀：
 
 ```go
-// agent_loop.go — runLoop
-if planMode == planning.PlanModePlan {
-    userPrompt = "分析以下请求，用 todo_write 输出一份可直接执行的实现计划，然后用纯文字简述计划后停止。\n" +
-        "todo 项要求：每条对应一个具体的实现动作（例如：创建某文件、实现某函数、运行某命令），\n" +
-        "而非高层规划描述（禁止写\"需求澄清\"、\"方案设计\"之类无法直接执行的条目）。\n" +
-        "如需了解当前代码库，可使用 read_file 或 bash（只读命令：ls、cat、find、grep）。\n" +
-        "不要创建文件、执行 build/install 或做任何实际修改。\n\n" +
-        userPrompt
-}
+// planmode.go — applyPlanModePrefix（由 loop_phases.go 的 beginInteraction 调用）
+const planModePromptPrefix = "分析以下请求，用 todo_write 输出一份可直接执行的实现计划，然后用纯文字简述计划后停止。\n" +
+    "todo 项要求：每条对应一个具体的实现动作（例如：创建某文件、实现某函数、运行某命令），\n" +
+    "而非高层规划描述（禁止写\"需求澄清\"、\"方案设计\"之类无法直接执行的条目）。\n" +
+    "如需了解当前代码库，可使用 read_file 或 bash（只读命令：ls、cat、find、grep）。\n" +
+    "不要创建文件、执行 build/install 或做任何实际修改。\n\n"
+
+// Plan Mode 下：userPrompt = planModePromptPrefix + userPrompt
 ```
 
 注入原则：**只说行为，不说权限**。"你现在有权限 X"这样的 prompt 声明是冗余的——权限由工具层决定。Prompt 只引导 LLM"该做什么"，不描述"能做什么"。
@@ -486,22 +487,25 @@ tasksPart = dimStyle.Render("  │  ") + accent.Render(fmt.Sprintf("%d/%d tasks"
 `runLoop` 在启动时恢复、在结束时保存（`defer` 保证即使 panic 也会执行）：
 
 ```go
-// agent_loop.go — runLoop
+// loop_phases.go — beginInteraction（启动恢复）与 saveTodos（defer 保存）
 // 启动时从 Session 恢复 TodoStore
-if sess != nil && todoStore != nil {
-    if todos, err := sess.GetTodos(ctx); err == nil {
-        todoStore.Write(todos)
+if lc.sess != nil && lc.todoStore != nil {
+    if todos, err := lc.sess.GetTodos(ctx); err != nil {
+        log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf("加载 todos 失败: %v", err)))
+    } else {
+        lc.todoStore.Write(todos)
     }
 }
 
-// 结束时保存（defer 在所有路径上执行）
-defer func() {
-    if sess != nil && todoStore != nil {
-        if err := sess.SaveTodos(ctx, todoStore.Read()); err != nil {
-            log.Print(...)
-        }
+// 结束时保存（runLoop 中 defer lc.saveTodos(ctx)，在所有路径上执行）
+func (lc *loopContext) saveTodos(ctx context.Context) {
+    if lc.sess == nil || lc.todoStore == nil {
+        return
     }
-}()
+    if err := lc.sess.SaveTodos(ctx, lc.todoStore.Read()); err != nil {
+        log.Print(logfmt.FormatMsg(lc.logPrefix, fmt.Sprintf("保存 todos 失败: %v", err)))
+    }
+}
 ```
 
 **跨 runLoop 调用的状态连续性**：`autoExecuting` 模式下，每次续跑都会触发一次新的 `runLoop`。每次 `runLoop` 启动时都从 DB 恢复 `TodoStore`，确保续跑时的初始状态与上一次运行结束时的状态一致——这是 `todo_write` 防作弊校验能正常工作的前提：`pending` 的任务在上次运行结束后保存到 DB，下次运行加载回内存，校验逻辑可以准确识别任务的历史状态。

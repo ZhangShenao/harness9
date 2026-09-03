@@ -605,7 +605,8 @@ func (e *AgentEngine) Compact(ctx context.Context) (memory.CompactionRecord, err
 | `internal/memory/compaction_offloader.go` | CompactionOffloader + OffloadEntry |
 | `internal/memory/record_store.go` | CompactionRecord + CompactionTier + RecordStore + FileRecordStore |
 | `internal/memory/compaction.go` | RecordedCompactor 接口 + repairOrphanedToolPairs |
-| `internal/engine/agent_loop.go` | applyCompactionWith 类型断言 + runLoop 压缩集成 |
+| `internal/engine/history.go` | applyCompactionWith 类型断言（压缩适配） |
+| `internal/engine/loop_phases.go` | prepareTurnInput 中的 runLoop 压缩集成 |
 | `internal/engine/stream.go` | EventCompaction 携带 CompactionRecord |
 | `internal/engine/compact.go` | 手动 /compact 适配 RecordedCompactor |
 | `internal/memory/manager.go` | WithCompactionRecordsDir + 级联 GC |

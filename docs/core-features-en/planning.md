@@ -17,8 +17,9 @@ internal/tools/
 └── todo_write.go # todo_write tool: reads/writes TodoStore + batch anti-cheat validation
 
 internal/engine/
-└── agent_loop.go # filterReadOnlyTools (tool-layer permission filtering) + Plan Mode prompt injection
-                  # TodoStore load/save within runLoop (cross-session persistence)
+├── planmode.go   # filterReadOnlyTools (tool-layer permission filtering) + Plan Mode prompt prefix
+├── loop_phases.go # beginInteraction / saveTodos: TodoStore load/save (cross-session persistence)
+└── agent_loop.go # runLoop orchestrator
 
 cmd/harness9/
 ├── tui_update.go # execPrompt / execContinuePrompt constants
@@ -257,7 +258,7 @@ A threshold of 1 retains protection against the original bug pattern (mass batch
 In Plan Mode, `write_file` and `edit_file` are **completely removed** from the tool list, rather than being restricted by declaring "don't create files" in the prompt.
 
 ```go
-// agent_loop.go
+// planmode.go
 var planModeWhitelist = map[string]bool{
     "read_file":  true,
     "bash":       true,
@@ -266,7 +267,7 @@ var planModeWhitelist = map[string]bool{
 }
 
 func filterReadOnlyTools(tools []schema.ToolDefinition) []schema.ToolDefinition {
-    var result []schema.ToolDefinition
+    result := make([]schema.ToolDefinition, 0, len(tools))
     for _, t := range tools {
         if planModeWhitelist[t.Name] {
             result = append(result, t)
@@ -275,8 +276,9 @@ func filterReadOnlyTools(tools []schema.ToolDefinition) []schema.ToolDefinition 
     return result
 }
 
-// within runLoop
-if planMode == planning.PlanModePlan {
+// loop_phases.go — inside prepareTurnInput (before each LLM call)
+availableTools := e.registry.GetAvailableTools()
+if lc.planMode == planning.PlanModePlan {
     availableTools = filterReadOnlyTools(availableTools)
 }
 ```
@@ -294,16 +296,15 @@ A prompt is a soft constraint. The LLM may forget restrictions stated in the pro
 Tool-layer filtering cannot express behavioral constraints like "bash may only be used for read-only commands", so `runLoop` prepends a prefix to the user prompt in Plan Mode:
 
 ```go
-// agent_loop.go — runLoop
-if planMode == planning.PlanModePlan {
-    userPrompt = "Analyze the following request, output a directly executable implementation plan using todo_write, " +
-        "then give a brief plain-text summary of the plan and stop.\n" +
-        "Todo item requirements: each item must correspond to a concrete implementation action (e.g.: create a certain file, implement a certain function, run a certain command), \n" +
-        "not a high-level planning description (do not write items like \"clarify requirements\" or \"design the approach\" that cannot be directly executed).\n" +
-        "You may use read_file or bash (read-only commands: ls, cat, find, grep) to understand the current codebase.\n" +
-        "Do not create files, run build/install, or make any actual modifications.\n\n" +
-        userPrompt
-}
+// planmode.go — applyPlanModePrefix (called by beginInteraction in loop_phases.go)
+const planModePromptPrefix = "Analyze the following request, output a directly executable implementation plan using todo_write, " +
+    "then give a brief plain-text summary of the plan and stop.\n" +
+    "Todo item requirements: each item must correspond to a concrete implementation action (e.g.: create a certain file, implement a certain function, run a certain command), \n" +
+    "not a high-level planning description (do not write items like \"clarify requirements\" or \"design the approach\" that cannot be directly executed).\n" +
+    "You may use read_file or bash (read-only commands: ls, cat, find, grep) to understand the current codebase.\n" +
+    "Do not create files, run build/install, or make any actual modifications.\n\n"
+
+// In Plan Mode: userPrompt = planModePromptPrefix + userPrompt
 ```
 
 Injection principle: **state behavior, not permission**. A prompt declaration like "you now have permission X" is redundant — permission is decided at the tool layer. The prompt only guides the LLM on "what to do," not "what it is able to do."
@@ -487,22 +488,25 @@ The contents of `TodoStore` are persisted to SQLite alongside the Session, so un
 `runLoop` restores it on startup and saves it at the end (`defer` guarantees it runs even in the event of a panic):
 
 ```go
-// agent_loop.go — runLoop
+// loop_phases.go — beginInteraction (startup restore) and saveTodos (deferred save)
 // Restore TodoStore from the Session at startup
-if sess != nil && todoStore != nil {
-    if todos, err := sess.GetTodos(ctx); err == nil {
-        todoStore.Write(todos)
+if lc.sess != nil && lc.todoStore != nil {
+    if todos, err := lc.sess.GetTodos(ctx); err != nil {
+        log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf("failed to load todos: %v", err)))
+    } else {
+        lc.todoStore.Write(todos)
     }
 }
 
-// Save at the end (defer executes on all paths)
-defer func() {
-    if sess != nil && todoStore != nil {
-        if err := sess.SaveTodos(ctx, todoStore.Read()); err != nil {
-            log.Print(...)
-        }
+// Save at the end (runLoop defers lc.saveTodos(ctx); executes on all paths)
+func (lc *loopContext) saveTodos(ctx context.Context) {
+    if lc.sess == nil || lc.todoStore == nil {
+        return
     }
-}()
+    if err := lc.sess.SaveTodos(ctx, lc.todoStore.Read()); err != nil {
+        log.Print(logfmt.FormatMsg(lc.logPrefix, fmt.Sprintf("failed to save todos: %v", err)))
+    }
+}
 ```
 
 **State continuity across runLoop invocations**: in `autoExecuting` mode, every resumption triggers a new `runLoop`. Each `runLoop` invocation restores `TodoStore` from the DB at startup, ensuring the initial state of a resumed run matches the state at the end of the previous run — this is the prerequisite for `todo_write`'s anti-cheat validation to work correctly: `pending` tasks are saved to the DB at the end of the previous run and loaded back into memory on the next run, so the validation logic can accurately recognize a task's historical state.

@@ -39,9 +39,15 @@ harness9 的核心是一个**标准 ReAct 循环**引擎，每个 Turn 执行一
 | `OpenAIProvider` | `internal/provider/openai.go` | OpenAI 兼容 API 适配器（OpenAI / OpenRouter / Azure） |
 | `AnthropicProvider` | `internal/provider/anthropic.go` | Anthropic 兼容 API 适配器（Anthropic / OpenRouter） |
 | `Registry` | `internal/tools/registry.go` | 解耦工具发现与执行 |
-| `AgentEngine.Run` | `internal/engine/agent_loop.go` | 阻塞式 ReAct 主循环 |
+| `AgentEngine.Run` | `internal/engine/agent_loop.go` | 阻塞式 ReAct 主循环（编排器 + emitter 定义） |
 | `AgentEngine.RunStream` | `internal/engine/stream.go` | 流式 ReAct 主循环，逐 token 输出 |
 | `engine.Event` | `internal/engine/stream.go` | 引擎面向客户端的流式事件类型 |
+| `runLoop 阶段化实现` | `internal/engine/loop_phases.go` | 主循环各阶段私有方法：初始化 / Turn 前置 / 预处理 / 生成 / 停滞检测 / Observation 注入 / 收尾 |
+| `With* 配置选项` | `internal/engine/options.go` | 函数式选项与运行期 `SetSession` / `SetPlanMode` |
+| `generateWithRetry` | `internal/engine/retry.go` | LLM 调用双档重试（默认预算 / 网络传输预算）+ 网络错误分类 |
+| `历史加载与持久化` | `internal/engine/history.go` | Session 历史加载 / 保存、system prompt 构建、压缩适配 |
+| `Plan Mode 过滤` | `internal/engine/planmode.go` | 只读工具白名单、规划前缀、进展工具与 nudge 判定 |
+| `executeTools` | `internal/engine/tools_exec.go` | 同 Turn 多工具并发调度（信号量 + 每工具独立超时） |
 | `env` | `internal/env/env.go` | 基于 .env 文件的环境变量配置加载 |
 
 ## 2. ReAct 设计理念
@@ -182,6 +188,21 @@ Turn 2:
 
 ## 4. Agent Loop 循环流程
 
+循环由 `runLoop` 编排器（`agent_loop.go`）按阶段调度，各阶段实现为 `loop_phases.go` 中的独立私有方法，共享一个聚合交互状态的 `loopContext`：
+
+```
+beginInteraction      初始化：observer 接入、状态快照、Todo 恢复、Plan 前缀、历史加载
+for {
+    beginTurn          Turn 计数 + 双重终止判定（MaxTurns / ctx 取消）
+    prepareTurnInput   工具过滤 + 压缩检查 + token 估算上报 + nudge 注入
+    generateTurn       带重试 LLM 调用 + 实际用量上报
+    （自然终止判定）     模型无工具调用则收敛退出
+    executeTools       并发工具调度（tools_exec.go）
+    injectObservations Observation 注入
+}
+saveHistory / saveTodos   收尾：历史仅自然终止路径持久化；todos 所有退出路径持久化
+```
+
 ```
                      ┌─────────────────────┐
                      │   初始化对话上下文     │
@@ -229,7 +250,7 @@ Turn 2:
 // loadHistoryWith 从 Session 恢复历史消息，注入 system prompt，追加用户输入。
 // startLen 标记新消息起始位置（已有历史 + system 不持久化），
 // 用于 saveHistoryWith 时仅保存 msgs[startLen:]。
-func (e *AgentEngine) loadHistoryWith(ctx context.Context, userPrompt string, sess memory.Session) ([]schema.Message, int) {
+func (e *AgentEngine) loadHistoryWith(ctx context.Context, userPrompt string, sess memory.Session, logPrefix string) ([]schema.Message, int) {
     var history []schema.Message
     if sess != nil {
         msgs, err := sess.GetMessages(ctx, 0) // 0 = 返回全部历史
@@ -318,14 +339,19 @@ go func(idx int, tc schema.ToolCall) {
 
 ### 4.5 Observation 阶段
 
-工具执行完毕后，结果按原始顺序追加到上下文：
+工具执行完毕后，`injectObservations` 将结果按原始顺序追加到上下文。空输出兜底为占位文案（部分 backend 拒绝空 content 的 tool_result，返回 400 且无信息可供模型推理），`IsError` 透传给 Provider 设置 `tool_result.is_error`（强化自愈信号）：
 
 ```go
-for i, toolCall := range responseMsg.ToolCalls {
-    contextHistory = append(contextHistory, schema.Message{
+for i, toolCall := range toolCalls {
+    content := results[i].Output
+    if content == "" {
+        content = "[工具执行完成，无输出]"   // 空输出兜底，避免 400 与无效轮次
+    }
+    history = append(history, schema.Message{
         Role:       schema.RoleUser,        // Observation 以 user 角色回传
-        Content:    results[i].Output,
+        Content:    content,
         ToolCallID: toolCall.ID,             // 关联原始请求
+        IsError:    results[i].IsError,      // 透传错误信号，供 Provider 标记 is_error
     })
 }
 ```
