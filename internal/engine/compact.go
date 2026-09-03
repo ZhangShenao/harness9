@@ -7,7 +7,9 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log"
 
+	"github.com/harness9/internal/logfmt"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/schema"
 )
@@ -74,6 +76,13 @@ func (e *AgentEngine) Compact(ctx context.Context) (memory.CompactionRecord, err
 		return record, fmt.Errorf("compact: clear session: %w", err)
 	}
 	if err := sess.AddMessages(ctx, compacted); err != nil {
+		// 写回失败时尽力回滚原始历史：Clear 已执行、compacted 未落盘，
+		// 若不恢复原始消息，一次瞬时 DB 错误就会导致整条会话历史永久丢失。
+		// 回滚本身也可能失败（如 DB 持续不可用），此时只能记录告警，无法挽留数据。
+		if restoreErr := sess.AddMessages(ctx, msgs); restoreErr != nil {
+			log.Print(logfmt.FormatMsg("engine", fmt.Sprintf(
+				"compact: 写回压缩历史失败且回滚也失败（会话数据可能丢失）: 写回=%v 回滚=%v", err, restoreErr)))
+		}
 		return record, fmt.Errorf("compact: write compacted messages: %w", err)
 	}
 
