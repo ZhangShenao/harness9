@@ -374,6 +374,6 @@ func TestRun_ChildPlanIsolation(t *testing.T) {
 
 	items := parentStore.Read()
 	if len(items) != 1 || items[0].ID != "p1" {
-		t.Errorf("父 PlanStore 必须不受子代理影响, got %+v", items)
+		t.Errorf("父 PlanStore 必须不受子代理影响，got %+v", items)
 	}
 }

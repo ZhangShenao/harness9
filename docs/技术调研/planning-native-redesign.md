@@ -187,7 +187,7 @@ Goal: <goal>
 | `planning/todo.go` + `tools/todo_write.go` + 测试 | 删除（被 Plan/PlanStore/plan_write 替代） |
 | `engine/planmode.go` | 删除；`hasProgressTool`/`appendUserNudge`/`progressToolNames` 迁至 `engine/nudge.go` |
 | `engine/agent_loop.go` / `options.go` / `loop_phases.go` | 移除 `planMode` 字段、`WithPlanMode`、`SetPlanMode`、loopContext 快照、`prepareTurnInput` 过滤分支；相关测试改写 |
-| TUI（tui.go / tui_update.go / tui_view.go） | 移除 Shift+Tab 切换、`/plan` 命令、「Plan Mode 完成」对话框（视图+键盘+状态字段）、`[PLAN]` 标签、琥珀 accent 分支、`planModeLabelStyle` |
+| TUI（tui.go / tui_update.go / tui_view.go） | 移除 Shift+Tab 切换、`/plan` 命令、「Plan Mode 完成」对话框（视图 + 键盘 + 状态字段）、`[PLAN]` 标签、琥珀 accent 分支、`planModeLabelStyle` |
 | `engine/permission.go` | 注释更新（移除 PlanMode 正交性描述） |
 | `hooks/plan_writer.go` | 改造为 `MarkdownPlanSink`（实现新 PlanSink 接口） |
 
