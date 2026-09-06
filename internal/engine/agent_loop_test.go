@@ -475,10 +475,10 @@ func TestWithPromptBuilder_FallbackDefault(t *testing.T) {
 	}
 }
 
-// TestRunLoop_WithTodoStore_RestoresAndSaves 验证 WithTodoStore 的跨会话持久化行为：
-//  1. runLoop 启动时从 Session 恢复 TodoStore 状态（Session 是持久化的 source of truth）
+// TestRunLoop_WithPlanStore_RestoresAndSaves 验证 WithPlanStore 的跨会话持久化行为：
+//  1. runLoop 启动时从 Session 恢复 PlanStore 状态（Session 是持久化的 source of truth）
 //  2. runLoop 结束时通过 defer 将最终状态保存回 Session
-func TestRunLoop_WithTodoStore_RestoresAndSaves(t *testing.T) {
+func TestRunLoop_WithPlanStore_RestoresAndSaves(t *testing.T) {
 	p := &countingProvider{
 		responses: []func([]schema.ToolDefinition) *schema.Message{
 			func(_ []schema.ToolDefinition) *schema.Message {
@@ -488,33 +488,33 @@ func TestRunLoop_WithTodoStore_RestoresAndSaves(t *testing.T) {
 	}
 	reg := &staticRegistry{output: "ok"}
 
-	// 准备一个已有持久化 todos 的 Session（模拟上次 Run 结束后保存的状态）。
+	// 准备一个已有持久化 plans 的 Session（模拟上次 Run 结束后保存的状态）。
 	sess := newMemorySessionForTest("sess-1")
-	if err := sess.SaveTodos(context.Background(), []planning.TodoItem{
-		{ID: "t1", Content: "pre-existing task", Status: planning.TodoPending},
+	if err := sess.SavePlan(context.Background(), []planning.PlanItem{
+		{ID: "t1", Content: "pre-existing task", Status: planning.PlanPending},
 	}); err != nil {
-		t.Fatalf("SaveTodos setup error: %v", err)
+		t.Fatalf("SavePlan setup error: %v", err)
 	}
 
-	todoStore := planning.NewTodoStore()
+	planStore := planning.NewPlanStore()
 
 	eng := NewAgentEngine(p, reg, t.TempDir(),
-		WithTodoStore(todoStore),
+		WithPlanStore(planStore),
 		WithSession(sess),
 	)
 	if err := eng.Run(context.Background(), "test"); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 
-	// 验证：runLoop 启动时应从 Session 恢复 todos 到 todoStore。
-	// 恢复后 todoStore 中应有 t1（在 Run 开始时加载）。
-	// Run 结束时 defer 将（恢复后、未被修改的）todos 重新保存到 Session。
-	saved, err := sess.GetTodos(context.Background())
+	// 验证：runLoop 启动时应从 Session 恢复 plans 到 planStore。
+	// 恢复后 planStore 中应有 t1（在 Run 开始时加载）。
+	// Run 结束时 defer 将（恢复后、未被修改的）plans 重新保存到 Session。
+	saved, err := sess.GetPlan(context.Background())
 	if err != nil {
-		t.Fatalf("GetTodos error: %v", err)
+		t.Fatalf("GetPlan error: %v", err)
 	}
 	if len(saved) != 1 || saved[0].ID != "t1" {
-		t.Errorf("expected saved todos to contain t1, got %+v", saved)
+		t.Errorf("expected saved plans to contain t1, got %+v", saved)
 	}
 }
 
@@ -544,8 +544,8 @@ func TestRunLoop_PlanMode_InjectsPlanPrefix(t *testing.T) {
 		t.Fatalf("Run error: %v", err)
 	}
 	// Plan Mode 前缀必须存在于用户消息中
-	if !strings.Contains(receivedUserPrompt, "todo_write") {
-		t.Errorf("Plan Mode should inject planning prefix mentioning todo_write, got: %q", receivedUserPrompt)
+	if !strings.Contains(receivedUserPrompt, "plan_write") {
+		t.Errorf("Plan Mode should inject planning prefix mentioning plan_write, got: %q", receivedUserPrompt)
 	}
 	if !strings.Contains(receivedUserPrompt, "implement feature X") {
 		t.Errorf("original user prompt should be preserved, got: %q", receivedUserPrompt)
@@ -554,13 +554,13 @@ func TestRunLoop_PlanMode_InjectsPlanPrefix(t *testing.T) {
 
 // ---- 测试辅助类型 ----
 
-// memorySessionForTest 是支持真实 GetTodos/SaveTodos 持久化语义的 Session 桩。
-// 注意：memory.MemorySession 的 SaveTodos 是 no-op、GetTodos 始终返回空列表，
-// 无法用于验证跨 runLoop 的 todo restore/save 行为，因此此处独立实现。
+// memorySessionForTest 是支持真实 GetPlan/SavePlan 持久化语义的 Session 桩。
+// 注意：memory.MemorySession 的 SavePlan 是 no-op、GetPlan 始终返回空列表，
+// 无法用于验证跨 runLoop 的 plan restore/save 行为，因此此处独立实现。
 type memorySessionForTest struct {
-	id    string
-	msgs  []schema.Message
-	todos []planning.TodoItem
+	id   string
+	msgs []schema.Message
+	plan []planning.PlanItem
 }
 
 func newMemorySessionForTest(id string) *memorySessionForTest {
@@ -584,11 +584,11 @@ func (s *memorySessionForTest) PopMessage(_ context.Context) (*schema.Message, e
 	return &m, nil
 }
 func (s *memorySessionForTest) Clear(_ context.Context) error { s.msgs = nil; return nil }
-func (s *memorySessionForTest) GetTodos(_ context.Context) ([]planning.TodoItem, error) {
-	return append([]planning.TodoItem(nil), s.todos...), nil
+func (s *memorySessionForTest) GetPlan(_ context.Context) ([]planning.PlanItem, error) {
+	return append([]planning.PlanItem(nil), s.plan...), nil
 }
-func (s *memorySessionForTest) SaveTodos(_ context.Context, items []planning.TodoItem) error {
-	s.todos = append([]planning.TodoItem(nil), items...)
+func (s *memorySessionForTest) SavePlan(_ context.Context, items []planning.PlanItem) error {
+	s.plan = append([]planning.PlanItem(nil), items...)
 	return nil
 }
 
@@ -793,7 +793,7 @@ func TestRunLoop_PlanMode_FiltersWriteTools(t *testing.T) {
 		{Name: "write_file", Description: "write"},
 		{Name: "bash", Description: "bash"},
 		{Name: "edit_file", Description: "edit"},
-		{Name: "todo_write", Description: "todo"},
+		{Name: "plan_write", Description: "plan"},
 	}
 	reg := &staticRegistry{tools: allTools, output: "ok"}
 
@@ -826,8 +826,8 @@ func TestRunLoop_PlanMode_FiltersWriteTools(t *testing.T) {
 	if !found["bash"] {
 		t.Error("bash should be visible in PlanMode")
 	}
-	if !found["todo_write"] {
-		t.Error("todo_write should be visible in PlanMode (needed to write the plan)")
+	if !found["plan_write"] {
+		t.Error("plan_write should be visible in PlanMode (needed to write the plan)")
 	}
 }
 

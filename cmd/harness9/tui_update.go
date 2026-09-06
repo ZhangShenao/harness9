@@ -51,17 +51,17 @@ import (
 //     这是 prompt 层对抗幻觉执行的约束，与工具层的批量完成检测（directCompletions > 1）形成双重防护。
 //   - 只描述行为规范，不声明权限（权限由工具层 filterReadOnlyTools 硬性控制，prompt 声明是冗余的）。
 const execPrompt = "按照 todo 清单逐项执行。规则：\n" +
-	"1. 每开始一项前，用 todo_write 将其状态设为 in_progress\n" +
+	"1. 每开始一项前，用 plan_write 将其状态设为 in_progress\n" +
 	"2. 用工具完成该项的实际工作——创建文件、写代码、运行命令等；" +
-	"仅更新 todo_write 状态而不调用其他工具，不算完成该项\n" +
-	"3. 确认实际产出后，用 todo_write 将其状态设为 completed\n" +
+	"仅更新 plan_write 状态而不调用其他工具，不算完成该项\n" +
+	"3. 确认实际产出后，用 plan_write 将其状态设为 completed\n" +
 	"4. 不要输出进度摘要文字，立即处理下一项\n" +
 	"全部完成后，用一句话汇报整体结果。"
 
 // execContinuePrompt 是 autoExecuting 模式下每次 EventDone 后触发续跑的精简指令。
 // 续跑场景下 LLM 已知晓基本规则（上下文中有 execPrompt 历史），此处只需提示继续处理下一项。
 const execContinuePrompt = "继续处理 todo 清单中下一个 pending 或 in_progress 的任务项。" +
-	"先用 todo_write 标记为 in_progress，然后用工具完成实际工作（写文件、执行命令等），" +
+	"先用 plan_write 标记为 in_progress，然后用工具完成实际工作（写文件、执行命令等），" +
 	"确认产出后标记为 completed，再处理下一项。" +
 	"不要只更新状态而不做实际操作，不要输出进度摘要。"
 
@@ -686,9 +686,9 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		}
 		m.lines = append(m.lines, line)
 
-		// todo_write 完成后，在工具行下方追加最新 todo 快照
-		if toolName == "todo_write" && !result.IsError && m.todoStore != nil {
-			m = m.updateTodoBlock()
+		// plan_write 完成后，在工具行下方追加最新 todo 快照
+		if toolName == "plan_write" && !result.IsError && m.planStore != nil {
+			m = m.updatePlanBlock()
 		}
 
 		m.pendingReplyStart = len(m.lines)
@@ -724,14 +724,14 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		// 停滞检测：连续 3 次 EventDone 后已完成数（done）无增加，判定为空转，放弃自动执行。
 		// 使用 done 而非 pending 计数判断进度：只有 completed 才代表真实工作产出，
 		// pending→in_progress 只是状态标记，不代表任何实际产出。
-		if m.autoExecuting && m.todoStore != nil {
-			items := m.todoStore.Read()
+		if m.autoExecuting && m.planStore != nil {
+			items := m.planStore.Read()
 			var pending, done int
 			for _, item := range items {
 				switch item.Status {
-				case planning.TodoPending, planning.TodoInProgress:
+				case planning.PlanPending, planning.PlanInProgress:
 					pending++
-				case planning.TodoCompleted:
+				case planning.PlanCompleted:
 					done++
 				}
 			}
@@ -1735,13 +1735,13 @@ func (m tuiModel) dispatchShellCommand(cmd string) (tuiModel, tea.Cmd) {
 	return m, runShellCmd(m.workDir, cmd)
 }
 
-// updateTodoBlock 在对话流末尾追加最新 todo 快照。
-// 每次 todo_write 完成后调用，快照追加在工具完成行之后，呈现实时进度。
-func (m tuiModel) updateTodoBlock() tuiModel {
-	if m.todoStore == nil {
+// updatePlanBlock 在对话流末尾追加最新 todo 快照。
+// 每次 plan_write 完成后调用，快照追加在工具完成行之后，呈现实时进度。
+func (m tuiModel) updatePlanBlock() tuiModel {
+	if m.planStore == nil {
 		return m
 	}
-	todoLines := m.renderTodoLines(m.todoStore.Read())
+	todoLines := m.renderPlanLines(m.planStore.Read())
 	if len(todoLines) == 0 {
 		return m
 	}

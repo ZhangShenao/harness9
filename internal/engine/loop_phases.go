@@ -10,7 +10,7 @@
 //	trackStall         → 停滞检测：进展工具计数维护
 //	injectObservations → 结果注入：工具执行结果作为 Observation（user 角色）追加
 //	saveHistory        → 收尾：本次 Run 新增消息持久化（仅自然终止路径）
-//	saveTodos          → 收尾：TodoStore 持久化（所有退出路径，defer 保证）
+//	savePlan          → 收尾：PlanStore 持久化（所有退出路径，defer 保证）
 //
 // 并发模型：loopContext 的字段仅在 runLoop 所在 goroutine 中读写（emitter 内部
 // 回调除外，其自身保证并发安全），因此无需加锁；与 TUI goroutine 的隔离通过
@@ -41,7 +41,7 @@ type loopContext struct {
 	// 等跨 goroutine 修改的影响（修改仅对下一次交互生效）。
 	sess      memory.Session
 	comp      memory.Compactor
-	todoStore *planning.TodoStore
+	planStore *planning.PlanStore
 	planMode  planning.PlanMode
 
 	obs                EngineObserver   // 非 nil：入口已兜底为 noopObserver
@@ -93,27 +93,27 @@ func (e *AgentEngine) beginInteraction(ctx context.Context, userPrompt, logPrefi
 	// 这些注入会丢失（OTELEngineObserver 的 interaction→turn Span 父子关系即依赖此传播）。
 	ctx = lc.obsCtx
 
-	// 在循环开始时快照 session/compactor/planMode/todoStore，避免与 TUI goroutine 的
+	// 在循环开始时快照 session/compactor/planMode/planStore，避免与 TUI goroutine 的
 	// SetSession/SetPlanMode 产生数据竞争。
 	e.mu.RLock()
 	lc.sess = e.session
 	lc.comp = e.compactor
 	lc.planMode = e.planMode
-	lc.todoStore = e.todoStore
+	lc.planStore = e.planStore
 	e.mu.RUnlock()
 
-	// 启动时从 Session 恢复 TodoStore 状态（跨会话续接未完成任务）。
-	// 失败不终止 Run：todo 是辅助状态，丢失可接受，仅记录告警。
-	if lc.sess != nil && lc.todoStore != nil {
-		if todos, err := lc.sess.GetTodos(ctx); err != nil {
-			log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf("加载 todos 失败: %v", err)))
+	// 启动时从 Session 恢复 PlanStore 状态（跨会话续接未完成任务）。
+	// 失败不终止 Run：plan 是辅助状态，丢失可接受，仅记录告警。
+	if lc.sess != nil && lc.planStore != nil {
+		if plan, err := lc.sess.GetPlan(ctx); err != nil {
+			log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf("加载 plan 失败: %v", err)))
 		} else {
-			lc.todoStore.Write(todos)
+			lc.planStore.Write(plan)
 		}
 	}
 
 	// Plan Mode：注入规划行为约束（write_file/edit_file 已由 filterReadOnlyTools 在工具层
-	// 硬性过滤，此处只补充 bash 只读限制和 todo_write 输出要求等无法在工具层表达的行为规则）。
+	// 硬性过滤，此处只补充 bash 只读限制和 plan_write 输出要求等无法在工具层表达的行为规则）。
 	userPrompt = applyPlanModePrefix(lc.planMode, userPrompt)
 
 	lc.history, lc.startLen = e.loadHistoryWith(ctx, userPrompt, lc.sess, logPrefix)
@@ -247,13 +247,13 @@ func (lc *loopContext) saveHistory(ctx context.Context) {
 	lc.engine.saveHistoryWith(ctx, lc.sess, lc.history, lc.startLen, lc.logPrefix)
 }
 
-// saveTodos 将 TodoStore 持久化到 Session（write-replace）。
+// savePlan 将 PlanStore 持久化到 Session（write-replace）。
 // 以 defer 注册、在所有退出路径执行；失败仅记录告警，不影响 Run 结果。
-func (lc *loopContext) saveTodos(ctx context.Context) {
-	if lc.sess == nil || lc.todoStore == nil {
+func (lc *loopContext) savePlan(ctx context.Context) {
+	if lc.sess == nil || lc.planStore == nil {
 		return
 	}
-	if err := lc.sess.SaveTodos(ctx, lc.todoStore.Read()); err != nil {
-		log.Print(logfmt.FormatMsg(lc.logPrefix, fmt.Sprintf("保存 todos 失败: %v", err)))
+	if err := lc.sess.SavePlan(ctx, lc.planStore.Read()); err != nil {
+		log.Print(logfmt.FormatMsg(lc.logPrefix, fmt.Sprintf("保存 plan 失败: %v", err)))
 	}
 }

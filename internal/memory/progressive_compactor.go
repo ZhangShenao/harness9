@@ -458,9 +458,9 @@ func (c *ProgressiveCompactor) buildCompactionMsg(anchors []Anchor, summary stri
 		}
 	}
 	if c.TodoInjector != nil {
-		if todoText := c.TodoInjector.FormatForInjection(); todoText != "" {
+		if planText := c.TodoInjector.FormatPlan(); planText != "" {
 			sb.WriteString("\n\n## Active Tasks\n")
-			sb.WriteString(todoText)
+			sb.WriteString(planText)
 		}
 	}
 	return schema.Message{Role: schema.RoleUser, Content: sb.String()}

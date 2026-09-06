@@ -13,8 +13,8 @@ import (
 
 // planModePromptPrefix 是 Plan Mode 下注入到用户 prompt 前的规划指令前缀。
 // 要求计划条目一一对应可执行动作，避免产出"需求澄清/方案设计"等无法落地的空计划。
-const planModePromptPrefix = "分析以下请求，用 todo_write 输出一份可直接执行的实现计划，然后用纯文字简述计划后停止。\n" +
-	"todo 项要求：每条对应一个具体的实现动作（例如：创建某文件、实现某函数、运行某命令），\n" +
+const planModePromptPrefix = "分析以下请求，用 plan_write 输出一份可直接执行的实现计划，然后用纯文字简述计划后停止。\n" +
+	"plan 项要求：每条对应一个具体的实现动作（例如：创建某文件、实现某函数、运行某命令），\n" +
 	"而非高层规划描述（禁止写\"需求澄清\"、\"方案设计\"之类无法直接执行的条目）。\n" +
 	"如需了解当前代码库，可使用 read_file 或 bash（只读命令：ls、cat、find、grep）。\n" +
 	"不要创建文件、执行 build/install 或做任何实际修改。\n\n"
@@ -23,7 +23,7 @@ const planModePromptPrefix = "分析以下请求，用 todo_write 输出一份�
 //
 // 白名单的设计意图：
 //   - read_file / bash：允许探索代码库，但 prompt 层约束 bash 只使用只读命令（ls/cat/find/grep）
-//   - todo_write：Plan Mode 的核心产出——LLM 通过此工具输出结构化实现计划
+//   - plan_write：Plan Mode 的核心产出——LLM 通过此工具输出结构化实现计划
 //   - use_skill：允许加载 Skills 获取项目规范文档
 //   - write_file / edit_file：不在白名单，从工具列表中硬性移除（工具层硬约束，优于 prompt 层软约束）
 //   - web_search / web_fetch：不在白名单；Plan Mode 专注于本地代码库探索，
@@ -35,7 +35,7 @@ var planModeWhitelist = map[string]bool{
 	"read_file":  true,
 	"bash":       true,
 	"use_skill":  true,
-	"todo_write": true,
+	"plan_write": true,
 }
 
 // progressToolNames 是被视为"取得实质进展"的工具集合（用于 WithStallNudge 停滞检测）。

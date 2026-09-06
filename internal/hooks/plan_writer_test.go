@@ -19,11 +19,11 @@ func TestFilePlanWriter_NonGitProject_WritesToHomeDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	todos := []planning.TodoItem{
-		{ID: "1", Content: "step one", Status: planning.TodoPending},
-		{ID: "2", Content: "step two", Status: planning.TodoCompleted},
+	plans := []planning.PlanItem{
+		{ID: "1", Content: "step one", Status: planning.PlanPending},
+		{ID: "2", Content: "step two", Status: planning.PlanCompleted},
 	}
-	if err := pw.Write(todos); err != nil {
+	if err := pw.Write(plans); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
 
@@ -59,7 +59,7 @@ func TestFilePlanWriter_GitProject_WritesToWorkDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := pw.Write([]planning.TodoItem{{ID: "1", Content: "git task", Status: planning.TodoInProgress}}); err != nil {
+	if err := pw.Write([]planning.PlanItem{{ID: "1", Content: "git task", Status: planning.PlanInProgress}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -86,8 +86,8 @@ func TestFilePlanWriter_Overwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pw.Write([]planning.TodoItem{{ID: "1", Content: "first", Status: planning.TodoPending}})
-	pw.Write([]planning.TodoItem{{ID: "1", Content: "first", Status: planning.TodoCompleted}})
+	pw.Write([]planning.PlanItem{{ID: "1", Content: "first", Status: planning.PlanPending}})
+	pw.Write([]planning.PlanItem{{ID: "1", Content: "first", Status: planning.PlanCompleted}})
 
 	// Should still be one file (overwritten)
 	plansDir := filepath.Join(homeDir, ".harness9", "plans")
@@ -106,13 +106,13 @@ func TestFilePlanWriter_AllStatuses(t *testing.T) {
 	homeDir := t.TempDir()
 	pw, _ := hooks.NewFilePlanWriter(workDir, homeDir, "sess-status")
 
-	todos := []planning.TodoItem{
-		{ID: "1", Content: "pending task", Status: planning.TodoPending},
-		{ID: "2", Content: "active task", Status: planning.TodoInProgress},
-		{ID: "3", Content: "done task", Status: planning.TodoCompleted},
-		{ID: "4", Content: "dropped task", Status: planning.TodoCancelled},
+	plans := []planning.PlanItem{
+		{ID: "1", Content: "pending task", Status: planning.PlanPending},
+		{ID: "2", Content: "active task", Status: planning.PlanInProgress},
+		{ID: "3", Content: "done task", Status: planning.PlanCompleted},
+		{ID: "4", Content: "dropped task", Status: planning.PlanCancelled},
 	}
-	if err := pw.Write(todos); err != nil {
+	if err := pw.Write(plans); err != nil {
 		t.Fatal(err)
 	}
 

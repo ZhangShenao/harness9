@@ -48,7 +48,7 @@ type AgentEngine struct {
 	session            memory.Session      // 可选，nil 表示无持久化
 	compactor          memory.Compactor    // 可选，nil 表示不压缩
 	planMode           planning.PlanMode   // 当前执行模式，影响工具过滤
-	todoStore          *planning.TodoStore // 可选，nil 表示无 planning
+	planStore          *planning.PlanStore // 可选，nil 表示无 planning
 	permissionMode     PermissionMode      // 全局权限策略，影响审批行为
 	nudgeInterval      int                 // >0 时每隔该轮数注入一次记忆 nudge
 	nudgeText          string              // nudge 提示文本
@@ -157,19 +157,19 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 //	saveHistory      → 仅自然终止路径持久化新增消息
 //
 // 错误语义：非自然终止（MaxTurns / ctx 取消 / 生成失败）时返回错误且不持久化
-// 本轮新增历史（丢弃整条轨迹，与既有行为一致）；TodoStore 无论何种退出路径均持久化。
+// 本轮新增历史（丢弃整条轨迹，与既有行为一致）；PlanStore 无论何种退出路径均持久化。
 func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix string, em emitter) error {
 	log.Print(logfmt.FormatLoopStart(logPrefix, e.workDir, e.maxTurns, e.toolTimeout, e.maxConcurrentTools))
 
 	lc := e.beginInteraction(ctx, userPrompt, logPrefix, em)
 
 	// defer 注册顺序（LIFO 决定执行顺序）：
-	//   OnInteractionEnd 先注册 → 交互结束时最后执行，确保 span 覆盖 todos 持久化；
-	//   saveTodos 后注册 → 所有退出路径最先执行，保证规划进度不因异常退出丢失。
+	//   OnInteractionEnd 先注册 → 交互结束时最后执行，确保 span 覆盖 plan 持久化；
+	//   savePlan 后注册 → 所有退出路径最先执行，保证规划进度不因异常退出丢失。
 	defer func() { lc.obs.OnInteractionEnd(lc.obsCtx, lc.turns, lc.interactionErr) }()
 	// 所有阶段与收尾均传递 obsCtx（observer 增强后的 ctx），确保 Span/值注入
 	// 在整个交互生命周期内持续传播（与重构前 ctx 重新赋值的语义一致）。
-	defer lc.saveTodos(lc.obsCtx)
+	defer lc.savePlan(lc.obsCtx)
 
 	for {
 		turnCtx, err := lc.beginTurn(lc.obsCtx)

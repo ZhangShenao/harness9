@@ -174,91 +174,91 @@ func TestSQLiteSession_Persistence(t *testing.T) {
 	}
 }
 
-func TestSQLiteSession_SaveAndGetTodos(t *testing.T) {
+func TestSQLiteSession_SaveAndGetPlan(t *testing.T) {
 	ctx := context.Background()
 	sess := newTestSession(t)
 
-	items := []planning.TodoItem{
-		{ID: "1", Content: "step one", Status: planning.TodoPending},
-		{ID: "2", Content: "step two", Status: planning.TodoInProgress},
-		{ID: "3", Content: "step three", Status: planning.TodoCompleted},
+	items := []planning.PlanItem{
+		{ID: "1", Content: "step one", Status: planning.PlanPending},
+		{ID: "2", Content: "step two", Status: planning.PlanInProgress},
+		{ID: "3", Content: "step three", Status: planning.PlanCompleted},
 	}
 
-	if err := sess.SaveTodos(ctx, items); err != nil {
-		t.Fatalf("SaveTodos error: %v", err)
+	if err := sess.SavePlan(ctx, items); err != nil {
+		t.Fatalf("SavePlan error: %v", err)
 	}
 
-	got, err := sess.GetTodos(ctx)
+	got, err := sess.GetPlan(ctx)
 	if err != nil {
-		t.Fatalf("GetTodos error: %v", err)
+		t.Fatalf("GetPlan error: %v", err)
 	}
 	if len(got) != 3 {
-		t.Fatalf("want 3 todos, got %d", len(got))
+		t.Fatalf("want 3 plans, got %d", len(got))
 	}
-	if got[0].ID != "1" || got[0].Content != "step one" || got[0].Status != planning.TodoPending {
+	if got[0].ID != "1" || got[0].Content != "step one" || got[0].Status != planning.PlanPending {
 		t.Errorf("unexpected item 0: %+v", got[0])
 	}
-	if got[1].ID != "2" || got[1].Content != "step two" || got[1].Status != planning.TodoInProgress {
+	if got[1].ID != "2" || got[1].Content != "step two" || got[1].Status != planning.PlanInProgress {
 		t.Errorf("unexpected item 1: %+v", got[1])
 	}
-	if got[2].ID != "3" || got[2].Content != "step three" || got[2].Status != planning.TodoCompleted {
+	if got[2].ID != "3" || got[2].Content != "step three" || got[2].Status != planning.PlanCompleted {
 		t.Errorf("unexpected item 2: %+v", got[2])
 	}
 }
 
-func TestSQLiteSession_SaveTodos_WriteReplace(t *testing.T) {
+func TestSQLiteSession_SavePlan_WriteReplace(t *testing.T) {
 	ctx := context.Background()
 	sess := newTestSession(t)
 
-	first := []planning.TodoItem{
-		{ID: "old", Content: "old task", Status: planning.TodoPending},
+	first := []planning.PlanItem{
+		{ID: "old", Content: "old task", Status: planning.PlanPending},
 	}
-	if err := sess.SaveTodos(ctx, first); err != nil {
-		t.Fatalf("first SaveTodos: %v", err)
-	}
-
-	second := []planning.TodoItem{
-		{ID: "new", Content: "new task", Status: planning.TodoInProgress},
-	}
-	if err := sess.SaveTodos(ctx, second); err != nil {
-		t.Fatalf("second SaveTodos: %v", err)
+	if err := sess.SavePlan(ctx, first); err != nil {
+		t.Fatalf("first SavePlan: %v", err)
 	}
 
-	got, err := sess.GetTodos(ctx)
+	second := []planning.PlanItem{
+		{ID: "new", Content: "new task", Status: planning.PlanInProgress},
+	}
+	if err := sess.SavePlan(ctx, second); err != nil {
+		t.Fatalf("second SavePlan: %v", err)
+	}
+
+	got, err := sess.GetPlan(ctx)
 	if err != nil {
-		t.Fatalf("GetTodos: %v", err)
+		t.Fatalf("GetPlan: %v", err)
 	}
 	if len(got) != 1 || got[0].ID != "new" {
 		t.Errorf("write-replace failed, got: %+v", got)
 	}
 }
 
-func TestSQLiteSession_SaveTodos_Empty(t *testing.T) {
+func TestSQLiteSession_SavePlan_Empty(t *testing.T) {
 	ctx := context.Background()
 	sess := newTestSession(t)
 
-	// Save some todos first
-	if err := sess.SaveTodos(ctx, []planning.TodoItem{
-		{ID: "1", Content: "task", Status: planning.TodoPending},
+	// Save some plans first
+	if err := sess.SavePlan(ctx, []planning.PlanItem{
+		{ID: "1", Content: "task", Status: planning.PlanPending},
 	}); err != nil {
-		t.Fatalf("SaveTodos: %v", err)
+		t.Fatalf("SavePlan: %v", err)
 	}
 
 	// Save empty list → should clear
-	if err := sess.SaveTodos(ctx, nil); err != nil {
-		t.Fatalf("SaveTodos empty: %v", err)
+	if err := sess.SavePlan(ctx, nil); err != nil {
+		t.Fatalf("SavePlan empty: %v", err)
 	}
 
-	got, err := sess.GetTodos(ctx)
+	got, err := sess.GetPlan(ctx)
 	if err != nil {
-		t.Fatalf("GetTodos: %v", err)
+		t.Fatalf("GetPlan: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("expected empty list after saving nil, got: %+v", got)
 	}
 }
 
-func TestSQLiteSession_GetTodos_CrossSessionIsolation(t *testing.T) {
+func TestSQLiteSession_GetPlan_CrossSessionIsolation(t *testing.T) {
 	ctx := context.Background()
 	mgr, err := memory.NewManager(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -275,17 +275,17 @@ func TestSQLiteSession_GetTodos_CrossSessionIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := sess1.SaveTodos(ctx, []planning.TodoItem{
-		{ID: "a", Content: "sess1 task", Status: planning.TodoPending},
+	if err := sess1.SavePlan(ctx, []planning.PlanItem{
+		{ID: "a", Content: "sess1 task", Status: planning.PlanPending},
 	}); err != nil {
-		t.Fatalf("sess1 SaveTodos: %v", err)
+		t.Fatalf("sess1 SavePlan: %v", err)
 	}
 
-	got, err := sess2.GetTodos(ctx)
+	got, err := sess2.GetPlan(ctx)
 	if err != nil {
-		t.Fatalf("sess2 GetTodos: %v", err)
+		t.Fatalf("sess2 GetPlan: %v", err)
 	}
 	if len(got) != 0 {
-		t.Errorf("sess2 should see no todos, got: %+v", got)
+		t.Errorf("sess2 should see no plans, got: %+v", got)
 	}
 }

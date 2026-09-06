@@ -347,7 +347,7 @@ type mockTodoInjector struct {
 	text string
 }
 
-func (m *mockTodoInjector) FormatForInjection() string { return m.text }
+func (m *mockTodoInjector) FormatPlan() string { return m.text }
 
 func TestSummarizationCompactor_InjectsTodos(t *testing.T) {
 	p := &mockSummarizer{responses: []string{"summary content"}}

@@ -13,7 +13,7 @@
 //   - renderTaskPanel()      — 后台任务面板（模态）
 //   - renderInput()          — 底部输入框（含 Shell/Plan 模式适配）
 //   - renderFooter()         — 底部快捷键提示行
-//   - renderTodoLines()      — todo 任务列表快照行
+//   - renderPlanLines()      — todo 任务列表快照行
 //   - accentStyle()          — 当前模式对应的强调色
 //   - activeStatusBarStyle() — 当前模式对应的状态栏背景样式
 package main
@@ -46,7 +46,7 @@ import (
 //   - PlanModePlan / PlanModeAutoEdit → 琥珀黄（planAccentStyle, #220）
 //   - PlanModeDefault              → 青色（cyanStyle, #81）
 //
-// 将颜色切换逻辑集中于此一处，renderStatusBar / renderFooter / renderTodoLines
+// 将颜色切换逻辑集中于此一处，renderStatusBar / renderFooter / renderPlanLines
 // 统一调用，View 层无散落的 if 判断，模式颜色映射易于维护和扩展。
 func (m tuiModel) accentStyle() lipgloss.Style {
 	if m.shellMode {
@@ -85,7 +85,7 @@ func shortPath(p string) string {
 	return strings.Replace(p, home, "~", 1)
 }
 
-// renderTodoLines 将 TodoItem 列表渲染为结构化多行文本，追加到 Scrollback（m.lines）。
+// renderPlanLines 将 TodoItem 列表渲染为结构化多行文本，追加到 Scrollback（m.lines）。
 //
 // 输出格式：标题行（图标 + "Tasks" + 进度统计 + 活跃任务数）+ 分隔线 + 各任务行。
 // 每个任务行包含：序号、状态图标（✔/▶/○/⊘）和内容文本。
@@ -97,7 +97,7 @@ func shortPath(p string) string {
 //   - pending     → ○（灰色）
 //
 // 颜色跟随当前 planMode 的 accentStyle（Plan Mode 下为琥珀色，其他为青色）。
-func (m tuiModel) renderTodoLines(items []planning.TodoItem) []string {
+func (m tuiModel) renderPlanLines(items []planning.PlanItem) []string {
 	if len(items) == 0 {
 		return nil
 	}
@@ -108,9 +108,9 @@ func (m tuiModel) renderTodoLines(items []planning.TodoItem) []string {
 	var done, active int
 	for _, item := range items {
 		switch item.Status {
-		case planning.TodoCompleted:
+		case planning.PlanCompleted:
 			done++
-		case planning.TodoInProgress:
+		case planning.PlanInProgress:
 			active++
 		}
 	}
@@ -133,13 +133,13 @@ func (m tuiModel) renderTodoLines(items []planning.TodoItem) []string {
 		num := dimStyle.Render(fmt.Sprintf("%2d.", i+1))
 		var icon, content string
 		switch item.Status {
-		case planning.TodoInProgress:
+		case planning.PlanInProgress:
 			icon = toolRunStyle.Render("▶")
 			content = toolRunStyle.Render(item.Content)
-		case planning.TodoCompleted:
+		case planning.PlanCompleted:
 			icon = toolOKStyle.Render("✔")
 			content = dimStyle.Render(item.Content)
-		case planning.TodoCancelled:
+		case planning.PlanCancelled:
 			icon = dimStyle.Render("⊘")
 			content = dimStyle.Render(item.Content)
 		default: // pending
@@ -269,12 +269,12 @@ func (m tuiModel) renderStatusBar() string {
 	}
 
 	var tasksPart string
-	if m.todoStore != nil {
-		items := m.todoStore.Read()
+	if m.planStore != nil {
+		items := m.planStore.Read()
 		if len(items) > 0 {
 			var completed int
 			for _, item := range items {
-				if item.Status == planning.TodoCompleted {
+				if item.Status == planning.PlanCompleted {
 					completed++
 				}
 			}

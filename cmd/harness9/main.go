@@ -243,7 +243,7 @@ Flags:
 	// ---- Long-Term Memory 接线（续：工具注册见下）----
 
 	registry := tools.NewRegistry()
-	todoStore := planning.NewTodoStore()
+	planStore := planning.NewPlanStore()
 	planWriter, err := hooks.NewFilePlanWriter(workDir, homeDir, sess.SessionID())
 	if err != nil {
 		log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("初始化 FilePlanWriter 失败: %v", err)))
@@ -254,7 +254,7 @@ Flags:
 		tools.NewBashTool(workDir, tools.WithEnvironment(sandboxEnv)),
 		tools.NewEditFileTool(workDir, tools.EditFileWithEnvironment(sandboxEnv)),
 		skills.NewUseSkillTool(skillsIndex),
-		tools.NewTodoWriteTool(todoStore, tools.WithPlanWriter(planWriter)),
+		tools.NewPlanWriteTool(planStore, tools.WithPlanWriter(planWriter)),
 		tools.NewMemoryWriteTool(ltmStore, ltmPrecis),
 		tools.NewMemorySearchTool(ltmStore),
 		tools.NewWebFetchTool(),
@@ -399,7 +399,7 @@ Flags:
 	recordStore := memory.NewFileRecordStore(compactionRecordsDir)
 	compactionOffloader := memory.NewCompactionOffloader(workDir, sess.SessionID())
 	compactor := memory.NewProgressiveCompactor(llm, modelLimits.ContextTokens,
-		memory.WithProgressiveTodoInjector(todoStore),
+		memory.WithProgressiveTodoInjector(planStore),
 		memory.WithProgressiveMemoryExtractor(ltm.NewExtractor(llm, ltmStore)),
 		memory.WithProgressiveRecordStore(recordStore),
 		memory.WithProgressiveOffloader(compactionOffloader),
@@ -419,7 +419,7 @@ Flags:
 		engine.WithSession(sess),
 		engine.WithCompactor(compactor),
 		engine.WithContextWindow(modelLimits.ContextTokens),
-		engine.WithTodoStore(todoStore),
+		engine.WithPlanStore(planStore),
 		engine.WithMemoryNudge(10, "如果本轮对话中出现了值得跨会话长期保留的信息（用户偏好、稳定的项目知识、关键决策、可复用技能），请调用 memory_write 工具记录；否则忽略此提示。"),
 	}
 	if engineObserver != nil {
@@ -436,7 +436,7 @@ Flags:
 		}
 	case term.IsTerminal(os.Stdin.Fd()):
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("harness9 TUI 启动 │ workDir=%s", workDir)))
-		if err := RunTUI(ctx, eng, mgr, sess, skillsIndex, todoStore, subAgentTracker, subAgentReg, subAgentRunner, workDir, modelName, sandboxNotifyCh, mcpNotifyCh); err != nil {
+		if err := RunTUI(ctx, eng, mgr, sess, skillsIndex, planStore, subAgentTracker, subAgentReg, subAgentRunner, workDir, modelName, sandboxNotifyCh, mcpNotifyCh); err != nil {
 			log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("TUI 退出: %v", err)))
 		}
 	default:

@@ -115,11 +115,11 @@ func WithPlanMode(mode planning.PlanMode) Option {
 	return func(e *AgentEngine) { e.planMode = mode }
 }
 
-// WithTodoStore 绑定 TodoStore，使引擎在 runLoop 生命周期中自动执行以下操作：
-//   - 启动时：从 Session 恢复 TodoStore 状态（跨会话续接未完成任务）
-//   - 结束时：通过 defer 将 TodoStore 保存到 Session（所有路径均执行）
-func WithTodoStore(s *planning.TodoStore) Option {
-	return func(e *AgentEngine) { e.todoStore = s }
+// WithPlanStore 绑定 PlanStore，使引擎在 runLoop 生命周期中自动执行以下操作：
+//   - 启动时：从 Session 恢复 PlanStore 状态（跨会话续接未完成任务）
+//   - 结束时：通过 defer 将 PlanStore 保存到 Session（所有路径均执行）
+func WithPlanStore(s *planning.PlanStore) Option {
+	return func(e *AgentEngine) { e.planStore = s }
 }
 
 // SetSession 替换当前绑定的 Session，供 TUI /new、/resume 命令切换会话时调用。

@@ -18,10 +18,10 @@ type Summarizer interface {
 	Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, *schema.Usage, error)
 }
 
-// TodoInjector 由 planning.TodoStore 实现，将活跃任务注入上下文压缩摘要。
+// TodoInjector 由 planning.PlanStore 实现，将活跃计划注入上下文压缩摘要。
 // 定义在 memory 包（使用者侧），符合 Go 接口定义惯例。
 type TodoInjector interface {
-	FormatForInjection() string
+	FormatPlan() string
 }
 
 // MemoryExtractor 由 ltm.Extractor 实现，在上下文压缩前从即将被摘要的消息中
@@ -171,8 +171,8 @@ func (c *SummarizationCompactor) CompactForce(msgs []schema.Message) []schema.Me
 func (c *SummarizationCompactor) buildCompactedResult(systemMsg schema.Message, summary string, tail []schema.Message) []schema.Message {
 	summaryContent := summaryMarker + "\n" + summary
 	if c.TodoInjector != nil {
-		if todoText := c.TodoInjector.FormatForInjection(); todoText != "" {
-			summaryContent += "\n\n## Active Tasks\n" + todoText
+		if planText := c.TodoInjector.FormatPlan(); planText != "" {
+			summaryContent += "\n\n## Active Tasks\n" + planText
 		}
 	}
 	summaryMsg := schema.Message{
