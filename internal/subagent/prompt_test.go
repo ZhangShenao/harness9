@@ -14,6 +14,9 @@ func TestPromptBuilderBuild(t *testing.T) {
 	if !strings.Contains(got, "/work") {
 		t.Error("应包含工作目录")
 	}
+	if !strings.Contains(got, "## 规划（Planning）") || !strings.Contains(got, "plan_write") {
+		t.Error("应包含规划准则段落（子代理拥有独立 plan_write）")
+	}
 }
 
 func TestPromptBuilderWithSkills(t *testing.T) {

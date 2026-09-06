@@ -43,6 +43,13 @@ func (b *promptBuilder) Build() string {
 	sb.WriteString(b.systemPrompt)
 	fmt.Fprintf(&sb, "\n\n工作目录：%s", b.workDir)
 
+	// 规划准则：子代理拥有独立 Plan（Runner 注入独立 plan_write 实例），
+	// 同样遵循"复杂任务先规划后执行"的原生能力约定。
+	sb.WriteString("\n\n## 规划（Planning）\n\n" +
+		"面对复杂多步任务时，先用 `plan_write` 制定执行计划，再逐步执行；" +
+		"开始某条目前标记 in_progress，完成后立即标记 completed。" +
+		"计划是你的权威状态，上下文压缩后依然可见。简单任务无需规划。")
+
 	if b.loader != nil {
 		for _, name := range b.skills {
 			body, err := b.loader(name)

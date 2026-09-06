@@ -196,7 +196,7 @@ Flags:
 
 	// 构建 System Prompt（基础 prompt + AGENTS.md + skills 索引），现已可访问 sandboxEnv
 	promptBuilder := harctx.NewPromptBuilder(workDir, skillsIndex).
-		WithTodoEnabled(true).
+		WithPlanEnabled(true).
 		WithOffloadEnabled(true).
 		WithSandboxContext(sandboxEnv != nil)
 

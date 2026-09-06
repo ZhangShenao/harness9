@@ -21,7 +21,7 @@ import (
 type DefaultPromptBuilder struct {
 	workDir        string
 	skillsIndex    *skills.Index
-	todoEnabled    bool
+	planEnabled    bool
 	offloadEnabled bool
 	ltmReader      func() string
 	sandboxEnabled bool
@@ -33,10 +33,10 @@ func NewPromptBuilder(workDir string, idx *skills.Index) *DefaultPromptBuilder {
 	return &DefaultPromptBuilder{workDir: workDir, skillsIndex: idx}
 }
 
-// WithTodoEnabled 在 system prompt 中添加 todo_write 工具的使用指引。
-// 仅在 todo_write 已注册时调用。
-func (b *DefaultPromptBuilder) WithTodoEnabled(enabled bool) *DefaultPromptBuilder {
-	b.todoEnabled = enabled
+// WithPlanEnabled 在 system prompt 中添加规划准则（plan_write 使用指引）。
+// 仅在 plan_write 已注册时调用。
+func (b *DefaultPromptBuilder) WithPlanEnabled(enabled bool) *DefaultPromptBuilder {
+	b.planEnabled = enabled
 	return b
 }
 
@@ -106,15 +106,18 @@ func (b *DefaultPromptBuilder) Build() string {
 		)
 	}
 
-	// 4. Todo 工具使用指引（仅在 todo_write 已注册时注入）
-	if b.todoEnabled {
+	// 4. 规划准则（仅在 plan_write 已注册时注入；规划是 Agent 的原生能力，
+	// 由 LLM 自主判断何时规划，无工具过滤、无 prompt 前缀、无运行时检测）
+	if b.planEnabled {
 		parts = append(parts,
-			"## 任务管理\n\n"+
-				"使用 `todo_write` 工具追踪复杂任务的执行进度：\n"+
-				"- 任务包含 3 个或以上独立步骤时，开始前先调用此工具记录任务列表\n"+
-				"- 开始某步骤时，将对应条目状态更新为 `in_progress`\n"+
-				"- 完成每个步骤后，立即将状态更新为 `completed`\n"+
-				"- Todo 列表在对话上下文中持久保留 — 请保持准确",
+			"## 规划（Planning）\n\n"+
+				"面对复杂多步任务（多文件改动、有依赖链的步骤、需要探索后实施）时，"+
+				"先用 `plan_write` 制定执行计划，再逐步执行：\n"+
+				"- 计划条目必须对应具体可执行动作（创建文件、实现函数、运行命令），"+
+				"禁止\"需求澄清\"、\"方案设计\"类无法直接执行的条目\n"+
+				"- 开始某条目前将其标记为 in_progress，完成后立即标记为 completed\n"+
+				"- 计划是权威状态：即使对话上下文被压缩，计划始终可见，以计划为准继续\n"+
+				"- 简单任务（1-2 步、问答、单命令）无需规划，直接执行",
 		)
 	}
 
