@@ -555,8 +555,8 @@ func TestRunLoop_PlanMode_InjectsPlanPrefix(t *testing.T) {
 // ---- 测试辅助类型 ----
 
 // memorySessionForTest 是支持真实 GetPlan/SavePlan 持久化语义的 Session 桩。
-// 注意：memory.MemorySession 的 SavePlan 是 no-op、GetPlan 始终返回空列表，
-// 无法用于验证跨 runLoop 的 plan restore/save 行为，因此此处独立实现。
+// 与 memory.MemorySession（内存字段实现）语义一致，此处独立实现以避免测试间
+// 对 memory 包内部状态的耦合，并支持 planOrderSession 等时序记录包装。
 type memorySessionForTest struct {
 	id   string
 	msgs []schema.Message
@@ -921,5 +921,98 @@ func TestStallNudge_NotPersisted(t *testing.T) {
 		if strings.Contains(m.Content, nudge) {
 			t.Errorf("停滞提示不应被持久化，却出现在: %q", m.Content)
 		}
+	}
+}
+
+// planOrderSession 包装 memorySessionForTest，记录 SavePlan 与 LLM 调用的相对时序，
+// 用于验证"写时检查点"（plan_write 成功轮立即落盘，而非 defer 到 Run 结束）。
+type planOrderSession struct {
+	*memorySessionForTest
+	events *[]string
+}
+
+func (s *planOrderSession) SavePlan(ctx context.Context, items []planning.PlanItem) error {
+	*s.events = append(*s.events, "save_plan")
+	return s.memorySessionForTest.SavePlan(ctx, items)
+}
+
+// TestRunLoop_PlanWrite_CheckpointOnWrite 验证写时检查点：
+// plan_write 成功的 Turn 内立即 SavePlan，先于下一次 LLM 调用——
+// 崩溃窗口从"整个 Run"缩小到"单轮之内"（Spec §5.1）。
+func TestRunLoop_PlanWrite_CheckpointOnWrite(t *testing.T) {
+	events := []string{}
+	sess := &planOrderSession{
+		memorySessionForTest: newMemorySessionForTest("sess-ck"),
+		events:               &events,
+	}
+	p := &countingProvider{
+		responses: []func([]schema.ToolDefinition) *schema.Message{
+			// Turn 1：调用 plan_write 创建计划
+			func(_ []schema.ToolDefinition) *schema.Message {
+				events = append(events, "llm_turn1")
+				return &schema.Message{
+					Role: schema.RoleAssistant,
+					ToolCalls: []schema.ToolCall{
+						{ID: "c1", Name: "plan_write", Arguments: []byte(
+							`{"steps":[{"id":"1","content":"步骤一","status":"pending"}]}`)},
+					},
+				}
+			},
+			// Turn 2：纯文本终止
+			func(_ []schema.ToolDefinition) *schema.Message {
+				events = append(events, "llm_turn2")
+				return &schema.Message{Role: schema.RoleAssistant, Content: "done"}
+			},
+		},
+	}
+	reg := &staticRegistry{output: "ok"}
+	planStore := planning.NewPlanStore()
+	eng := NewAgentEngine(p, reg, t.TempDir(),
+		WithPlanStore(planStore), WithSession(sess))
+	if err := eng.Run(context.Background(), "test"); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	// 首次 save_plan 必须发生在 llm_turn2 之前（写时检查点，而非仅 defer 兜底）。
+	saveIdx, turn2Idx := -1, -1
+	for i, e := range events {
+		if e == "save_plan" && saveIdx == -1 {
+			saveIdx = i
+		}
+		if e == "llm_turn2" {
+			turn2Idx = i
+		}
+	}
+	if saveIdx == -1 || turn2Idx == -1 || saveIdx > turn2Idx {
+		t.Errorf("expected first save_plan before llm_turn2 (write-time checkpoint), events: %v", events)
+	}
+}
+
+// TestRunLoop_PlanRestore_InjectedOnFirstTurn 验证会话恢复语义：
+// Session 中已持久化的 Plan 在 Run 首轮即注入发送视图（崩溃恢复后基于 Plan 继续）。
+func TestRunLoop_PlanRestore_InjectedOnFirstTurn(t *testing.T) {
+	sess := newMemorySessionForTest("sess-resume")
+	if err := sess.SavePlan(context.Background(), []planning.PlanItem{
+		{ID: "1", Content: "恢复后继续的步骤", Status: planning.PlanPending},
+	}); err != nil {
+		t.Fatalf("SavePlan setup error: %v", err)
+	}
+
+	var sawPlan bool
+	p := providertest.NewMockWithCallback(func(msgs []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		for _, m := range msgs {
+			if strings.Contains(m.Content, "恢复后继续的步骤") {
+				sawPlan = true
+			}
+		}
+		return schema.Message{Role: schema.RoleAssistant, Content: "继续执行"}
+	})
+	eng := NewAgentEngine(p, &staticRegistry{output: "ok"}, t.TempDir(),
+		WithPlanStore(planning.NewPlanStore()), WithSession(sess))
+	if err := eng.Run(context.Background(), "继续"); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if !sawPlan {
+		t.Error("restored plan should be visible in first turn's view")
 	}
 }

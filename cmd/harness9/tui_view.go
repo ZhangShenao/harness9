@@ -85,7 +85,7 @@ func shortPath(p string) string {
 	return strings.Replace(p, home, "~", 1)
 }
 
-// renderPlanLines 将 TodoItem 列表渲染为结构化多行文本，追加到 Scrollback（m.lines）。
+// renderPlanLines 将 PlanItem 列表渲染为结构化多行文本，追加到 Scrollback（m.lines）。
 //
 // 输出格式：标题行（图标 + "Tasks" + 进度统计 + 活跃任务数）+ 分隔线 + 各任务行。
 // 每个任务行包含：序号、状态图标（✔/▶/○/⊘）和内容文本。

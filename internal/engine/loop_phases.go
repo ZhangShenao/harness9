@@ -145,10 +145,10 @@ func (lc *loopContext) beginTurn(ctx context.Context) (context.Context, error) {
 // prepareTurnInput 完成每轮 LLM 调用前的上下文预处理（保持以下执行顺序，
 // 与压缩通知 → token 上报 → nudge 注入的对外事件顺序一致）：
 //
-//  1. 工具过滤：读取本 Turn 可用工具列表，Plan Mode 下过滤为只读白名单
+//  1. 工具列表：读取本 Turn 可用工具列表（Plan Mode 已移除，恒为全量）
 //  2. 压缩检查：超过阈值时生成本轮的压缩视图，并上报压缩详情
 //  3. token 估算上报：压缩后消息 + 工具定义的估算值（LLM 调用后由实际用量覆盖）
-//  4. nudge 注入：记忆 nudge（周期性）与停滞 nudge（无进展检测），
+//  4. nudge/Plan 注入：记忆 nudge（周期性）、停滞 nudge（无进展检测）与活跃 Plan（原样注入），
 //     均只注入发送副本，绝不写入 lc.history（因此不会被持久化、不会累积）
 //
 // 压缩审计记录在方法内部经 em.compaction 上报后即完成使命，不再外泄给调用方。
@@ -182,6 +182,17 @@ func (lc *loopContext) prepareTurnInput() turnInput {
 	if e.stallWindow > 0 && e.stallText != "" && lc.turnsSinceProgress >= e.stallWindow {
 		compactedHistory = appendUserNudge(compactedHistory, e.stallText)
 		lc.turnsSinceProgress = 0
+	}
+
+	// 4c. Plan 注入：活跃计划原样追加到发送视图末尾（Spec §5.2）。
+	// 覆盖三个场景且为同一条代码路径：压缩后（本视图即压缩产物，无论哪个 Compactor 实现）、
+	// 会话恢复后（beginInteraction 已从 Session 恢复 PlanStore）、运行中（每轮重算，
+	// plan_write 更新次轮即可见）。仅注入临时副本，不写入 lc.history、不持久化、不累积
+	// （与 nudge 同机制）。
+	if lc.planStore != nil {
+		if planText := lc.planStore.FormatPlan(); planText != "" {
+			compactedHistory = appendUserNudge(compactedHistory, planText)
+		}
 	}
 
 	return turnInput{history: compactedHistory, toolDefs: availableTools}
@@ -248,12 +259,27 @@ func (lc *loopContext) saveHistory(ctx context.Context) {
 }
 
 // savePlan 将 PlanStore 持久化到 Session（write-replace）。
-// 以 defer 注册、在所有退出路径执行；失败仅记录告警，不影响 Run 结果。
+// 以 defer 注册、在所有退出路径执行（幂等兜底）；失败仅记录告警，不影响 Run 结果。
 func (lc *loopContext) savePlan(ctx context.Context) {
 	if lc.sess == nil || lc.planStore == nil {
 		return
 	}
 	if err := lc.sess.SavePlan(ctx, lc.planStore.Read()); err != nil {
 		log.Print(logfmt.FormatMsg(lc.logPrefix, fmt.Sprintf("保存 plan 失败: %v", err)))
+	}
+}
+
+// checkpointPlan 写时检查点：本轮包含成功的 plan_write 调用时立即持久化 Plan 到 Session。
+// 崩溃窗口从"整个 Run"缩小到"单轮之内"；失败仅告警（fail-open），不阻断主循环。
+// defer 的 savePlan 保留为幂等兜底，覆盖检查点中途失败的重试与未来新增的状态变更路径。
+func (lc *loopContext) checkpointPlan(calls []schema.ToolCall, results []schema.ToolResult) {
+	if lc.sess == nil || lc.planStore == nil {
+		return
+	}
+	for i, tc := range calls {
+		if tc.Name == "plan_write" && i < len(results) && !results[i].IsError {
+			lc.savePlan(lc.obsCtx)
+			return
+		}
 	}
 }

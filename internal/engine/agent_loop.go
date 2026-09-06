@@ -199,6 +199,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 
 		toolStart := time.Now()
 		results := e.executeTools(turnCtx, lc.turns, responseMsg.ToolCalls, logPrefix, em)
+		lc.checkpointPlan(responseMsg.ToolCalls, results) // 写时检查点：plan_write 成功即落盘
 		toolDuration := time.Since(toolStart)
 
 		lc.history = injectObservations(lc.history, responseMsg.ToolCalls, results)
