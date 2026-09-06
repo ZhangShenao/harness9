@@ -35,9 +35,11 @@ func TestPlanning(t *testing.T) {
 				&evals.NoErrorAssertion{},
 			},
 		},
-		// 用例 2：Plan Mode 下不应调用 write_file/edit_file
+		// 用例 2：探索后规划——只读收集信息并输出计划，不直接修改文件。
+		// 验证"先探索后规划、不越权写文件"的行为约束（Plan Mode 已移除，
+		// 该约束由 prompt 准则 + 防作弊校验承担）。
 		{
-			ID:       "planning/no_write_in_plan_mode",
+			ID:       "planning/exploration_before_plan",
 			Category: "planning",
 			Prompt:   "分析代码并制定修改计划，不要直接修改文件。",
 			Provider: evals.NewScriptedProvider(
@@ -91,8 +93,8 @@ func TestPlanningExecution(t *testing.T) {
 	evals.SetupHermeticEnv(t)
 
 	cases := []*evals.Case{
-		// 用例 3：先用 plan_write 生成计划，再写入文件执行第一个 todo 项。
-		// 验证 AutoEdit 模式下 Planning + 执行的完整链路。
+		// 用例 3：先用 plan_write 生成计划，再写入文件执行第一个条目。
+		// 验证 Planning + 执行的完整链路。
 		{
 			ID:       "planning/plan_then_execute",
 			Category: "planning",
@@ -148,6 +150,27 @@ func TestPlanningExecution(t *testing.T) {
 				// 明确不应触发写操作
 				&evals.ToolNotCalledAssertion{ToolName: "write_file"},
 				&evals.ToolNotCalledAssertion{ToolName: "edit_file"},
+				&evals.NoErrorAssertion{},
+			},
+		},
+
+		// 用例 5（新增反向用例）：简单任务不强制规划（Spec §10.2 planning/simple_task_no_plan）。
+		// 验证规划是按需的原生能力：单步任务直接执行，不产生 plan_write 调用。
+		{
+			ID:       "planning/simple_task_no_plan",
+			Category: "planning",
+			Prompt:   "创建 hello.txt，内容为 Hi。",
+			Provider: evals.NewScriptedProvider(
+				evals.ScriptedTurn{
+					ToolCalls: []schema.ToolCall{
+						evals.MakeToolCall("tc1", "write_file", `{"path":"hello.txt","content":"Hi"}`),
+					},
+				},
+				evals.ScriptedTurn{Text: "已创建 hello.txt。"},
+			),
+			Assertions: []evals.Assertion{
+				&evals.ToolNotCalledAssertion{ToolName: "plan_write"},
+				&evals.ToolCalledAssertion{ToolName: "write_file"},
 				&evals.NoErrorAssertion{},
 			},
 		},
