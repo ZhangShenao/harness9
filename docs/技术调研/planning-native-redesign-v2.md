@@ -91,12 +91,13 @@ func (s *PlanStore) ActiveCount() (active, total int)
 **注入文本格式**（原样注入的内容体，`FormatPlan()` 输出）：
 
 ```
-## 当前执行计划（压缩后恢复，原样注入；以此为准继续执行）
+## 当前执行计划（权威状态，压缩或恢复后仍以此为准继续执行）
 [ ] 创建 parser.go 解析配置文件
 [>] 实现 load 逻辑
 ```
 
-仅含 pending / in_progress 条目（已完成条目无需重复注入）。
+仅含 pending / in_progress 条目（已完成条目无需重复注入）。标题行措辞强调"权威状态、
+持续有效"：注入每轮发生在发送视图上（压缩后、恢复后均生效），并非仅压缩后一次性注入。
 
 ## 5. 引擎生命周期：检查点 + 注入（§2）
 
@@ -161,6 +162,7 @@ LLM 自主判断何时规划——无工具过滤、无 prompt 前缀、无运�
 
 - `TodoWriteTool` → `PlanWriteTool`，工具名 `todo_write` → `plan_write`
 - Schema description 更新：「创建或更新当前任务的执行计划；复杂任务先规划后执行，随做随更」
+- 参数 key：`todos` → `steps`（`{"steps":[{id,content,status}]}`；省略 steps = 读模式）
 - **防作弊状态机校验原样迁移**（directCompletions ≤ 1；cancelled→completed 拒绝；全量替换语义）
 - 读模式（省略 steps 返回当前计划 JSON）保留
 - `WithPlanWriter`（FilePlanWriter markdown 持久化）继续生效
