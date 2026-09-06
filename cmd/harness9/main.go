@@ -399,7 +399,6 @@ Flags:
 	recordStore := memory.NewFileRecordStore(compactionRecordsDir)
 	compactionOffloader := memory.NewCompactionOffloader(workDir, sess.SessionID())
 	compactor := memory.NewProgressiveCompactor(llm, modelLimits.ContextTokens,
-		memory.WithProgressiveTodoInjector(planStore),
 		memory.WithProgressiveMemoryExtractor(ltm.NewExtractor(llm, ltmStore)),
 		memory.WithProgressiveRecordStore(recordStore),
 		memory.WithProgressiveOffloader(compactionOffloader),

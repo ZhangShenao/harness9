@@ -1,6 +1,9 @@
 // Package memory — SummarizationCompactor：LLM 摘要压缩策略。
 // 本文件实现基于 LLM 调用的摘要压缩器，是 harness9 默认的上下文压缩策略（优于纯截断）。
-// 相关类型：Summarizer 接口（使用者侧定义）、TodoInjector 接口、SummarizationCompactor。
+// 相关类型：Summarizer 接口（使用者侧定义）、SummarizationCompactor。
+//
+// Plan 的压缩可见性由引擎层统一保证（engine.prepareTurnInput 压缩后原样注入），
+// 压缩器对 Plan 完全无感知。
 package memory
 
 import (
@@ -16,12 +19,6 @@ import (
 // 接口定义在使用者侧（memory 包），任何实现了 Generate 方法的 provider 均满足此接口。
 type Summarizer interface {
 	Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, *schema.Usage, error)
-}
-
-// TodoInjector 由 planning.PlanStore 实现，将活跃计划注入上下文压缩摘要。
-// 定义在 memory 包（使用者侧），符合 Go 接口定义惯例。
-type TodoInjector interface {
-	FormatPlan() string
 }
 
 // MemoryExtractor 由 ltm.Extractor 实现，在上下文压缩前从即将被摘要的消息中
@@ -70,19 +67,12 @@ type SummarizationCompactor struct {
 	MinTailMessages int
 	// Fallback 在 Provider 调用失败时使用。若为 nil，则创建同配置的 TokenBudgetCompactor。
 	Fallback Compactor
-	// TodoInjector 若非 nil，在每次摘要末尾注入活跃任务列表。
-	TodoInjector TodoInjector
 	// extractor 若非 nil，在压缩摘要前从 head 消息中提取长期记忆（fail-open）。
 	extractor MemoryExtractor
 }
 
 // CompactorOption 是 NewSummarizationCompactor 的函数选项。
 type CompactorOption func(*SummarizationCompactor)
-
-// WithTodoInjector 在摘要末尾注入活跃任务列表，防止 LLM 在上下文压缩后遗忘未完成任务。
-func WithTodoInjector(ti TodoInjector) CompactorOption {
-	return func(c *SummarizationCompactor) { c.TodoInjector = ti }
-}
 
 // WithMemoryExtractor 注入长期记忆提取器，在每次压缩摘要前从 head 消息提取持久事实。
 func WithMemoryExtractor(ex MemoryExtractor) CompactorOption {
@@ -170,11 +160,6 @@ func (c *SummarizationCompactor) CompactForce(msgs []schema.Message) []schema.Me
 // Compact 和 CompactForce 共用此方法，避免重复拼装逻辑。
 func (c *SummarizationCompactor) buildCompactedResult(systemMsg schema.Message, summary string, tail []schema.Message) []schema.Message {
 	summaryContent := summaryMarker + "\n" + summary
-	if c.TodoInjector != nil {
-		if planText := c.TodoInjector.FormatPlan(); planText != "" {
-			summaryContent += "\n\n## Active Tasks\n" + planText
-		}
-	}
 	summaryMsg := schema.Message{
 		Role:    schema.RoleUser,
 		Content: summaryContent,
