@@ -1,7 +1,7 @@
 # Planning 模块重构设计：Plan 作为 Agent 原生能力
 
 - **日期**：2026-09-05
-- **状态**：已确认（用户逐节批准）
+- **状态**：**已废弃** —— 注入机制与数据模型决策已于 2026-09-06 重新确认，以 `docs/superpowers/specs/2026-09-06-native-planning-design.md` 为准（引擎级视图注入 + 轻量更名模型，取代本文的压缩器级注入 + 版本化 Plan 模型）
 - **分支**：`feature/native-planning`
 - **范围**：取消 Plan Mode，建立 Session 级、带版本化检查点、压缩免疫、主/子代理隔离的原生规划能力
 
