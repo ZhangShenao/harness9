@@ -14,6 +14,7 @@ import (
 	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/permission"
+	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/provider"
 	"github.com/harness9/internal/sandbox"
 	"github.com/harness9/internal/schema"
@@ -98,6 +99,13 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 		effectiveBaseTools = wrapToolsWithSandbox(r.baseTools, sandboxEnv, r.workDir)
 	}
 
+	// 子代理独立 PlanStore（Spec §7 隔离）：与父代理零共享，委派结束即随
+	// MemorySession 丢弃，不写主代理的 SQLite/markdown 审计文件。
+	// 独立 plan_write 实例绑定 childPlanStore 后追加到工具集，使子代理具备
+	// 与主代理相同的原生规划能力（双向隔离：子看不到父 Plan，父不受子写入影响）。
+	childPlanStore := planning.NewPlanStore()
+	effectiveBaseTools = append(effectiveBaseTools, tools.NewPlanWriteTool(childPlanStore))
+
 	childReg, err := r.buildChildRegistry(def, effectiveBaseTools)
 	if err != nil {
 		return SubAgentResult{}, fmt.Errorf("构建子代理工具注册表失败：%w", err)
@@ -126,6 +134,7 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 	opts := []engine.Option{
 		engine.WithPromptBuilder(spb),
 		engine.WithSession(childSession),
+		engine.WithPlanStore(childPlanStore),
 		engine.WithMaxTurns(maxTurns),
 		engine.WithContextWindow(ctxWin),
 		engine.WithToolTimeout(r.toolTimeout),
