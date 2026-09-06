@@ -3,7 +3,7 @@
 // Update 层是 Bubbletea Elm 架构的逻辑侧，所有状态变更均在此层完成。
 // 主要消息类型及处理分支：
 //
-//   - tea.KeyMsg         — 键盘输入（Ctrl+C/D 退出、Enter 提交、Tab 补全、ShiftTab 模式切换等）
+//   - tea.KeyMsg         — 键盘输入（Ctrl+C/D 退出、Enter 提交、Tab 补全等）
 //   - eventMsg           — 引擎 Event（handleEvent 分发各 EventType）
 //   - shellResultMsg     — Shell 命令异步执行结果
 //   - subAgentNotifyMsg  — 后台子代理完成通知
@@ -44,13 +44,12 @@ import (
 	"github.com/harness9/internal/subagent"
 )
 
-// execPrompt 是用户批准 Plan Mode 计划后，首次触发执行阶段的指令文本。
+// execPrompt 是 autoExecuting 续跑首次触发时的执行指令文本。
 //
 // 设计要点：
 //   - 规则 2 明确声明"仅更新状态而不调用其他工具，不算完成该项"，
 //     这是 prompt 层对抗幻觉执行的约束，与工具层的批量完成检测（directCompletions > 1）形成双重防护。
-//   - 只描述行为规范，不声明权限（权限由工具层 filterReadOnlyTools 硬性控制，prompt 声明是冗余的）。
-const execPrompt = "按照 todo 清单逐项执行。规则：\n" +
+const execPrompt = "按照执行计划逐项推进。规则：\n" +
 	"1. 每开始一项前，用 plan_write 将其状态设为 in_progress\n" +
 	"2. 用工具完成该项的实际工作——创建文件、写代码、运行命令等；" +
 	"仅更新 plan_write 状态而不调用其他工具，不算完成该项\n" +
@@ -60,7 +59,7 @@ const execPrompt = "按照 todo 清单逐项执行。规则：\n" +
 
 // execContinuePrompt 是 autoExecuting 模式下每次 EventDone 后触发续跑的精简指令。
 // 续跑场景下 LLM 已知晓基本规则（上下文中有 execPrompt 历史），此处只需提示继续处理下一项。
-const execContinuePrompt = "继续处理 todo 清单中下一个 pending 或 in_progress 的任务项。" +
+const execContinuePrompt = "继续处理执行计划中下一个 pending 或 in_progress 的条目。" +
 	"先用 plan_write 标记为 in_progress，然后用工具完成实际工作（写文件、执行命令等），" +
 	"确认产出后标记为 completed，再处理下一项。" +
 	"不要只更新状态而不做实际操作，不要输出进度摘要。"
@@ -89,7 +88,6 @@ var builtinCmds = []struct {
 }{
 	{"new", "开启新会话"},
 	{"resume", "恢复历史会话"},
-	{"plan", "进入规划模式分析任务"},
 	{"compact", "手动压缩上下文"},
 	{"tasks", "查看后台子代理任务"},
 	{"mcp", "查看 MCP 工具列表并编辑配置"},
@@ -244,29 +242,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.approvalPending {
 			return m.handleApprovalKey(msg)
 		}
-		// 审查对话框（planReviewing）激活时：↑↓ 移动光标，Enter 确认，Esc 取消。
-		// planReviewing 在 Plan Mode 的 EventDone 中设为 true，View() 此时渲染审查对话框而非输入框。
-		if m.planReviewing {
-			switch msg.Type {
-			case tea.KeyUp:
-				if m.planReviewCursor > 0 {
-					m.planReviewCursor--
-				}
-				return m, nil
-			case tea.KeyDown:
-				if m.planReviewCursor < 3 {
-					m.planReviewCursor++
-				}
-				return m, nil
-			case tea.KeyEnter:
-				return m.confirmPlanReview(m.planReviewCursor)
-			case tea.KeyEsc:
-				// Esc 选择"取消"（第四个选项，cursor=3），放弃计划并恢复输入。
-				return m.confirmPlanReview(3)
-			}
-			// 其他按键忽略，防止误触。
-			return m, nil
-		}
 		// 任务面板（taskPanelMode）激活时：列表/详情态的全部按键交由 handleTaskPanelKey 处理，
 		// 屏蔽普通输入。面板为模态视图，由 View() 替换输入区渲染。
 		if m.taskPanelMode {
@@ -293,8 +268,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case tea.KeyCtrlT:
-			// 切换后台任务面板。仅在空闲态可用，避免与运行中/审批/审查/恢复选择等模态冲突。
-			if !m.running && !m.approvalPending && !m.planReviewing && !m.resumeSelecting {
+			// 切换后台任务面板。仅在空闲态可用，避免与运行中/审批/恢复选择等模态冲突。
+			if !m.running && !m.approvalPending && !m.resumeSelecting {
 				m.taskPanelMode = !m.taskPanelMode
 				m.taskDetailID = ""
 				m.taskPanelCursor = 0
@@ -315,14 +290,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.running {
 				m = m.cycleCompletion()
 				m.completionHint = m.buildCompletionHint()
-			}
-			return m, nil
-		case tea.KeyShiftTab:
-			if !m.running {
-				m.planMode = m.planMode.Next()
-				if m.eng != nil {
-					m.eng.SetPlanMode(m.planMode)
-				}
 			}
 			return m, nil
 		case tea.KeyEnter:
@@ -403,7 +370,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 显示用户消息
 			m.lines = append(m.lines, userMsgStyle.Render("▶ You: ")+raw)
 			// 新一轮用户消息开始：清空上一轮残留的子代理流式进度行，避免陈旧内容滞留。
-			// 仅在 LLM 路径（含 /new、/resume、/plan、普通 prompt）重置；autoExecuting 续跑走 dispatch
+			// 仅在 LLM 路径（含 /new、/resume、普通 prompt）重置；autoExecuting 续跑走 dispatch
 			// 不经过此处，因此续跑期间子代理进度可跨 EventDone 保留。
 			m.subAgentLines = nil
 			m.subAgentStreaming = false
@@ -414,24 +381,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if raw == "/resume" {
 				return m.handleResumeList()
-			}
-
-			// /plan <task> — 进入 Plan Mode 并发送任务
-			// 仅 "/plan"（无任务描述）时：激活 Plan Mode 并提示用户输入任务，不发送请求。
-			if raw == "/plan" || strings.HasPrefix(raw, "/plan ") {
-				task := strings.TrimSpace(strings.TrimPrefix(raw, "/plan"))
-				m.planMode = planning.PlanModePlan
-				if m.eng != nil {
-					m.eng.SetPlanMode(planning.PlanModePlan)
-				}
-				if task == "" {
-					m.lines = append(m.lines, dimStyle.Render("  [PLAN] 已进入规划模式 — 请输入要规划的任务"))
-					m.input.Placeholder = "描述要规划的任务..."
-					m.input.Reset()
-					m.input.Focus()
-					return m, textinput.Blink
-				}
-				raw = task
 			}
 
 			// 处理斜杠命令 / 普通输入
@@ -686,8 +635,13 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		}
 		m.lines = append(m.lines, line)
 
-		// plan_write 完成后，在工具行下方追加最新 todo 快照
+		// plan_write 完成后：激活自动续跑并在工具行下方追加最新计划快照。
+		// 规划是原生能力——一旦计划存在，Run 结束时若仍有未完成条目则自动续跑
+		// （停滞 3 次放弃；Ctrl+C/ESC 取消时立即停止）。
 		if toolName == "plan_write" && !result.IsError && m.planStore != nil {
+			m.autoExecuting = true
+			m.autoExecPrevDone = 0
+			m.autoExecStuck = 0
 			m = m.updatePlanBlock()
 		}
 
@@ -713,14 +667,7 @@ func (m tuiModel) handleEvent(evt engine.Event) (tea.Model, tea.Cmd) {
 		m.currentTool = ""
 		m.toolArgs = nil
 
-		// Plan Mode 完成：展示审查对话框，暂停等待用户选择（1/2/3/4）。
-		// planReviewing = true 后 View() 只渲染对话框，屏蔽普通输入。
-		if m.planMode == planning.PlanModePlan {
-			m.planReviewing = true
-			return m, nil
-		}
-
-		// autoExecuting 续跑逻辑：若有未完成 todo，基于进度决定是否自动续跑。
+		// autoExecuting 续跑逻辑：若计划仍有未完成条目，基于进度决定是否自动续跑。
 		// 停滞检测：连续 3 次 EventDone 后已完成数（done）无增加，判定为空转，放弃自动执行。
 		// 使用 done 而非 pending 计数判断进度：只有 completed 才代表真实工作产出，
 		// pending→in_progress 只是状态标记，不代表任何实际产出。
@@ -1533,54 +1480,6 @@ func (m tuiModel) handleResumeSelection(raw string) (tea.Model, tea.Cmd) {
 	))
 	m.input.Focus()
 	return m, textinput.Blink
-}
-
-// confirmPlanReview 处理审查对话框的确认操作，cursor 0-3 对应四个选项。
-// 由 Enter 键（光标位置）和 Esc 键（强制选项 3）调用。
-func (m tuiModel) confirmPlanReview(cursor int) (tea.Model, tea.Cmd) {
-	m.planReviewing = false
-	m.planReviewCursor = 0
-	switch cursor {
-	case 0:
-		// 批准并自动执行：切换到 Default 模式（完整工具权限），开启 autoExecuting 续跑循环。
-		m.planMode = planning.PlanModeDefault
-		m.input.Placeholder = "输入任务..."
-		m.autoExecuting = true
-		m.autoExecPrevDone = 0
-		m.autoExecStuck = 0
-		if m.eng != nil {
-			m.eng.SetPlanMode(planning.PlanModeDefault)
-		}
-		m.lines = append(m.lines, dimStyle.Render("  ▶ 批准计划 — 自动执行中"))
-		return m.dispatch(execPrompt)
-	case 1:
-		// 批准并逐步确认编辑（当前行为与选项 0 相同，planMode 设为 AutoEdit 预留扩展）。
-		m.planMode = planning.PlanModeAutoEdit
-		m.input.Placeholder = "输入任务..."
-		m.autoExecuting = true
-		m.autoExecPrevDone = 0
-		m.autoExecStuck = 0
-		if m.eng != nil {
-			m.eng.SetPlanMode(planning.PlanModeAutoEdit)
-		}
-		m.lines = append(m.lines, dimStyle.Render("  ▶ 批准计划 — 逐步执行中"))
-		return m.dispatch(execPrompt)
-	case 2:
-		// 继续修改计划：保持 Plan Mode，恢复输入框供用户继续描述修改意见。
-		m.input.Placeholder = "继续描述修改意见..."
-		m.input.Focus()
-		return m, textinput.Blink
-	default:
-		// 取消（选项 3 / Esc）：切换回 Default 模式，恢复正常输入状态。
-		m.planMode = planning.PlanModeDefault
-		m.input.Placeholder = "输入任务..."
-		if m.eng != nil {
-			m.eng.SetPlanMode(planning.PlanModeDefault)
-		}
-		m.lines = append(m.lines, dimStyle.Render("  ✗ 已取消计划执行"))
-		m.input.Focus()
-		return m, textinput.Blink
-	}
 }
 
 // handleTaskPanelKey 处理任务面板模态按键：列表态 ↑↓ 选择 / Enter 进详情 / Esc 关闭；

@@ -58,20 +58,6 @@ var (
 	brandStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true)
 	sepStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
 
-	// Plan Mode 色调 — 琥珀黄色系，替换默认青色系
-	planAccentStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
-	planStatusBarStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color("94")).
-				Foreground(lipgloss.Color("220")).
-				Padding(0, 1)
-	planModeLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
-	planReviewBoxStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("208")).
-				Padding(0, 2).
-				Width(50)
-	planReviewSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
-
 	// token 使用率颜色（绿/黄/红，按使用量变化）
 	tokenOKStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // < 50%: 绿
 	tokenWarnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // 50-80%: 黄
@@ -97,9 +83,8 @@ var (
 	shellErrStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("160"))
 
 	// Shell 模式 UI 指示器样式 — 控制状态栏、徽章、提示符的视觉主题。
-	// 设计要点：三种模式（Default / Plan / Shell）通过状态栏背景色明确区分：
+	// 设计要点：两种模式（Default / Shell）通过状态栏背景色明确区分：
 	//   Default  → 深灰底 #235（statusBarStyle）
-	//   Plan     → 深橙底 #94（planStatusBarStyle）
 	//   Shell    → 深绿底 #22（shellStatusBarStyle）
 	// 颜色切换逻辑集中在 accentStyle() 和 activeStatusBarStyle() 两个方法中。
 	shellStatusBarStyle = lipgloss.NewStyle().
@@ -119,8 +104,7 @@ var (
 	// shellModePromptStyle 是 renderInput 中 "$ " 提示符样式。
 	// 预计算为包级变量，避免 View() 每帧调用时重复执行 .Bold(true) 触发内存分配。
 	shellModePromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("83")).Bold(true)
-	// shellModeLabelInBarStyle 是状态栏内 "SHELL" 文本的样式（亮绿加粗），
-	// 与 planModeLabelStyle（Color "208"）并列，二者不会同时出现。
+	// shellModeLabelInBarStyle 是状态栏内 "SHELL" 文本的样式（亮绿加粗）。
 	shellModeLabelInBarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("83")).Bold(true)
 
 	// 审批对话框样式
@@ -233,22 +217,14 @@ type tuiModel struct {
 	resumeSelecting bool
 	resumeSessions  []memory.SessionInfo
 
-	// Todo 跟踪：与 engine 共享同一个 *planning.PlanStore 实例。
-	// 每次 plan_write 工具完成后，TUI 从 todoStore 读取最新快照并渲染到对话流中。
+	// Plan 跟踪：与 engine 共享同一个 *planning.PlanStore 实例。
+	// 每次 plan_write 工具完成后，TUI 从 planStore 读取最新快照并渲染到对话流中。
 	planStore *planning.PlanStore
 
-	// Plan Mode 状态：控制工具过滤、状态栏色调和审查对话框显示。
-	planMode planning.PlanMode
-	// planReviewing 在 Plan Mode 的 EventDone 时设为 true，
-	// 此后 View() 渲染审查对话框，屏蔽普通输入，等待用户用 ↑↓ 选择后按 Enter 确认。
-	planReviewing bool
-	// planReviewCursor 是审查对话框的当前光标位置（0-3 对应 4 个选项）。
-	planReviewCursor int
-
-	// 自动执行（autoExecuting）：选项 1/2 批准计划后激活。
-	// EventDone 时检查是否有剩余 todo，有则自动 dispatch(execContinuePrompt) 续跑。
+	// 自动执行（autoExecuting）：plan_write 成功写入计划后激活。
+	// EventDone 时检查是否有剩余 plan 条目，有则自动 dispatch(execContinuePrompt) 续跑。
 	autoExecuting bool
-	// autoExecPrevDone 记录上次 dispatch 时已完成的 todo 数量，
+	// autoExecPrevDone 记录上次 dispatch 时已完成的 plan 条目数量，
 	// 用于判断本次 EventDone 是否有实际进度（completed 数是否增加）。
 	autoExecPrevDone int
 	// autoExecStuck 记录连续无进度的 dispatch 次数。
@@ -353,8 +329,6 @@ func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager
 		manager:           mgr,
 		session:           sess,
 		planStore:         planStore,
-		planMode:          planning.PlanModeDefault,
-		planReviewing:     false,
 		pendingTools:      make(map[string]pendingToolInfo),
 		thinkingLineStart: -1, // -1 = 本轮尚未开始 thinking 块
 		subAgentTracker:   tracker,

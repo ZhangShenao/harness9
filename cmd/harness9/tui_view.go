@@ -38,13 +38,10 @@ import (
 
 // accentStyle 返回当前执行模式对应的强调色样式（accent style）。
 //
-// 优先级（高→低）：Shell 模式 > Plan Mode > Default。
-// Shell 模式优先级高于 Plan Mode 的原因：用户激活 Shell 模式时需要即时视觉反馈，
-// 即使当前是 Plan Mode 也应当清晰显示 Shell 模式的绿色主题。
+// 优先级（高→低）：Shell 模式 > Default。
 //
-//   - shellMode=true              → 亮绿色（shellModeAccentStyle, #83）
-//   - PlanModePlan / PlanModeAutoEdit → 琥珀黄（planAccentStyle, #220）
-//   - PlanModeDefault              → 青色（cyanStyle, #81）
+//   - shellMode=true → 亮绿色（shellModeAccentStyle, #83）
+//   - 默认           → 青色（cyanStyle, #81）
 //
 // 将颜色切换逻辑集中于此一处，renderStatusBar / renderFooter / renderPlanLines
 // 统一调用，View 层无散落的 if 判断，模式颜色映射易于维护和扩展。
@@ -52,26 +49,19 @@ func (m tuiModel) accentStyle() lipgloss.Style {
 	if m.shellMode {
 		return shellModeAccentStyle
 	}
-	if m.planMode != planning.PlanModeDefault {
-		return planAccentStyle
-	}
 	return cyanStyle
 }
 
 // activeStatusBarStyle 返回当前模式下的状态栏容器背景样式。
 //
-// 三种背景色通过不同色调给用户强烈的视觉区分信号：
-//   - shellMode=true      → 深绿底（shellStatusBarStyle, bg #22 / fg #120）
-//   - Plan/AutoEdit 模式  → 深橙底（planStatusBarStyle,  bg #94 / fg #220）
-//   - Default 模式        → 深灰底（statusBarStyle,       bg #235 / fg #11）
+// 两种背景色通过不同色调给用户强烈的视觉区分信号：
+//   - shellMode=true → 深绿底（shellStatusBarStyle, bg #22 / fg #120）
+//   - Default 模式   → 深灰底（statusBarStyle,       bg #235 / fg #11）
 //
 // 优先级规则与 accentStyle() 保持一致。
 func (m tuiModel) activeStatusBarStyle() lipgloss.Style {
 	if m.shellMode {
 		return shellStatusBarStyle
-	}
-	if m.planMode != planning.PlanModeDefault {
-		return planStatusBarStyle
 	}
 	return statusBarStyle
 }
@@ -95,8 +85,6 @@ func shortPath(p string) string {
 //   - completed   → ✔（绿色）
 //   - cancelled   → ⊘（灰色）
 //   - pending     → ○（灰色）
-//
-// 颜色跟随当前 planMode 的 accentStyle（Plan Mode 下为琥珀色，其他为青色）。
 func (m tuiModel) renderPlanLines(items []planning.PlanItem) []string {
 	if len(items) == 0 {
 		return nil
@@ -254,15 +242,11 @@ func (m tuiModel) renderStatusBar() string {
 		}
 	}
 	// modePart 在状态栏中显示当前模式标签：
-	//   Shell 模式  → "│ SHELL"（亮绿加粗），优先于 Plan 模式标签展示
-	//   Plan/Auto   → "│ [PLAN]"（琥珀 Color "208"）
+	//   Shell 模式  → "│ SHELL"（亮绿加粗）
 	//   Default     → 空字符串，不占用状态栏空间
-	modeLabel := m.planMode.Label()
 	var modePart string
 	if m.shellMode {
 		modePart = dimStyle.Render("  │  ") + shellModeLabelInBarStyle.Render("SHELL")
-	} else if modeLabel != "" {
-		modePart = dimStyle.Render("  │  ") + planModeLabelStyle.Render(modeLabel)
 	}
 	if m.permMode != engine.PermissionModeDefault {
 		modePart += dimStyle.Render("  │  ") + approvalTitleMedStyle.Render(m.permMode.String())
@@ -301,36 +285,6 @@ func (m tuiModel) renderStatusBar() string {
 		accent.Render(shortPath(m.workDir)) +
 		sessionInfo
 	return m.activeStatusBarStyle().Width(m.width).Render(content)
-}
-
-// renderPlanReviewDialog 渲染 Plan Mode 完成后的审查选择对话框（带圆角边框）。
-// 对话框在 planReviewing == true 时由 View() 插入到 StatusBar 之前，
-// ↑↓ 移动光标，Enter 确认，Esc 取消。
-func (m tuiModel) renderPlanReviewDialog() string {
-	options := []string{
-		"批准并自动执行",
-		"批准并逐步确认编辑",
-		"继续修改计划（保持 Plan Mode）",
-		"取消",
-	}
-
-	var sb strings.Builder
-	sb.WriteString(planModeLabelStyle.Render("Plan Mode 完成 — 选择下一步操作"))
-	sb.WriteString("\n\n")
-	for i, opt := range options {
-		if i == m.planReviewCursor {
-			sb.WriteString(planAccentStyle.Render("▶ ") + planReviewSelectedStyle.Render(opt))
-		} else {
-			sb.WriteString("  " + dimStyle.Render(opt))
-		}
-		if i < len(options)-1 {
-			sb.WriteByte('\n')
-		}
-	}
-	sb.WriteString("\n\n")
-	sb.WriteString(dimStyle.Render("↑↓ 移动  Enter 确认  Esc 取消"))
-
-	return planReviewBoxStyle.Render(sb.String())
 }
 
 // renderTaskPanel 渲染后台任务面板：taskDetailID 为空渲染列表，否则渲染该任务详情日志。
@@ -415,7 +369,6 @@ func formatTaskLog(d subagent.TaskDetail) []string {
 // renderInput 渲染底部输入行，根据当前模式切换提示符样式。
 //
 //   - Shell 模式：" [SHELL]  $ <textinput>"（深橄榄徽章 + 绿色 $ 提示符）
-//   - Plan Mode：  "  › <textinput>"（琥珀黄 › 提示符）
 //   - Default 模式："  › <textinput>"（普通灰色 › 提示符）
 //
 // Shell 模式下的徽章和 $ 提示符使用预计算的包级样式变量，避免每帧创建新样式对象。
@@ -424,9 +377,6 @@ func (m tuiModel) renderInput() string {
 		badge := shellModeTagStyle.Render("SHELL")
 		prompt := shellModePromptStyle.Render(" $ ")
 		return " " + badge + prompt + m.input.View()
-	}
-	if m.planMode != planning.PlanModeDefault {
-		return "  " + planAccentStyle.Render("›") + " " + m.input.View()
 	}
 	return "  › " + m.input.View()
 }
@@ -590,12 +540,6 @@ func (m tuiModel) View() string {
 		}
 		if m.approvalPending {
 			sb.WriteString(m.renderApprovalDialog())
-			sb.WriteByte('\n')
-			sb.WriteString(m.renderStatusBar())
-			return sb.String()
-		}
-		if m.planReviewing {
-			sb.WriteString(m.renderPlanReviewDialog())
 			sb.WriteByte('\n')
 			sb.WriteString(m.renderStatusBar())
 			return sb.String()

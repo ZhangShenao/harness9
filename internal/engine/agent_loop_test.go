@@ -518,40 +518,6 @@ func TestRunLoop_WithPlanStore_RestoresAndSaves(t *testing.T) {
 	}
 }
 
-// TestRunLoop_PlanMode_InjectsPlanPrefix 验证 Plan Mode 下用户 prompt 被注入了规划前缀。
-func TestRunLoop_PlanMode_InjectsPlanPrefix(t *testing.T) {
-	var receivedUserPrompt string
-	p := &countingProvider{
-		responses: []func([]schema.ToolDefinition) *schema.Message{
-			func(_ []schema.ToolDefinition) *schema.Message {
-				return &schema.Message{Role: schema.RoleAssistant, Content: "done"}
-			},
-		},
-	}
-	// 注入一个回调 provider 捕获历史消息内容
-	capturing := &capturingProvider{inner: p, onGenerate: func(msgs []schema.Message) {
-		for _, m := range msgs {
-			if m.Role == schema.RoleUser && receivedUserPrompt == "" {
-				receivedUserPrompt = m.Content
-			}
-		}
-	}}
-	reg := &staticRegistry{output: "ok"}
-	eng := NewAgentEngine(capturing, reg, t.TempDir(),
-		WithPlanMode(planning.PlanModePlan),
-	)
-	if err := eng.Run(context.Background(), "implement feature X"); err != nil {
-		t.Fatalf("Run error: %v", err)
-	}
-	// Plan Mode 前缀必须存在于用户消息中
-	if !strings.Contains(receivedUserPrompt, "plan_write") {
-		t.Errorf("Plan Mode should inject planning prefix mentioning plan_write, got: %q", receivedUserPrompt)
-	}
-	if !strings.Contains(receivedUserPrompt, "implement feature X") {
-		t.Errorf("original user prompt should be preserved, got: %q", receivedUserPrompt)
-	}
-}
-
 // ---- 测试辅助类型 ----
 
 // memorySessionForTest 是支持真实 GetPlan/SavePlan 持久化语义的 Session 桩。
@@ -775,59 +741,6 @@ func TestEngineObserver_NilFallback(t *testing.T) {
 	eng := NewAgentEngine(mock, reg, t.TempDir(), WithMaxTurns(10))
 	if err := eng.Run(context.Background(), "hello"); err != nil {
 		t.Fatalf("Run with nil observer: %v", err)
-	}
-}
-
-// TestRunLoop_PlanMode_FiltersWriteTools 验证 Plan Mode 下写操作工具被过滤，只读工具保留。
-func TestRunLoop_PlanMode_FiltersWriteTools(t *testing.T) {
-	p := &countingProvider{
-		responses: []func([]schema.ToolDefinition) *schema.Message{
-			func(tools []schema.ToolDefinition) *schema.Message {
-				return &schema.Message{Role: schema.RoleAssistant, Content: "done"}
-			},
-		},
-	}
-
-	allTools := []schema.ToolDefinition{
-		{Name: "read_file", Description: "read"},
-		{Name: "write_file", Description: "write"},
-		{Name: "bash", Description: "bash"},
-		{Name: "edit_file", Description: "edit"},
-		{Name: "plan_write", Description: "plan"},
-	}
-	reg := &staticRegistry{tools: allTools, output: "ok"}
-
-	eng := NewAgentEngine(p, reg, t.TempDir(),
-		WithMaxTurns(1),
-		WithPlanMode(planning.PlanModePlan),
-	)
-	err := eng.Run(context.Background(), "plan this")
-	if err != nil {
-		t.Fatalf("Run error: %v", err)
-	}
-
-	if len(p.calls) != 1 {
-		t.Fatalf("expected 1 LLM call, got %d", len(p.calls))
-	}
-	visibleTools := p.calls[0].tools
-	for _, tool := range visibleTools {
-		switch tool.Name {
-		case "write_file", "edit_file":
-			t.Errorf("tool %q should be filtered in PlanMode, but was visible", tool.Name)
-		}
-	}
-	found := make(map[string]bool)
-	for _, tool := range visibleTools {
-		found[tool.Name] = true
-	}
-	if !found["read_file"] {
-		t.Error("read_file should be visible in PlanMode")
-	}
-	if !found["bash"] {
-		t.Error("bash should be visible in PlanMode")
-	}
-	if !found["plan_write"] {
-		t.Error("plan_write should be visible in PlanMode (needed to write the plan)")
 	}
 }
 

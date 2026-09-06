@@ -47,7 +47,6 @@ type AgentEngine struct {
 	mu                 sync.RWMutex        // protects session and compactor
 	session            memory.Session      // 可选，nil 表示无持久化
 	compactor          memory.Compactor    // 可选，nil 表示不压缩
-	planMode           planning.PlanMode   // 当前执行模式，影响工具过滤
 	planStore          *planning.PlanStore // 可选，nil 表示无 planning
 	permissionMode     PermissionMode      // 全局权限策略，影响审批行为
 	nudgeInterval      int                 // >0 时每隔该轮数注入一次记忆 nudge

@@ -1,11 +1,8 @@
 // Package engine — PermissionMode 枚举与 WithPermissionMode 选项。
-// 本文件定义工具执行的全局权限策略枚举，与 planning.PlanMode 正交。
+// 本文件定义工具执行的全局权限策略枚举。
 package engine
 
-// PermissionMode 控制工具执行的全局权限策略。
-// 与 planning.PlanMode（规划/执行模式）正交：
-//   - PlanMode 控制工具列表过滤（只读 vs 全部）
-//   - PermissionMode 控制危险操作是否需要审批
+// PermissionMode 控制工具执行的全局权限策略：危险操作是否需要审批。
 type PermissionMode int
 
 const (

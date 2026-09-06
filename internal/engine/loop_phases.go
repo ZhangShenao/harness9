@@ -37,12 +37,11 @@ type loopContext struct {
 	logPrefix string
 	em        emitter
 
-	// 以下字段在入口一次性快照自 AgentEngine，运行期不受 SetSession/SetPlanMode
+	// 以下字段在入口一次性快照自 AgentEngine，运行期不受 SetSession
 	// 等跨 goroutine 修改的影响（修改仅对下一次交互生效）。
 	sess      memory.Session
 	comp      memory.Compactor
 	planStore *planning.PlanStore
-	planMode  planning.PlanMode
 
 	obs                EngineObserver   // 非 nil：入口已兜底为 noopObserver
 	obsCtx             context.Context  // interaction span 注入后的 ctx，所有 Turn ctx 的祖先
@@ -59,12 +58,12 @@ type turnInput struct {
 	// history 是发送给 LLM 的历史视图：在完整历史之上应用压缩与 nudge 注入后的副本，
 	// 仅作用于当次调用——lc.history 保持完整增长，不因压缩或 nudge 而改变。
 	history []schema.Message
-	// toolDefs 是本 Turn 对 LLM 可见的工具定义（Plan Mode 下已过滤为只读白名单）。
+	// toolDefs 是本 Turn 对 LLM 可见的工具定义（全量，Plan Mode 工具过滤已移除）。
 	toolDefs []schema.ToolDefinition
 }
 
 // beginInteraction 完成 runLoop 入口的全部一次性准备，返回携带快照状态的 loopContext。
-// 此方法不返回错误：所有可失败步骤（Todo 恢复、历史加载）均降级处理并记录告警，
+// 此方法不返回错误：所有可失败步骤（Plan 恢复、历史加载）均降级处理并记录告警，
 // 保证 Run/RunStream 的失败语义完全由循环阶段决定（与重构前行为一致）。
 func (e *AgentEngine) beginInteraction(ctx context.Context, userPrompt, logPrefix string, em emitter) *loopContext {
 	lc := &loopContext{
@@ -88,21 +87,20 @@ func (e *AgentEngine) beginInteraction(ctx context.Context, userPrompt, logPrefi
 	}
 	e.mu.RUnlock()
 	lc.obsCtx = lc.obs.OnInteractionStart(ctx, sessIDForObs, userPrompt)
-	// 后续所有阶段（Todo 恢复 / 历史加载 / Turn / 收尾）统一使用 obsCtx：
+	// 后续所有阶段（Plan 恢复 / 历史加载 / Turn / 收尾）统一使用 obsCtx：
 	// observer 可能在 OnInteractionStart 中注入 Span 或其他值，若继续使用原始 ctx，
 	// 这些注入会丢失（OTELEngineObserver 的 interaction→turn Span 父子关系即依赖此传播）。
 	ctx = lc.obsCtx
 
-	// 在循环开始时快照 session/compactor/planMode/planStore，避免与 TUI goroutine 的
-	// SetSession/SetPlanMode 产生数据竞争。
+	// 在循环开始时快照 session/compactor/planStore，避免与 TUI goroutine 的
+	// SetSession 产生数据竞争。
 	e.mu.RLock()
 	lc.sess = e.session
 	lc.comp = e.compactor
-	lc.planMode = e.planMode
 	lc.planStore = e.planStore
 	e.mu.RUnlock()
 
-	// 启动时从 Session 恢复 PlanStore 状态（跨会话续接未完成任务）。
+	// 启动时从 Session 恢复 PlanStore 状态（跨会话续接未完成计划；会话恢复/崩溃恢复路径）。
 	// 失败不终止 Run：plan 是辅助状态，丢失可接受，仅记录告警。
 	if lc.sess != nil && lc.planStore != nil {
 		if plan, err := lc.sess.GetPlan(ctx); err != nil {
@@ -111,10 +109,6 @@ func (e *AgentEngine) beginInteraction(ctx context.Context, userPrompt, logPrefi
 			lc.planStore.Write(plan)
 		}
 	}
-
-	// Plan Mode：注入规划行为约束（write_file/edit_file 已由 filterReadOnlyTools 在工具层
-	// 硬性过滤，此处只补充 bash 只读限制和 plan_write 输出要求等无法在工具层表达的行为规则）。
-	userPrompt = applyPlanModePrefix(lc.planMode, userPrompt)
 
 	lc.history, lc.startLen = e.loadHistoryWith(ctx, userPrompt, lc.sess, logPrefix)
 	return lc
@@ -157,9 +151,6 @@ func (lc *loopContext) prepareTurnInput() turnInput {
 
 	// 1. 工具列表每轮重新读取：注册表内容可能在运行期变化（如 MCP 异步注入）。
 	availableTools := e.registry.GetAvailableTools()
-	if lc.planMode == planning.PlanModePlan {
-		availableTools = filterReadOnlyTools(availableTools)
-	}
 
 	// 2. 压缩检查：comp 为 nil 时原样返回。压缩是逐轮视图——结果仅用于本次调用，
 	//    lc.history 保留完整历史，保证下一轮压缩仍能看到全部上下文重新计算。

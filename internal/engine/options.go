@@ -1,7 +1,7 @@
 // Package engine — AgentEngine 的函数式配置选项。
 //
 // 所有选项统一采用 `With` 前缀（见 AGENTS.md §3.2 命名规范），在 NewAgentEngine
-// 构造时一次性注入。运行期可变的个别状态（session / planMode）另提供线程安全的
+// 构造时一次性注入。运行期可变的个别状态（session）另提供线程安全的
 // Set* 方法，供 TUI goroutine 跨 goroutine 调用；修改仅对下一次 Run/RunStream 生效。
 package engine
 
@@ -109,15 +109,10 @@ func WithCompactor(c memory.Compactor) Option {
 	return func(e *AgentEngine) { e.compactor = c }
 }
 
-// WithPlanMode 设置 Agent 的初始执行模式。
-// runLoop 在启动时会快照此值，循环内不会受后续 SetPlanMode 调用影响。
-func WithPlanMode(mode planning.PlanMode) Option {
-	return func(e *AgentEngine) { e.planMode = mode }
-}
-
 // WithPlanStore 绑定 PlanStore，使引擎在 runLoop 生命周期中自动执行以下操作：
-//   - 启动时：从 Session 恢复 PlanStore 状态（跨会话续接未完成任务）
-//   - 结束时：通过 defer 将 PlanStore 保存到 Session（所有路径均执行）
+//   - 启动时：从 Session 恢复 PlanStore 状态（跨会话续接未完成计划）
+//   - 运行中：plan_write 成功轮立即写时检查点 + 每轮活跃 Plan 原样注入发送视图
+//   - 结束时：通过 defer 将 PlanStore 保存到 Session（所有路径均执行，幂等兜底）
 func WithPlanStore(s *planning.PlanStore) Option {
 	return func(e *AgentEngine) { e.planStore = s }
 }
@@ -128,15 +123,6 @@ func WithPlanStore(s *planning.PlanStore) Option {
 func (e *AgentEngine) SetSession(s memory.Session) {
 	e.mu.Lock()
 	e.session = s
-	e.mu.Unlock()
-}
-
-// SetPlanMode 线程安全地更新当前执行模式。TUI Shift+Tab 键调用此方法。
-// 注意：修改对当前正在运行的 runLoop 无影响（runLoop 在入口快照 planMode 值），
-// 仅在下一次 Run/RunStream 调用时生效。
-func (e *AgentEngine) SetPlanMode(mode planning.PlanMode) {
-	e.mu.Lock()
-	e.planMode = mode
 	e.mu.Unlock()
 }
 

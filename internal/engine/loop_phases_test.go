@@ -201,26 +201,6 @@ func TestBeginTurn_RejectsOverMaxTurns(t *testing.T) {
 	}
 }
 
-// TestApplyPlanModePrefix 验证 Plan Mode 前缀注入的开关行为：
-// Plan 模式加前缀且保留原始 prompt，其余模式原样返回。
-func TestApplyPlanModePrefix(t *testing.T) {
-	const prompt = "implement feature X"
-
-	if got := applyPlanModePrefix(planning.PlanModeDefault, prompt); got != prompt {
-		t.Errorf("Default 模式不应注入前缀，got %q", got)
-	}
-	if got := applyPlanModePrefix(planning.PlanModeAutoEdit, prompt); got != prompt {
-		t.Errorf("AutoEdit 模式不应注入前缀，got %q", got)
-	}
-	plan := applyPlanModePrefix(planning.PlanModePlan, prompt)
-	if plan == prompt {
-		t.Error("Plan 模式应注入规划前缀")
-	}
-	if len(plan) <= len(prompt) || plan[len(plan)-len(prompt):] != prompt {
-		t.Error("原始 prompt 应保留在前缀之后")
-	}
-}
-
 // ctxMarkKey 是 ctx 传播回归测试的自定义 key（模拟 observer 注入的 Span 等值）。
 type ctxMarkKey struct{}
 
