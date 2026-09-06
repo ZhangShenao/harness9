@@ -2,612 +2,312 @@
 
 harness9 的 Planning 模块解决一个核心问题：**如何让 Agent 在开始行动之前先想清楚，而不是一边做一边猜？**
 
-一般的 Agent 遇到复杂任务时，容易陷入"走一步看一步"的模式——它无法确定自己当前完成了多少、还剩多少、下一步做什么。Planning 模块为这个问题引入了一套轻量级的两阶段工作流：**先规划（Plan Mode）、再执行（Exec Mode）**，通过结构化的任务列表（TodoStore）把不透明的推理过程变成可观察、可验证、可续跑的操作序列。
+一般的 Agent 遇到复杂任务时，容易陷入"走一步看一步"的模式——它无法确定自己当前完成了多少、还剩多少、下一步做什么。Planning 模块把 **Plan 变成 Agent 的原生能力**：面对复杂任务时 Agent 会主动先用 `plan_write` 制定执行计划，再逐步执行；计划是 Session 级的权威状态——带写时检查点（Checkpoint）持久化、对上下文压缩免疫、在主代理与子代理之间完全隔离。
+
+> 设计历史：早期版本采用用户手动切换的 Plan Mode（Shift+Tab + 工具白名单 + 人工审批对话框）。
+> 该设计已被移除——规划不应是用户按需开启的"模式"，而应是 Agent 自主运用的"能力"。
+> 详见 `docs/技术调研/planning-native-redesign-v2.md`。
 
 ---
+
+## 核心设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 规划触发方式 | System Prompt 准则，LLM 自主判断 | 简单任务强制规划是开销浪费；复杂任务漏规划由准则 + 停滞检测兜底 |
+| Plan 粒度 | 一个 Session 一个 Plan | 与会话生命周期对齐，`/resume` 语义自然 |
+| 持久化机制 | 写时检查点（plan_write 成功即落盘） | 崩溃窗口从"整个 Run"缩小到"单轮之内" |
+| 压缩免疫 | 引擎级视图注入（Compactor 零改动） | 单一代码路径覆盖压缩/恢复/运行中三场景，且保证"原样注入"不被摘要器转述 |
+| Sub-Agent 隔离 | 委派级独立 PlanStore | 双向隔离靠构造实现，无共享通道可泄露 |
 
 ## 系统架构
 
 ```
 internal/planning/
-├── mode.go       # PlanMode 枚举（Default / Plan / AutoEdit）
-└── todo.go       # TodoStore（线程安全）+ TodoItem / TodoStatus + FormatForInjection
+├── plan.go       # PlanStore（线程安全）+ PlanItem / PlanStatus + FormatPlan
+└── plan_writer.go # PlanWriter 接口（供 plan_write 依赖，避免循环导入）
 
 internal/tools/
-└── todo_write.go # todo_write 工具：读写 TodoStore + 批量防作弊校验
+└── plan_write.go # plan_write 工具：读写 PlanStore + 批量防作弊校验
 
 internal/engine/
-├── planmode.go   # filterReadOnlyTools（工具层权限过滤）+ Plan Mode prompt 前缀
-├── loop_phases.go # beginInteraction / saveTodos：TodoStore 的加载 / 保存（跨会话持久化）
+├── nudge.go      # appendUserNudge（Plan 注入复用）+ progressToolNames（停滞检测）
+├── loop_phases.go # beginInteraction（Plan 恢复）/ prepareTurnInput 4c（Plan 注入）
+│                 # checkpointPlan（写时检查点）/ savePlan（defer 幂等兜底）
 └── agent_loop.go # runLoop 编排器
 
+internal/memory/
+├── session.go    # Session 接口：GetPlan / SavePlan
+└── sqlite_session.go # session_plans 表（UPSERT 单行 JSON）
+
+internal/subagent/
+└── runner.go     # 每次委派构造独立 PlanStore + 独立 plan_write 实例
+
 cmd/harness9/
-├── tui_update.go # execPrompt / execContinuePrompt 常量
-│                 # dispatch() 启动推理流
-│                 # EventDone 中的 autoExecuting 续跑循环 + 停滞检测
-│                 # updateTodoBlock() 在对话流中追加 todo 快照
-└── tui_view.go   # renderTodoLines()（带图标的任务列表渲染）
-                  # renderPlanReviewDialog()（Plan Mode 完成后的审查对话框）
-                  # renderStatusBar() 中的任务进度展示
+├── tui_update.go # EventToolResult 激活 autoExecuting + EventDone 续跑循环 + 停滞检测
+└── tui_view.go   # renderPlanLines()（带图标的计划渲染）+ 状态栏进度展示
 ```
 
 ---
 
-## 工作流概览
-
-```
-Shift+Tab ──► Plan Mode 激活（状态栏变为琥珀黄）
-用户输入任务描述 ──► dispatch(planModePrompt)
-                        │
-                        ▼
-           engine.runLoop（filterReadOnlyTools 过滤写工具）
-           Agent 探索代码库，调用 todo_write 输出结构化计划
-           文字简述后自然停止
-                        │
-                        ▼
-           TUI 展示审查对话框（planReviewing = true）
-           [1] 批准并自动执行    [2] 批准并逐步确认
-           [3] 继续修改计划      [4] 取消
-                        │ 按 1 或 2
-                        ▼
-           planMode → Default，dispatch(execPrompt)
-           autoExecuting = true
-                        │
-                        ▼
-           Agent 按清单逐项执行
-           ┌─ 每项：in_progress → 实际工具调用 → completed ─┐
-           │                                               │
-           └────────────────────────────────────────────────┘
-                        │ EventDone
-                        ▼
-           pending > 0 且 stuck < 3 → dispatch(execContinuePrompt)
-           pending == 0             → autoExecuting = false，完成
-           stuck ≥ 3               → 停止，提示手动干预
-```
-
----
-
-## PlanMode 枚举
+## 数据模型
 
 ```go
-// internal/planning/mode.go
-type PlanMode int
+// internal/planning/plan.go
 
-const (
-    PlanModeDefault  PlanMode = iota // 0：完整工具访问（默认）
-    PlanModePlan                     // 1：只读规划模式
-    PlanModeAutoEdit                 // 2：保留扩展位
-)
-```
+type PlanStatus string // pending / in_progress / completed / cancelled
 
-`PlanMode` 是一个整型枚举，`Shift+Tab` 在 TUI 中循环切换，`Next()` 通过 `(m + 1) % 3` 实现循环：
-
-```
-Default(0) → Plan(1) → AutoEdit(2) → Default(0) → ...
-```
-
-**为什么用枚举而非 bool？** 未来可能有更多执行模式（如"静默模式"、"沙箱模式"）。用枚举而非 `isPlanMode bool` 代价相同但扩展更自然。
-
-`eng.SetPlanMode(mode)` 通过互斥锁保护写操作，`runLoop` 在启动时快照当前模式，确保整个推理循环内模式一致，不受 TUI goroutine 切换的影响：
-
-```go
-// agent_loop.go — runLoop 入口
-e.mu.RLock()
-planMode := e.planMode   // 快照，循环中不变
-e.mu.RUnlock()
-```
-
----
-
-## TodoStore
-
-`TodoStore` 是 Planning 模块的核心数据结构——一个线程安全的内存任务列表，采用**全量替换（atomic replace）**语义。
-
-### 设计选择：全量替换 vs 增量更新
-
-大多数任务管理系统使用增量 API（add / update / delete）。harness9 选择全量替换，原因如下：
-
-1. **LLM 的自然输出形式是列表**：每次 LLM 调用 `todo_write` 时，它直接输出完整的当前清单，而不是"第 3 项的状态从 pending 改为 in_progress"这样的增量指令。全量替换与这种输出形式完全匹配。
-2. **避免状态不一致**：增量 API 要求 LLM 维护对旧状态的准确认知，一旦出错（如 ID 拼写错误），状态就会发散。全量替换让每次写入都是确定性的快照。
-3. **实现简单**：`Write` 只需 `copy(s.items, items)`，没有合并逻辑，没有冲突处理。
-
-### 实现细节
-
-```go
-// internal/planning/todo.go
-type TodoStore struct {
-    mu    sync.RWMutex
-    items []TodoItem
-}
-
-// Write 持有写锁，原子替换 items，返回替换后副本。
-func (s *TodoStore) Write(items []TodoItem) []TodoItem {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-    s.items = make([]TodoItem, len(items))
-    copy(s.items, items)
-    return s.copy()
-}
-
-// Read 持有读锁，返回副本（调用方可安全修改，不影响内部状态）。
-func (s *TodoStore) Read() []TodoItem {
-    s.mu.RLock()
-    defer s.mu.RUnlock()
-    return s.copy()
+type PlanItem struct {
+    ID      string     `json:"id"`      // LLM 自行分配，防作弊校验依据
+    Content string     `json:"content"` // 一个具体可执行动作
+    Status  PlanStatus `json:"status"`
 }
 ```
 
-`Write` 采用双重 copy 策略：
-- 第一次 copy（`s.items = make(...)` + `copy`）：内部存储与入参 `items` 解耦，防止调用方后续修改 `items` 影响 `TodoStore` 内部状态。
-- 第二次 copy（`s.copy()`）：返回值与内部存储解耦，防止调用方修改返回值影响 `TodoStore`。
-
-相比直接赋值 `s.items = items`，双重 copy 确保调用方、内部存储与入参三者完全独立，消除潜在的数据竞争风险。
-
-### TodoItem 状态机
+合法状态转换路径（由 plan_write 工具校验，PlanStore 本身不做校验）：
 
 ```
 pending ──► in_progress ──► completed
    │              │
-   └──► cancelled └──► cancelled
+   └──────────────┴──► cancelled
 ```
 
-四种状态对应 `TodoStatus` 字符串常量：
+### PlanStore：全量替换语义
 
-```go
-const (
-    TodoPending    TodoStatus = "pending"
-    TodoInProgress TodoStatus = "in_progress"
-    TodoCompleted  TodoStatus = "completed"
-    TodoCancelled  TodoStatus = "cancelled"
-)
-```
+PlanStore 采用**全量替换**（atomic replace）而非增量更新：LLM 每次调用 plan_write 输出完整的当前计划，全量替换与这种输出形式完全匹配，同时避免增量 API 的状态一致性问题。
 
-状态转换约束由 `todo_write` 工具（而非 `TodoStore` 本身）负责强制执行。`TodoStore` 对写入内容无校验——它只是一个无判断的存储层，业务约束在工具层表达。
+线程安全：`sync.RWMutex`，`Read` 允许多读并发，`Write` 排他；双重复制保证调用方、内部存储与返回值三者解耦。
 
----
+核心 API：
 
-## todo_write 工具
-
-`todo_write` 是 Planning 模块的核心工具，LLM 通过它读写任务列表。它在引擎工具注册表中注册，与 `read_file`、`bash` 等工具平级。
-
-### 工具定义
-
-```go
-// internal/tools/todo_write.go
-func (t *TodoWriteTool) Definition() schema.ToolDefinition {
-    return schema.ToolDefinition{
-        Name: "todo_write",
-        Description: "维护当前会话的任务清单。" +
-            "提供 todos 数组时全量替换（atomic replace）；省略 todos 时读取当前列表。\n" +
-            "当任务涉及 3 个或以上独立步骤时，在开始前调用此工具记录任务列表，" +
-            "并在每完成一步后立即更新对应条目的 status 为 in_progress 或 completed。",
-        InputSchema: map[string]interface{}{
-            "type": "object",
-            "properties": map[string]interface{}{
-                "todos": map[string]interface{}{
-                    "type":        "array",
-                    "description": "完整的任务列表（全量替换）。省略此字段则仅读取当前列表。",
-                    "items": map[string]interface{}{
-                        "type": "object",
-                        "properties": map[string]interface{}{
-                            "id":      ...,
-                            "content": ...,
-                            "status":  {"type": "string", "enum": ["pending","in_progress","completed","cancelled"]},
-                        },
-                    },
-                },
-            },
-        },
-    }
-}
-```
-
-工具有两种调用模式：
-
-| 调用方式 | 效果 |
-|---------|------|
-| 传入 `todos` 数组 | 全量替换任务列表（写操作） |
-| 省略 `todos` 字段 | 返回当前任务列表 JSON（读操作） |
-
-### 防作弊校验：批量直接完成检测
-
-LLM 可能在没有执行实际工作的情况下，在一次 `todo_write` 调用中将大量 `pending` 任务直接标记为 `completed`，伪造进度。这是"幻觉执行"——看起来完成了，实际上什么都没做。
-
-**原始 bug**：在一次连续对话中，LLM 将 11 个任务中的 9 个一次性批量完成（2/11 → 11/11），没有对应的文件创建或 bash 执行操作。
-
-**防护策略**：在一次 `todo_write` 调用中，最多允许 **1 个**任务从非 `in_progress` 状态直接跳转到 `completed`。超过 1 个视为批量作弊，拒绝写入。
-
-```go
-// internal/tools/todo_write.go — Execute()
-var directCompletions int
-for _, item := range input.Todos {
-    if item.Status != planning.TodoCompleted {
-        continue
-    }
-    prior, exists := prevStatus[item.ID]
-    if !exists || prior == planning.TodoPending {
-        directCompletions++ // 新条目或 pending → completed，计入直接完成数
-        continue
-    }
-    if prior == planning.TodoCancelled {
-        return "", fmt.Errorf("任务 %q 已取消，不能直接标记为 completed；"+
-            "如需重新执行，请先将其恢复为 pending 或 in_progress。", item.ID)
-    }
-    // in_progress / completed → completed：合法，不计入
-}
-if directCompletions > 1 {
-    return "", fmt.Errorf(
-        "不允许在一次调用中将 %d 个任务直接标记为 completed（未经 in_progress）。"+
-            "请逐一处理：每次仅完成一项实际工作后更新该条目状态。",
-        directCompletions)
-}
-```
-
-**为什么阈值是 1 而不是 0？**
-
-阈值 0（完全禁止 `pending → completed`）在续跑场景中过于严格：当 Agent 在一次续跑中完成了一项实际工作（调用了 bash 或 write_file），然后直接将对应 todo 标记为 `completed` 而没有中间经过 `in_progress`，属于合法行为——Agent 省略了 `in_progress` 中间步骤，但工作是真实完成的。把阈值设为 0 会导致 Agent 反复收到拒绝错误，打乱执行流程。
-
-阈值 1 保留了对原始 bug 模式（大量批量完成）的防护，同时允许 Agent 在单项工作后直接完成的正常用法。
-
-**错误回传机制**：`todo_write` 返回 `error` 时，引擎将其包装为 `ToolResult{IsError: true, Output: errMsg}` 注入上下文。LLM 看到工具调用失败的错误信息，被迫重新组织调用参数——这是 harness9"自愈"设计的体现：不终止循环，让 LLM 自行纠正。
-
----
-
-## 工具层权限控制（filterReadOnlyTools）
-
-Plan Mode 下，`write_file` 和 `edit_file` 从工具列表中**完全移除**，而不是通过 prompt 声明"不要创建文件"。
-
-```go
-// planmode.go
-var planModeWhitelist = map[string]bool{
-    "read_file":  true,
-    "bash":       true,
-    "use_skill":  true,
-    "todo_write": true,
-}
-
-func filterReadOnlyTools(tools []schema.ToolDefinition) []schema.ToolDefinition {
-    result := make([]schema.ToolDefinition, 0, len(tools))
-    for _, t := range tools {
-        if planModeWhitelist[t.Name] {
-            result = append(result, t)
-        }
-    }
-    return result
-}
-
-// loop_phases.go — prepareTurnInput 中（每轮 LLM 调用前）
-availableTools := e.registry.GetAvailableTools()
-if lc.planMode == planning.PlanModePlan {
-    availableTools = filterReadOnlyTools(availableTools)
-}
-```
-
-**为什么在工具层而不是 prompt 层控制？**
-
-Prompt 是软约束。LLM 会忘记 prompt 中的限制（尤其在上下文压缩后），会被历史消息中出现的工具用法"诱导"，会在某些情况下主动选择忽略约束。工具层是硬约束：从工具 schema 中移除一个工具，LLM 无论在哪个上下文状态下，都无法调用它——它在 API 层就不存在了。
-
-`todo_write` 在白名单中，因为 Plan Mode 的核心目标就是让 LLM 通过 `todo_write` 输出结构化计划。
-
----
-
-## Plan Mode Prompt 注入
-
-工具层的过滤无法表达"bash 只能用于只读命令"这类行为约束，因此 `runLoop` 在 Plan Mode 下对用户 prompt 追加前缀：
-
-```go
-// planmode.go — applyPlanModePrefix（由 loop_phases.go 的 beginInteraction 调用）
-const planModePromptPrefix = "分析以下请求，用 todo_write 输出一份可直接执行的实现计划，然后用纯文字简述计划后停止。\n" +
-    "todo 项要求：每条对应一个具体的实现动作（例如：创建某文件、实现某函数、运行某命令），\n" +
-    "而非高层规划描述（禁止写\"需求澄清\"、\"方案设计\"之类无法直接执行的条目）。\n" +
-    "如需了解当前代码库，可使用 read_file 或 bash（只读命令：ls、cat、find、grep）。\n" +
-    "不要创建文件、执行 build/install 或做任何实际修改。\n\n"
-
-// Plan Mode 下：userPrompt = planModePromptPrefix + userPrompt
-```
-
-注入原则：**只说行为，不说权限**。"你现在有权限 X"这样的 prompt 声明是冗余的——权限由工具层决定。Prompt 只引导 LLM"该做什么"，不描述"能做什么"。
-
----
-
-## 执行阶段 Prompt 设计
-
-用户批准计划后，TUI 不是简单地发送"开始执行"，而是发送一段精心设计的行为规范 prompt：
-
-```go
-// tui_update.go
-const execPrompt = "按照 todo 清单逐项执行。规则：\n" +
-    "1. 每开始一项前，用 todo_write 将其状态设为 in_progress\n" +
-    "2. 用工具完成该项的实际工作——创建文件、写代码、运行命令等；" +
-    "仅更新 todo_write 状态而不调用其他工具，不算完成该项\n" +
-    "3. 确认实际产出后，用 todo_write 将其状态设为 completed\n" +
-    "4. 不要输出进度摘要文字，立即处理下一项\n" +
-    "全部完成后，用一句话汇报整体结果。"
-```
-
-规则 2 的设计意图是关键：**明确告诉 LLM，"仅更新状态而不调用其他工具，不算完成"**。这是对抗幻觉执行的 prompt 层约束，与工具层的批量完成检测形成双重防护。
-
-续跑时使用更精简的 prompt，避免重复完整规则说明：
-
-```go
-const execContinuePrompt = "继续处理 todo 清单中下一个 pending 或 in_progress 的任务项。" +
-    "先用 todo_write 标记为 in_progress，然后用工具完成实际工作（写文件、执行命令等），" +
-    "确认产出后标记为 completed，再处理下一项。" +
-    "不要只更新状态而不做实际操作，不要输出进度摘要。"
-```
-
----
-
-## 自动执行循环与停滞检测
-
-`autoExecuting` 标志开启后，每次 `EventDone` 事件触发以下决策逻辑：
-
-```go
-// tui_update.go — EventDone handler
-if m.autoExecuting && m.todoStore != nil {
-    items := m.todoStore.Read()
-    var pending, done int
-    for _, item := range items {
-        switch item.Status {
-        case planning.TodoPending, planning.TodoInProgress:
-            pending++
-        case planning.TodoCompleted:
-            done++
-        }
-    }
-    if pending > 0 {
-        if done > m.autoExecPrevDone {
-            m.autoExecStuck = 0  // 有进度，重置停滞计数
-        } else {
-            m.autoExecStuck++    // 无进度，停滞计数 +1
-        }
-        if m.autoExecStuck < 3 {
-            m.autoExecPrevDone = done
-            return m.dispatch(execContinuePrompt)  // 续跑
-        }
-        // 连续 3 次无进度 → 停止
-        m.autoExecuting = false
-        m.lines = append(m.lines, dimStyle.Render("  ⚠ 执行停滞，请手动描述下一步"))
-    } else {
-        m.autoExecuting = false  // 全部完成
-    }
-}
-```
-
-**停滞检测的触发条件**：连续 3 次 `EventDone` 后，已完成任务数（`done`）没有增加。这说明 Agent 在空转——它结束了推理但没有推进任何任务，可能是在输出纯文字、反复失败或陷入循环。
-
-停滞检测用 `done` 计数（而非 `pending` 计数）判断进度，因为只有 `completed` 才代表真实的工作产出。`pending → in_progress` 的转变不应算作进度，因为它只是状态标记，不代表工作完成。
-
-`dispatch()` 内置并发保护：
-
-```go
-func (m tuiModel) dispatch(prompt string) (tuiModel, tea.Cmd) {
-    if m.running {
-        return m, nil  // 已有推理在进行，静默忽略
-    }
-    // ...
-}
-```
-
----
-
-## TUI 视觉集成
-
-### Plan Mode 色调
-
-Plan Mode 激活时，TUI 从标准青色（`#81`）切换为琥珀黄色调，给用户明确的视觉信号：当前处于规划阶段，Agent 不会修改文件。
-
-```go
-// tui.go — package-level 样式变量
-planAccentStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))       // 金黄
-planStatusBarStyle  = lipgloss.NewStyle().
-    Background(lipgloss.Color("94")).
-    Foreground(lipgloss.Color("220")).
-    Padding(0, 1)
-planModeLabelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
-```
-
-`accentStyle()` 和 `activeStatusBarStyle()` 方法按当前 `planMode` 返回对应样式，View 层统一调用，不散落 `if planMode ==` 判断。
-
-### 实时 Todo 快照
-
-每次 `todo_write` 工具成功执行后，TUI 在工具完成行正下方追加当前任务列表快照：
-
-```go
-// tui_update.go — EventToolResult
-if m.currentTool == "todo_write" && !result.IsError && m.todoStore != nil {
-    m = m.updateTodoBlock()
-}
-
-// updateTodoBlock 简单追加，不原地替换
-func (m tuiModel) updateTodoBlock() tuiModel {
-    todoLines := m.renderTodoLines(m.todoStore.Read())
-    if len(todoLines) == 0 {
-        return m
-    }
-    m.lines = append(m.lines, todoLines...)
-    return m
-}
-```
-
-快照使用状态图标可视化每个条目：
-
-| 图标 | 状态 |
+| 方法 | 语义 |
 |------|------|
-| `✔` | completed |
-| `▶` | in_progress |
-| `○` | pending |
-| `⊘` | cancelled |
-
-**为什么追加而不是原地替换？** 追加保留了完整的对话历史——用户可以向上滚动看到每次状态变化。原地替换只能看到最终状态，丢失了进度轨迹。代价是对话流会随 todo 更新增长，但 todo 列表通常不长，代价可接受。
-
-### 审查对话框
-
-Plan Mode 完成后，TUI 展示带圆角边框的选项对话框，暂停输入等待用户决策：
-
-```
-╭──────────────────────────────────────────────╮
-│  Plan Mode 完成 — 选择下一步操作               │
-│                                              │
-│  [1]  批准并自动执行                           │
-│  [2]  批准并逐步确认编辑                        │
-│  [3]  继续修改计划（保持 Plan Mode）             │
-│  [4]  取消                                   │
-╰──────────────────────────────────────────────╯
-```
-
-选项 1 和 2 都将 `autoExecuting` 设为 `true` 并立即 dispatch `execPrompt`，当前行为相同，区别在于执行后的 `planMode` 设置：
-
-- 选项 1：`planMode = PlanModeDefault`，执行阶段具备完整工具权限
-- 选项 2：`planMode = PlanModeAutoEdit`（标注为"未实现"），工具层行为与 Default 相同，预留给未来的逐步确认模式扩展
-
-选项 3：维持 `planMode == PlanModePlan`，允许用户继续向 Agent 提问或要求调整计划。
-
-### 状态栏任务进度
-
-```go
-// tui_view.go — renderStatusBar
-items := m.todoStore.Read()
-var completed int
-for _, item := range items {
-    if item.Status == planning.TodoCompleted { completed++ }
-}
-// accent 颜色跟随当前 planMode：Default 为青色，Plan/AutoEdit 为琥珀黄
-tasksPart = dimStyle.Render("  │  ") + accent.Render(fmt.Sprintf("%d/%d tasks", completed, len(items)))
-```
-
-只统计 `TodoCompleted` 状态的条目作为"已完成"，`in_progress` 不计入。状态栏显示类似 `3/11 tasks`，实时反映真实完成进度。颜色跟随当前 `planMode` 的 `accentStyle()`（Plan Mode 下为琥珀黄，默认模式下为青色）。
+| `Write(items []PlanItem) []PlanItem` | 全量替换，返回替换后的副本 |
+| `Read() []PlanItem` | 当前快照副本 |
+| `FormatPlan() string` | 活跃条目（pending/in_progress）格式化为注入文本；无活跃条目返回空串 |
+| `ActiveCount() (active, total int)` | TUI autoExecuting 续跑判断 |
 
 ---
 
-## 跨会话 Todo 持久化
+## plan_write 工具
 
-`TodoStore` 的内容随 Session 持久化到 SQLite，进程重启或会话切换后可恢复未完成任务。
+plan_write 是 Planning 模块对 LLM 暴露的唯一计划管理接口，两种调用模式：
 
-`runLoop` 在启动时恢复、在结束时保存（`defer` 保证即使 panic 也会执行）：
+- **写模式**（提供 `steps` 数组）：防作弊校验通过后全量替换 PlanStore
+- **读模式**（省略 `steps`）：返回当前计划 JSON，不修改状态
+
+```json
+{
+  "steps": [
+    {"id": "1", "content": "创建 parser.go 解析配置文件", "status": "pending"},
+    {"id": "2", "content": "实现 load 逻辑", "status": "in_progress"}
+  ]
+}
+```
+
+### 防作弊校验（Anti-Cheat Validation）
+
+LLM 存在"伪造进度"的失败模式——不做实际工作却批量把条目标记为 completed。防作弊校验规则：
+
+1. **批量直通拒绝**：一次调用中最多允许 1 个 pending/新建条目直接跳转 completed（`directCompletions ≤ 1`）；超过即拒绝整批写入，错误回传给 LLM 触发自愈
+2. **cancelled → completed 始终拒绝**：取消的条目表明已放弃，需先恢复为 pending/in_progress
+3. **阈值设为 1 而非 0**：保留"完成实际工作后直接记录结果"的正常用法，只阻止批量伪造
+
+### Markdown 计划文件（PlanWriter）
+
+通过 `WithPlanWriter` 注入 `hooks.FilePlanWriter`，每次写入 PlanStore 成功后同步覆写 markdown 计划文件（git 项目写入 `workDir/.harness9/plans/`，否则写入 homeDir）。这是**人工可读视图**，写入失败 fail-open（告警不阻断）。
+
+---
+
+## 原生规划：System Prompt 准则
+
+规划行为由 `DefaultPromptBuilder` 注入 System Prompt 的准则驱动（`WithPlanEnabled(true)`，仅在 plan_write 已注册时注入）：
+
+```
+## 规划（Planning）
+面对复杂多步任务（多文件改动、有依赖链的步骤、需要探索后实施）时，
+先用 plan_write 制定执行计划，再逐步执行：
+- 计划条目必须对应具体可执行动作（创建文件、实现函数、运行命令），
+  禁止"需求澄清"、"方案设计"类无法直接执行的条目
+- 开始某条目前将其标记为 in_progress，完成后立即标记为 completed
+- 计划是权威状态：即使对话上下文被压缩，计划始终可见，以计划为准继续
+- 简单任务（1-2 步、问答、单命令）无需规划，直接执行
+```
+
+LLM 自主判断何时规划——**无工具过滤、无 prompt 前缀、无运行时检测**。这是"能力"与"模式"的本质区别：Agent 像资深工程师一样，复杂任务先列计划、简单任务直接动手。
+
+---
+
+## 写时检查点（Checkpoint）
+
+### 机制
+
+```
+runLoop：executeTools 之后
+  → 扫描本轮 ToolCalls：存在成功的 plan_write 调用
+  → lc.sess.SavePlan(ctx, planStore.Read())   // 立即落盘 SQLite
+```
 
 ```go
-// loop_phases.go — beginInteraction（启动恢复）与 saveTodos（defer 保存）
-// 启动时从 Session 恢复 TodoStore
-if lc.sess != nil && lc.todoStore != nil {
-    if todos, err := lc.sess.GetTodos(ctx); err != nil {
-        log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf("加载 todos 失败: %v", err)))
-    } else {
-        lc.todoStore.Write(todos)
-    }
-}
-
-// 结束时保存（runLoop 中 defer lc.saveTodos(ctx)，在所有路径上执行）
-func (lc *loopContext) saveTodos(ctx context.Context) {
-    if lc.sess == nil || lc.todoStore == nil {
+// internal/engine/loop_phases.go
+func (lc *loopContext) checkpointPlan(calls []schema.ToolCall, results []schema.ToolResult) {
+    if lc.sess == nil || lc.planStore == nil {
         return
     }
-    if err := lc.sess.SaveTodos(ctx, lc.todoStore.Read()); err != nil {
-        log.Print(logfmt.FormatMsg(lc.logPrefix, fmt.Sprintf("保存 todos 失败: %v", err)))
+    for i, tc := range calls {
+        if tc.Name == "plan_write" && i < len(results) && !results[i].IsError {
+            lc.savePlan(lc.obsCtx)
+            return
+        }
     }
 }
 ```
 
-**跨 runLoop 调用的状态连续性**：`autoExecuting` 模式下，每次续跑都会触发一次新的 `runLoop`。每次 `runLoop` 启动时都从 DB 恢复 `TodoStore`，确保续跑时的初始状态与上一次运行结束时的状态一致——这是 `todo_write` 防作弊校验能正常工作的前提：`pending` 的任务在上次运行结束后保存到 DB，下次运行加载回内存，校验逻辑可以准确识别任务的历史状态。
+- **崩溃窗口**：从"整个 Run"缩小到"单轮之内"——进程在任意时刻被杀，最多丢失"正在执行的那一轮"的计划进度
+- **defer 兜底**：`savePlan` 仍以 defer 注册在所有退出路径执行（幂等），兜底写时检查点中途失败的重试
+- **fail-open**：SavePlan 失败仅告警，不阻断工具执行与主循环
 
-TUI `/new` 和 `/resume` 命令会触发 `todoStore.Write(nil)`，清空内存中的任务列表，新会话从空列表开始。
+### 持久化存储：session_plans 表
+
+```sql
+CREATE TABLE IF NOT EXISTS session_plans (
+    session_id TEXT PRIMARY KEY,
+    items      TEXT    NOT NULL DEFAULT '[]',
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+```
+
+- `SQLiteSession.SavePlan`：UPSERT 单行 JSON（write-replace）
+- `SQLiteSession.GetPlan`：无记录返回 `nil, nil`
+- 外键级联：`DeleteSession` 删除会话时自动清理对应计划（`PRAGMA foreign_keys=ON`）
+- `MemorySession` 同步实现（内存字段），供子代理与测试使用
+- 旧 `session_todos` 表不做数据迁移：新装环境不建旧表，存量环境旧表残留无害
+
+### 异常恢复路径
+
+```
+进程崩溃 ──► 用户重启 harness9 ──► /resume 恢复会话
+  ──► beginInteraction：sess.GetPlan() → PlanStore 恢复（失败降级为空计划）
+  ──► 首轮 prepareTurnInput：活跃计划注入发送视图
+  ──► 用户发一句"继续" ──► Agent 基于未完成条目继续执行
+```
 
 ---
 
-## 上下文压缩中的 Todo 注入
+## 压缩免疫：引擎级 Plan 注入
 
-当对话历史过长触发 `SummarizationCompactor` 时，旧消息会被 LLM 摘要压缩为单条摘要消息。如果未完成的 todo 被压入"旧消息"范围，LLM 可能在压缩后遗忘它们。
+### 问题：为什么不在压缩器里保留 Plan？
 
-`TodoStore` 实现了 `TodoInjector` 接口，在每次生成摘要后将活跃任务（`pending` 和 `in_progress`）追加到摘要末尾：
+早期设计把活跃条目追加到 LLM 摘要文本末尾，存在两个缺陷：
+
+1. **非原样**：注入内容经过摘要器/拼装逻辑转述，不满足"原样注入"的严格语义
+2. **不完整**：仅 SummarizationCompactor / ProgressiveCompactor 注入；TokenBudgetCompactor / SlidingWindowCompactor（截断回退）完全不注入——fallback 截断恰恰是最容易丢失计划的场景
+
+### 方案：压缩之后、LLM 调用之前注入
+
+`prepareTurnInput` 的步骤 4c（在记忆 nudge、停滞 nudge 之后）：
 
 ```go
-// internal/planning/todo.go
-func (s *TodoStore) FormatForInjection() string {
-    var lines []string
-    for _, item := range s.items {
-        if item.Status == TodoPending || item.Status == TodoInProgress {
-            prefix := "[ ]"
-            if item.Status == TodoInProgress { prefix = "[>]" }
-            lines = append(lines, fmt.Sprintf("%s %s", prefix, item.Content))
-        }
+// internal/engine/loop_phases.go
+if lc.planStore != nil {
+    if planText := lc.planStore.FormatPlan(); planText != "" {
+        compactedHistory = appendUserNudge(compactedHistory, planText)
     }
+}
+```
+
+关键性质：
+
+- **压缩器零改动**：无论哪个 Compactor 实现（Summarization / TokenBudget / SlidingWindow / Progressive）产出了怎样的压缩视图，注入步骤都在其后执行——Plan 必然可见，包括 fallback 字符截断的场景
+- **单一代码路径覆盖三场景**：自动压缩后（视图即压缩产物）、会话恢复后（PlanStore 已恢复）、运行中（每轮重算，plan_write 更新次轮即可见）
+- **临时副本**：注入只作用于当次发送视图，不写入 `lc.history`、不持久化、不累积（与 nudge 同机制）——历史完整性不被污染
+- **手动 /compact 同路径受益**
+
+### 注入格式（FormatPlan 输出）
+
+```
+## 当前执行计划（权威状态，压缩或恢复后仍以此为准继续执行）
+[ ] 创建 parser.go 解析配置文件
+[>] 实现 load 逻辑
+```
+
+仅含 pending / in_progress 条目（已完成条目无需重复注入）；`[ ]` 表示 pending，`[>]` 表示 in_progress。
+
+### 成本分析
+
+活跃计划通常 < 500 字节，每轮重复注入的 token 开销可忽略；换取的是"压缩/恢复后计划永不丢失"的硬保证。压缩器内的 `TodoInjector` 冗余注入机制已随之移除——引擎级注入是唯一事实源。
+
+---
+
+## Sub-Agent Plan 隔离
+
+### 设计：委派级独立 PlanStore
+
+`subagent.Runner.Run` 每次委派：
+
+```go
+// internal/subagent/runner.go
+childPlanStore := planning.NewPlanStore()
+effectiveBaseTools = append(effectiveBaseTools, tools.NewPlanWriteTool(childPlanStore))
+// ...
+opts := []engine.Option{
+    engine.WithSession(childSession),      // MemorySession（已有）
+    engine.WithPlanStore(childPlanStore),  // 子引擎完整规划语义
     // ...
 }
 ```
 
-```go
-// internal/memory/summarization.go — Compact()
-summaryContent := summaryMarker + "\n" + summary
-if c.TodoInjector != nil {
-    if todoText := c.TodoInjector.FormatForInjection(); todoText != "" {
-        summaryContent += "\n\n## Active Tasks\n" + todoText
-    }
-}
-```
+### 三重隔离保证
 
-压缩后的摘要消息格式：
+| 层 | 保证 |
+|----|------|
+| 存储实例 | 子引擎只持有自己的 PlanStore 引用，与父代理零共享——隔离靠构造实现，无共享通道可泄露 |
+| System Prompt | 子代理 prompt（`subagent/prompt.go`）仅含规划准则，无任何父 Plan 数据通路 |
+| 工具实例 | 子注册表的 plan_write 绑定 childPlanStore，物理上无法触达父存储 |
 
-```
-[Conversation Summary]
-**Goal:** 构建一个 Go Web 应用...
-**Progress:** 已创建目录结构，已初始化 go.mod...
-**Next Steps:** 实现路由注册...
+### 生命周期
 
-## Active Tasks
-[ ] 实现 handler/user.go
-[ ] 添加路由注册
-[>] 配置数据库连接
-```
-
-这确保了即使在长对话中触发多次压缩，Agent 也不会"忘记"还有哪些任务待完成。
+- 子代理 Plan 随 `MemorySession` 消亡（委派结束即弃），不写 SQLite、不写 markdown 审计文件
+- 子代理拥有与主代理相同的规划能力（先规划后执行），`Runner` 自动追加独立 plan_write 实例，无需在 main.go 重复注册
+- **白名单式自定义 agent 定义**（`.harness9/agents/*.md` 的 `tools:` 列表）需显式列出 `plan_write` 才能使用规划能力；不列则该子代理无规划工具（自然降级为纯执行者）
+- 防递归 `denyTaskHook` 不变：子代理仍不允许再派生子代理
 
 ---
 
-## 数据流总结
+## TUI 集成
 
-```
-用户 Shift+Tab
-    │
-    ▼
-tuiModel.planMode = PlanModePlan
-eng.SetPlanMode(PlanModePlan)           # 线程安全写入，runLoop 快照读取
+### Plan 渲染
 
-用户输入任务 → dispatch(userPrompt)
-    │
-    ▼
-engine.runLoop
-    ├─ 快照 planMode, todoStore
-    ├─ GetTodos(ctx) → todoStore.Write(todos)    # 从 DB 恢复任务状态
-    ├─ 注入 Plan Mode 前缀 prompt
-    ├─ filterReadOnlyTools()                     # 从工具列表移除 write_file/edit_file
-    └─ ReAct 循环
-           │ LLM 调用 todo_write
-           ▼
-       TodoWriteTool.Execute()
-           ├─ 读取 prevStatus（当前 store 快照）
-           ├─ 计算 directCompletions（批量完成检测）
-           ├─ directCompletions > 1 → error → LLM 重试
-           └─ store.Write(todos) → TUI EventToolResult → updateTodoBlock()
-           │ LLM 自然停止（无 ToolCall）
-           ▼
-       defer SaveTodos(ctx, store.Read())        # 持久化到 SQLite
-       EventDone → planReviewing = true
-           │
-           ▼
-       审查对话框（用户按 1）
-           │
-           ▼
-       planMode = Default / eng.SetPlanMode(Default)
-       autoExecuting = true
-       dispatch(execPrompt)
-           │
-           ▼
-       engine.runLoop（完整工具列表，执行 prompt）
-           │ Agent 执行工具，每项 in_progress → 工具调用 → completed
-           ▼
-       EventDone
-           ├─ pending > 0, done > prevDone → stuck=0, dispatch(execContinuePrompt)
-           ├─ pending > 0, no progress    → stuck++
-           │     stuck ≥ 3               → autoExecuting=false, 警告
-           └─ pending == 0               → autoExecuting=false, 完成
-```
+- **对话流快照**：plan_write 成功完成后，在工具完成行下方追加带图标的计划快照（`renderPlanLines`）：`▶` in_progress（黄）/ `✔` completed（绿）/ `⊘` cancelled（灰）/ `○` pending
+- **状态栏进度**：`N/M tasks` 展示完成比例
+
+### autoExecuting 自动续跑
+
+规划是全自动无确认的：Agent 规划后直接执行，用户可随时 Ctrl+C/ESC 打断。
+
+- **激活**：plan_write 成功写入后自动激活（`autoExecuting = true`）
+- **续跑**：Run 结束（EventDone）时若计划仍有未完成条目，自动 dispatch 续跑指令继续执行
+- **停滞保护**：连续 3 次 EventDone 后 completed 数无增加，判定为空转，停止续跑并提示用户手动介入
+- **取消即停**：Ctrl+C/ESC 取消时立即关闭 autoExecuting
+- **完成退出**：全部条目 completed 后自动退出续跑模式
+
+---
+
+## 与旧设计的差异
+
+| 维度 | 旧设计（已移除） | 新设计 |
+|------|----------------|--------|
+| 规划触发 | 用户 Shift+Tab 手动切换 Plan Mode | System Prompt 准则，LLM 自主判断 |
+| 工具控制 | Plan Mode 下白名单过滤（只读工具） | 恒为全量工具列表 |
+| 计划确认 | "Plan Mode 完成"审查对话框（4 选项） | 全自动无确认，随时可打断 |
+| 状态存储 | TodoStore + session_todos 表（行式） | PlanStore + session_plans 表（JSON 行） |
+| 持久化时机 | 仅 runLoop 退出时（defer） | 写时检查点 + defer 幂等兜底 |
+| 压缩注入 | 摘要器内拼接 Active Tasks（部分压缩器覆盖） | 引擎级每轮原样注入（全压缩器通吃） |
+| Sub-Agent | 无规划能力（阉割式隔离） | 独立 PlanStore（双向隔离） |
+| TUI | Shift+Tab / [PLAN] 标签 / 审查对话框 / 琥珀色调 | 移除；保留计划渲染与 autoExecuting |
+
+## 测试与评估
+
+- **单元测试**：`planning/plan_test.go`（写读/快照隔离/FormatPlan/ActiveCount/并发）、`tools/plan_write_test.go`（防作弊校验/读模式/PlanWriter 触发）、`engine`（写时检查点时序、压缩后注入与视图隔离、恢复注入、无活跃条目跳过）、`memory`（GetPlan/SavePlan 持久化 + 跨会话隔离）、`subagent`（子代理写 Plan 不影响父存储）
+- **黄金数据集**（24 用例）：planning 5 例（生成计划/探索后规划/先规划后执行/只读探索/简单任务不规划）+ compaction 4 例（含 plan_survives 压缩免疫）

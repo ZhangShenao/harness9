@@ -18,11 +18,11 @@ type Session interface {
 	PopMessage(ctx context.Context) (*schema.Message, error)
 	Clear(ctx context.Context) error
 
-	// GetTodos 返回该会话已持久化的任务列表。无任务时返回 nil, nil。
-	GetTodos(ctx context.Context) ([]planning.TodoItem, error)
+	// GetPlan 返回该会话已持久化的计划条目。无计划时返回 nil, nil。
+	GetPlan(ctx context.Context) ([]planning.PlanItem, error)
 
-	// SaveTodos 原子性保存任务列表（write-replace 语义）。items 为空时清空列表。
-	SaveTodos(ctx context.Context, items []planning.TodoItem) error
+	// SavePlan 原子性保存计划条目（write-replace 语义）。items 为空时清空计划。
+	SavePlan(ctx context.Context, items []planning.PlanItem) error
 }
 
 // SessionInfo 是 Manager.ListSessions 返回的会话元数据。

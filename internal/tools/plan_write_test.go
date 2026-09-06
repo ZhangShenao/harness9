@@ -10,20 +10,20 @@ import (
 	"github.com/harness9/internal/tools"
 )
 
-func TestTodoWriteTool_Name(t *testing.T) {
-	store := planning.NewTodoStore()
-	tool := tools.NewTodoWriteTool(store)
-	if tool.Name() != "todo_write" {
-		t.Errorf("Name() = %q, want todo_write", tool.Name())
+func TestPlanWriteTool_Name(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
+	if tool.Name() != "plan_write" {
+		t.Errorf("Name() = %q, want plan_write", tool.Name())
 	}
 }
 
-func TestTodoWriteTool_Write(t *testing.T) {
-	store := planning.NewTodoStore()
-	tool := tools.NewTodoWriteTool(store)
+func TestPlanWriteTool_Write(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
 
 	args, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "step one", "status": "pending"},
 			{"id": "2", "content": "step two", "status": "in_progress"},
 		},
@@ -35,7 +35,7 @@ func TestTodoWriteTool_Write(t *testing.T) {
 	}
 
 	// Result should be JSON of the current list
-	var got []planning.TodoItem
+	var got []planning.PlanItem
 	if err := json.Unmarshal([]byte(result), &got); err != nil {
 		t.Fatalf("result not valid JSON: %v — got %q", err, result)
 	}
@@ -53,9 +53,9 @@ func TestTodoWriteTool_Write(t *testing.T) {
 	}
 }
 
-func TestTodoWriteTool_Read_WhenNoTodos(t *testing.T) {
-	store := planning.NewTodoStore()
-	tool := tools.NewTodoWriteTool(store)
+func TestPlanWriteTool_Read_WhenNoSteps(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
 
 	// Omit todos field → read current (empty) list
 	args, _ := json.Marshal(map[string]interface{}{})
@@ -64,7 +64,7 @@ func TestTodoWriteTool_Read_WhenNoTodos(t *testing.T) {
 		t.Fatalf("Execute error: %v", err)
 	}
 	// Should return "[]" for empty list
-	var got []planning.TodoItem
+	var got []planning.PlanItem
 	if err := json.Unmarshal([]byte(result), &got); err != nil {
 		t.Fatalf("result not valid JSON: %v — got %q", err, result)
 	}
@@ -73,19 +73,19 @@ func TestTodoWriteTool_Read_WhenNoTodos(t *testing.T) {
 	}
 }
 
-func TestTodoWriteTool_Write_Replaces(t *testing.T) {
-	store := planning.NewTodoStore()
-	tool := tools.NewTodoWriteTool(store)
+func TestPlanWriteTool_Write_Replaces(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
 
 	first, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "old", "status": "pending"},
 		},
 	})
 	tool.Execute(context.Background(), first) //nolint:errcheck
 
 	second, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "2", "content": "new", "status": "in_progress"},
 		},
 	})
@@ -97,9 +97,9 @@ func TestTodoWriteTool_Write_Replaces(t *testing.T) {
 	}
 }
 
-func TestTodoWriteTool_InvalidJSON(t *testing.T) {
-	store := planning.NewTodoStore()
-	tool := tools.NewTodoWriteTool(store)
+func TestPlanWriteTool_InvalidJSON(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
 
 	_, err := tool.Execute(context.Background(), []byte(`not json`))
 	if err == nil {
@@ -107,16 +107,16 @@ func TestTodoWriteTool_InvalidJSON(t *testing.T) {
 	}
 }
 
-// TestTodoWriteTool_BulkPendingToCompleted 验证批量 pending→completed（2 个以上）被拒绝。
-// 单个任务直接 pending→completed 允许（LLM 实际完成工作但未经 in_progress 步骤），
-// 但同时完成 2+ 个未开始的任务视为作弊行为。
-func TestTodoWriteTool_BulkPendingToCompleted(t *testing.T) {
-	store := planning.NewTodoStore()
-	tool := tools.NewTodoWriteTool(store)
+// TestPlanWriteTool_BulkPendingToCompleted 验证批量 pending→completed（2 个以上）被拒绝。
+// 单个计划条目直接 pending→completed 允许（LLM 实际完成工作但未经 in_progress 步骤），
+// 但同时完成 2+ 个未开始的计划条目视为作弊行为。
+func TestPlanWriteTool_BulkPendingToCompleted(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
 
-	// 初始化：两个 pending 任务
+	// 初始化：两个 pending 计划条目
 	init, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "task one", "status": "pending"},
 			{"id": "2", "content": "task two", "status": "pending"},
 		},
@@ -125,9 +125,9 @@ func TestTodoWriteTool_BulkPendingToCompleted(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// 尝试在一次调用中将两个 pending 任务全部标记为 completed（批量作弊）
+	// 尝试在一次调用中将两个 pending 计划条目全部标记为 completed（批量作弊）
 	cheat, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "task one", "status": "completed"},
 			{"id": "2", "content": "task two", "status": "completed"},
 		},
@@ -140,21 +140,21 @@ func TestTodoWriteTool_BulkPendingToCompleted(t *testing.T) {
 	// store 应保持未变
 	stored := store.Read()
 	for _, item := range stored {
-		if item.Status == planning.TodoCompleted {
+		if item.Status == planning.PlanCompleted {
 			t.Errorf("store should not have completed items after rejected write, got %+v", stored)
 		}
 	}
 }
 
-// TestTodoWriteTool_SinglePendingToCompleted 验证单个 pending→completed 允许通过。
+// TestPlanWriteTool_SinglePendingToCompleted 验证单个 pending→completed 允许通过。
 // LLM 完成工作后可以直接标记为 completed，不强制要求经过 in_progress。
-func TestTodoWriteTool_SinglePendingToCompleted(t *testing.T) {
-	store := planning.NewTodoStore()
-	tool := tools.NewTodoWriteTool(store)
+func TestPlanWriteTool_SinglePendingToCompleted(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
 
-	// 初始化：一个 pending 任务
+	// 初始化：一个 pending 计划条目
 	init, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "task one", "status": "pending"},
 		},
 	})
@@ -164,7 +164,7 @@ func TestTodoWriteTool_SinglePendingToCompleted(t *testing.T) {
 
 	// 单个 pending → completed 应该允许（LLM 完成了实际工作）
 	complete, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "task one", "status": "completed"},
 		},
 	})
@@ -173,14 +173,14 @@ func TestTodoWriteTool_SinglePendingToCompleted(t *testing.T) {
 	}
 }
 
-// TestTodoWriteTool_InProgressToCompleted 验证 in_progress→completed 允许通过。
-func TestTodoWriteTool_InProgressToCompleted(t *testing.T) {
-	store := planning.NewTodoStore()
-	tool := tools.NewTodoWriteTool(store)
+// TestPlanWriteTool_InProgressToCompleted 验证 in_progress→completed 允许通过。
+func TestPlanWriteTool_InProgressToCompleted(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
 
 	// 初始化：item1 in_progress
 	init, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "task one", "status": "in_progress"},
 		},
 	})
@@ -190,7 +190,7 @@ func TestTodoWriteTool_InProgressToCompleted(t *testing.T) {
 
 	// in_progress → completed 合法
 	complete, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "task one", "status": "completed"},
 		},
 	})
@@ -199,15 +199,15 @@ func TestTodoWriteTool_InProgressToCompleted(t *testing.T) {
 	}
 }
 
-// TestTodoWriteTool_CancelledToCompleted 验证 cancelled→completed 始终被拒绝。
-// cancelled 任务必须先恢复为 pending/in_progress 才能完成，不适用"单个允许"宽松规则。
-func TestTodoWriteTool_CancelledToCompleted(t *testing.T) {
-	store := planning.NewTodoStore()
-	tool := tools.NewTodoWriteTool(store)
+// TestPlanWriteTool_CancelledToCompleted 验证 cancelled→completed 始终被拒绝。
+// cancelled 计划条目必须先恢复为 pending/in_progress 才能完成，不适用"单个允许"宽松规则。
+func TestPlanWriteTool_CancelledToCompleted(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
 
-	// 初始化：一个 cancelled 任务
+	// 初始化：一个 cancelled 计划条目
 	init, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "task one", "status": "cancelled"},
 		},
 	})
@@ -217,7 +217,7 @@ func TestTodoWriteTool_CancelledToCompleted(t *testing.T) {
 
 	// cancelled → completed 即使只有 1 个也应被拒绝
 	args, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "task one", "status": "completed"},
 		},
 	})
@@ -227,15 +227,15 @@ func TestTodoWriteTool_CancelledToCompleted(t *testing.T) {
 	}
 }
 
-// TestTodoWriteTool_SingleDirectPlusInProgress 验证"1 个直接完成 + 1 个经 in_progress 完成"的
+// TestPlanWriteTool_SingleDirectPlusInProgress 验证"1 个直接完成 + 1 个经 in_progress 完成"的
 // 混合调用允许通过（directCompletions == 1，未超过阈值）。
-func TestTodoWriteTool_SingleDirectPlusInProgress(t *testing.T) {
-	store := planning.NewTodoStore()
-	tool := tools.NewTodoWriteTool(store)
+func TestPlanWriteTool_SingleDirectPlusInProgress(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
 
 	// 初始化：item1 pending，item2 in_progress
 	init, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "task one", "status": "pending"},
 			{"id": "2", "content": "task two", "status": "in_progress"},
 		},
@@ -247,7 +247,7 @@ func TestTodoWriteTool_SingleDirectPlusInProgress(t *testing.T) {
 	// item1: pending→completed（1 个直接完成），item2: in_progress→completed（合法）
 	// directCompletions == 1 → 应允许通过
 	args, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "task one", "status": "completed"},
 			{"id": "2", "content": "task two", "status": "completed"},
 		},
@@ -257,16 +257,16 @@ func TestTodoWriteTool_SingleDirectPlusInProgress(t *testing.T) {
 	}
 }
 
-// TestTodoWriteTool_BulkNewItemCompleted 验证批量新建 completed 条目（2 个以上）被拒绝。
+// TestPlanWriteTool_BulkNewItemCompleted 验证批量新建 completed 条目（2 个以上）被拒绝。
 // 单个新建直接 completed 允许（LLM 可能完成了工作再创建记录），
 // 同时新建 2+ 个 completed 条目视为作弊。
-func TestTodoWriteTool_BulkNewItemCompleted(t *testing.T) {
-	store := planning.NewTodoStore()
-	tool := tools.NewTodoWriteTool(store)
+func TestPlanWriteTool_BulkNewItemCompleted(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
 
 	// 同时创建 2 个已完成的全新条目 → 应被拒绝
 	args, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "brand new one", "status": "completed"},
 			{"id": "2", "content": "brand new two", "status": "completed"},
 		},
@@ -280,23 +280,23 @@ func TestTodoWriteTool_BulkNewItemCompleted(t *testing.T) {
 // mockPlanWriter 记录 Write 调用次数和最后收到的 todos。
 type mockPlanWriter struct {
 	calls int
-	last  []planning.TodoItem
+	last  []planning.PlanItem
 	err   error
 }
 
-func (m *mockPlanWriter) Write(todos []planning.TodoItem) error {
+func (m *mockPlanWriter) Write(todos []planning.PlanItem) error {
 	m.calls++
 	m.last = todos
 	return m.err
 }
 
-func TestTodoWriteTool_PlanWriterCalledOnWrite(t *testing.T) {
-	store := planning.NewTodoStore()
+func TestPlanWriteTool_PlanWriterCalledOnWrite(t *testing.T) {
+	store := planning.NewPlanStore()
 	pw := &mockPlanWriter{}
-	tool := tools.NewTodoWriteTool(store, tools.WithPlanWriter(pw))
+	tool := tools.NewPlanWriteTool(store, tools.WithPlanWriter(pw))
 
 	args, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{
+		"steps": []map[string]string{
 			{"id": "1", "content": "task", "status": "pending"},
 		},
 	})
@@ -312,10 +312,10 @@ func TestTodoWriteTool_PlanWriterCalledOnWrite(t *testing.T) {
 	}
 }
 
-func TestTodoWriteTool_PlanWriterNotCalledOnRead(t *testing.T) {
-	store := planning.NewTodoStore()
+func TestPlanWriteTool_PlanWriterNotCalledOnRead(t *testing.T) {
+	store := planning.NewPlanStore()
 	pw := &mockPlanWriter{}
-	tool := tools.NewTodoWriteTool(store, tools.WithPlanWriter(pw))
+	tool := tools.NewPlanWriteTool(store, tools.WithPlanWriter(pw))
 
 	// Read operation (no todos field) should NOT call PlanWriter
 	if _, err := tool.Execute(context.Background(), json.RawMessage(`{}`)); err != nil {
@@ -326,25 +326,25 @@ func TestTodoWriteTool_PlanWriterNotCalledOnRead(t *testing.T) {
 	}
 }
 
-func TestTodoWriteTool_PlanWriterNil_NoChange(t *testing.T) {
-	store := planning.NewTodoStore()
+func TestPlanWriteTool_PlanWriterNil_NoChange(t *testing.T) {
+	store := planning.NewPlanStore()
 	// No WithPlanWriter option — should behave identically to original
-	tool := tools.NewTodoWriteTool(store)
+	tool := tools.NewPlanWriteTool(store)
 	args, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{{"id": "1", "content": "x", "status": "pending"}},
+		"steps": []map[string]string{{"id": "1", "content": "x", "status": "pending"}},
 	})
 	if _, err := tool.Execute(context.Background(), args); err != nil {
 		t.Fatalf("tool without PlanWriter should still work: %v", err)
 	}
 }
 
-func TestTodoWriteTool_PlanWriterError_DoesNotAffectResult(t *testing.T) {
-	store := planning.NewTodoStore()
+func TestPlanWriteTool_PlanWriterError_DoesNotAffectResult(t *testing.T) {
+	store := planning.NewPlanStore()
 	pw := &mockPlanWriter{err: errors.New("disk full")}
-	tool := tools.NewTodoWriteTool(store, tools.WithPlanWriter(pw))
+	tool := tools.NewPlanWriteTool(store, tools.WithPlanWriter(pw))
 
 	args, _ := json.Marshal(map[string]interface{}{
-		"todos": []map[string]string{{"id": "1", "content": "x", "status": "pending"}},
+		"steps": []map[string]string{{"id": "1", "content": "x", "status": "pending"}},
 	})
 	result, err := tool.Execute(context.Background(), args)
 	if err != nil {

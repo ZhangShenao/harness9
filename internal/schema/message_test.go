@@ -82,7 +82,7 @@ func TestMessageJSONContract(t *testing.T) {
 // TestToolCallArgumentsRaw 契约：Arguments 必须保持 json.RawMessage 延迟反序列化语义，
 // 空参数不应在序列化时被丢弃（id/name/arguments 为必填 tag，无 omitempty）。
 func TestToolCallArgumentsRaw(t *testing.T) {
-	tc := ToolCall{ID: "c2", Name: "todo_write"}
+	tc := ToolCall{ID: "c2", Name: "plan_write"}
 	b, err := json.Marshal(tc)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

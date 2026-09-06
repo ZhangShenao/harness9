@@ -15,6 +15,7 @@ import (
 
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/hooks"
+	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/schema"
 	"github.com/harness9/internal/tools"
 )
@@ -71,8 +72,10 @@ func RunCase(ctx context.Context, c *Case) Result {
 	var toolNames []string
 	recorder := &recordingHook{names: &toolNames}
 
-	// 注册基础工具（eval 场景固定注册这四个工具）。
-	// Registry.Register 对同名工具返回 ErrAlreadyRegistered；此处四个工具名各不相同，
+	// 注册基础工具（eval 场景固定注册这五个工具）。
+	// plan_write 使 planning 类用例能真实执行工具（而非仅记录调用意图）；
+	// 独立 PlanStore 实例，用例间天然隔离。
+	// Registry.Register 对同名工具返回 ErrAlreadyRegistered；此处五个工具名各不相同，
 	// 不会触发该错误——若触发则说明框架内部逻辑有误，此时通过 RunError 明确上浮。
 	registry := tools.NewRegistry()
 	for _, t := range []tools.BaseTool{
@@ -80,6 +83,7 @@ func RunCase(ctx context.Context, c *Case) Result {
 		tools.NewWriteFileTool(workDir),
 		tools.NewBashTool(workDir),
 		tools.NewEditFileTool(workDir),
+		tools.NewPlanWriteTool(planning.NewPlanStore()),
 	} {
 		if err := registry.Register(t); err != nil {
 			return Result{

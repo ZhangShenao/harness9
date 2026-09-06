@@ -18,6 +18,7 @@ type MemorySession struct {
 	mu   sync.Mutex
 	id   string
 	msgs []schema.Message
+	plan []planning.PlanItem
 }
 
 // NewMemorySession 创建指定 ID 的内存会话。
@@ -66,12 +67,23 @@ func (s *MemorySession) Clear(_ context.Context) error {
 	return nil
 }
 
-// GetTodos 内存实现：始终返回空列表（无持久化）。
-func (s *MemorySession) GetTodos(_ context.Context) ([]planning.TodoItem, error) {
-	return nil, nil
+// GetPlan 内存实现：返回计划条目副本；无计划时返回 nil, nil。
+func (s *MemorySession) GetPlan(_ context.Context) ([]planning.PlanItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.plan) == 0 {
+		return nil, nil
+	}
+	out := make([]planning.PlanItem, len(s.plan))
+	copy(out, s.plan)
+	return out, nil
 }
 
-// SaveTodos 内存实现：无操作（无持久化）。
-func (s *MemorySession) SaveTodos(_ context.Context, _ []planning.TodoItem) error {
+// SavePlan 内存实现：write-replace。
+func (s *MemorySession) SavePlan(_ context.Context, items []planning.PlanItem) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.plan = make([]planning.PlanItem, len(items))
+	copy(s.plan, items)
 	return nil
 }

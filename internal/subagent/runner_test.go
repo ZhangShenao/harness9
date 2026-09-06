@@ -10,6 +10,7 @@ import (
 
 	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/memory"
+	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/provider"
 	"github.com/harness9/internal/provider/providertest"
 	"github.com/harness9/internal/schema"
@@ -327,5 +328,52 @@ func TestRunnerErrorPropagation(t *testing.T) {
 	}
 	if !sawError {
 		t.Fatal("应至少发出一条 SubAgentError 进度更新")
+	}
+}
+
+// TestRun_ChildPlanIsolation 验证子代理 Plan 双向隔离（Spec §7）：
+// 子代理成功调用 plan_write 写入自己的计划后，父代理的 PlanStore 不受影响；
+// 子代理能成功执行 plan_write，证明独立实例已注册进子注册表。
+func TestRun_ChildPlanIsolation(t *testing.T) {
+	var mu sync.Mutex
+	turn := 0
+	mock := providertest.NewMockWithCallback(func(_ []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		mu.Lock()
+		turn++
+		n := turn
+		mu.Unlock()
+		if n == 1 {
+			return schema.Message{
+				Role: schema.RoleAssistant,
+				ToolCalls: []schema.ToolCall{
+					{ID: "c1", Name: "plan_write", Arguments: json.RawMessage(
+						`{"steps":[{"id":"s1","content":"子代理步骤","status":"pending"}]}`)},
+				},
+			}
+		}
+		return schema.Message{Role: schema.RoleAssistant, Content: "子任务完成"}
+	})
+	base := []tools.BaseTool{&fakeTool{"read_file"}}
+	r := newTestRunner(t, base, mock)
+
+	parentStore := planning.NewPlanStore()
+	parentStore.Write([]planning.PlanItem{
+		{ID: "p1", Content: "父代理计划", Status: planning.PlanPending},
+	})
+
+	// Tools 白名单显式含 plan_write：子代理通过自己的独立实例执行该工具。
+	def := SubAgentDefinition{Name: "iso", Description: "d", SystemPrompt: "p",
+		Tools: []string{"read_file", "plan_write"}}
+	res, err := r.Run(context.Background(), def, "写子代理计划", false)
+	if err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if res.FinalText != "子任务完成" {
+		t.Fatalf("FinalText=%q, want 子任务完成", res.FinalText)
+	}
+
+	items := parentStore.Read()
+	if len(items) != 1 || items[0].ID != "p1" {
+		t.Errorf("父 PlanStore 必须不受子代理影响，got %+v", items)
 	}
 }

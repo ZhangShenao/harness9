@@ -130,3 +130,20 @@ func TestBuild_WithoutSandboxContext(t *testing.T) {
 		t.Error("未启用 Sandbox 时 system prompt 不应包含 Sandbox 执行环境 Section")
 	}
 }
+
+// TestBuild_PlanningSection 验证规划准则段落的注入开关：
+// WithPlanEnabled(true) 时包含准则要点；未启用时整段缺失（规划是按需注入的能力提示）。
+func TestBuild_PlanningSection(t *testing.T) {
+	b := NewPromptBuilder(t.TempDir(), nil).WithPlanEnabled(true)
+	out := b.Build()
+	for _, want := range []string{"## 规划（Planning）", "plan_write", "简单任务"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("prompt should contain %q, got: %s", want, out)
+		}
+	}
+	// 未启用时不注入
+	out2 := NewPromptBuilder(t.TempDir(), nil).Build()
+	if strings.Contains(out2, "## 规划（Planning）") {
+		t.Error("planning section should be absent when disabled")
+	}
+}

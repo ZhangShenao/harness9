@@ -20,9 +20,9 @@ harness9 是一款基于 Go 语言构建的**轻量级、功能完备、生产�
 - **自愈能力**: 工具执行失败时，错误信息原样回传给 LLM，触发自动重试
 - **双重压缩策略**: SummarizationCompactor（默认，LLM 摘要，保留语义 + 增量更新）和 TokenBudgetCompactor（回退，字符截断），均在 80% 阈值触发，双向修复孤立工具对
 - **实际 Token 用量**: 从 API 响应 usage 字段提取，LLM 调用后实时更新 TUI 展示
-- **Planning（先规划后执行）**: Plan Mode（工具层权限过滤）+ TodoStore（状态机校验）+ 自动续跑 + 停滞检测
+- **Planning（原生规划能力）**: Plan 是 Agent 原生能力（System Prompt 准则驱动，LLM 自主判断复杂任务先规划）+ PlanStore（Session 级权威状态，状态机校验）+ 写时检查点（plan_write 成功轮立即落盘 SQLite `session_plans`，崩溃窗口缩至单轮）+ 压缩免疫（引擎在每轮压缩视图末尾原样注入活跃 Plan，Compactor 零改动）+ 主/子代理双向隔离（每个 Sub-Agent 拥有委派级独立 PlanStore）+ autoExecuting 自动续跑（plan_write 激活，停滞 3 次放弃，取消即停）
 - **Sub-Agent（子代理委派）**: 主代理通过 `task` 工具把边界清晰的子任务委派给运行在隔离 Session 上的专门子代理（独立上下文 + 受限工具集 + 可选模型覆盖）；内置 general-purpose 通用子代理（对标 Claude Code / DeepAgents，继承父全部可用工具与模型），支持 `.harness9/agents/*.md` 文件式定义、前台/后台双模式、`@agent` 直跑、TaskTracker 后台任务管理；安全保障：禁止递归 + 权限只能更严不能扩权 + 上下文完全隔离
-- **文件系统能力**: OffloadHook（超大工具输出自动写入文件，context 保留摘要引用 + 分页检索）+ FilePlanWriter（todo 计划持久化到 markdown）+ DeleteSession 级联 GC
+- **文件系统能力**: OffloadHook（超大工具输出自动写入文件，context 保留摘要引用 + 分页检索）+ FilePlanWriter（执行计划持久化到 markdown）+ DeleteSession 级联 GC
 - **推理内容展示（Reasoning Display）**: Anthropic extended thinking（StreamChunkThinkingDelta）和 OpenRouter/DeepSeek reasoning_content 均路由为 EventThinkingDelta，TUI 以 `│` 前缀深灰色块流式渲染，与正文回复形成视觉层次区分
 - **Shell 执行（`!` 前缀）**: 输入框以 `!` 开头进入 Shell 模式，命令通过 `bash -c` 异步执行（30s 超时），输出 inline 追加到对话流，并在下次 LLM dispatch 时前置注入为上下文；已知交互式命令（vim/ssh 等）自动拦截
 - **Human-in-the-Loop 权限控制**: HookDecision（allow/deny/ask）三级决策 + DangerHook（19 条高危模式）+ PermissionHook（JSON 白名单，按需重载）+ 敏感路径硬保护（~/.ssh、~/.aws 等）+ TUI 五选项审批对话框 + PermissionMode 枚举
@@ -30,7 +30,7 @@ harness9 是一款基于 Go 语言构建的**轻量级、功能完备、生产�
 - **Sandbox（Docker 容器级隔离）**: `internal/sandbox/` 包；`Environment` 接口（LocalEnvironment 进程级 / DockerEnvironment 容器级）+ `Container` 五状态生命周期（Pending→Running→Stopping→Terminated/Failed）+ `Manager`（Create/Destroy/DestroyAll/ReapOrphans/ListAll，并发安全）；工具透明路由（bash 命令通过 docker exec 进容器，文件工具通过 bind mount 共享 workDir）；安全加固：`--cap-drop all` + `--cap-add DAC_OVERRIDE/SETUID/SETGID`（包管理器所需最小能力）+ `--security-opt no-new-privileges:true` + `--pids-limit 256` + tmpfs nosuid/noexec/nodev；Agent 级隔离（主 Agent 和每个 Sub-Agent 各自拥有独立容器）；TUI SandboxBar 实时展示状态（颜色编码）；`label=harness9=1` 标记 + 启动时孤儿回收；`SANDBOX_ENABLED=false` 时关闭（默认启用，Docker 不可用自动降级为本地进程模式），关闭时行为与引入前完全一致（向后兼容）
 - **Observability（OpenTelemetry 可观测性）**: `internal/observability/` 包；三条非侵入式接入路径——`OTELEngineObserver`（实现 `EngineObserver` 接口，管理 Interaction Span + Turn Span）+ `TracingProvider`（包装 `LLMProvider`，为每次 LLM 调用创建 Span + Token Metrics）+ `ObservabilityHook`（实现 `ToolHook`，为每次工具调用创建 Span）；Span 四层嵌套：`harness9.interaction → harness9.turn → harness9.llm_request / harness9.tool`；6 个关键 Metrics（LLM 延迟/Token 消耗/工具调用次数/工具执行耗时/Turn 总数）；`langfuse.trace.input`（trace 根节点 prompt）/ `langfuse.observation.input/output`（observation 层 LLM 消息与回复 + 工具参数与结果）/ `gen_ai.usage.*`（Token 用量，Langfuse 自动换算费用）；非法 UTF-8 字节自动净化，防止 OTLP 序列化失败；三种 Exporter：`noop`（默认零开销）/ `stdout`（开发调试）/ `otlp`（生产接入 Langfuse / Grafana / Jaeger）；通过环境变量 `OTEL_ENABLED` / `OTEL_EXPORTER_TYPE` / `OTEL_EXPORTER_OTLP_ENDPOINT` 驱动，默认关闭向后兼容
 - **网页搜索与抓取**: `internal/tools/web_search.go` / `web_fetch.go` / `web_safety.go` / `web_content.go`；`web_search` 工具（DuckDuckGo HTML 端点 POST，无 API Key，20s 超时 + 10s dial 超时，`golang.org/x/net/html` DOM 解析，`decodeUDDG` 还原真实 URL）+ `web_fetch` 工具（HTTP GET，15s 超时，5 次重定向上限，`text/html` → `go-readability` 提取主内容 → `html-to-markdown` 转 Markdown，`text/*` → 原始文本，其他 → 不支持提示）；`isSafeURL` 共享 SSRF 安全门（scheme + userinfo + DNS 解析 + 9 个 IP 段检查（含 IPv6 ULA `fc00::/7` 和链路本地 `fe80::/10`）+ IPv4-mapped IPv6 规范化 + IPv6 loopback，DNS 失败 fail-closed，重定向链每跳复检）；`DefaultPromptBuilder` 实时注入 `当前日期：YYYY-MM-DD`，防止 LLM 因训练截止日期偏差产生陈旧搜索词；主 Agent + 所有 Sub-Agent 均可使用，零额外配置
-- **Test & Eval（自动化测试与评估）**: `internal/evals/` 包；`ScriptedProvider`（确定性 LLM mock，按预设 Turn 序列返回回复，不发起真实 API 调用）+ `Assertion` 接口（Hard 断言：ToolCalled/ToolNotCalled/OutputContains/OutputExcludes/NoError/Error；Soft 断言：MaxTurns/MaxToolCalls，仅记警告不影响通过率）+ `EvalHarness`（`RunCase` 构建最小化隔离引擎 + `recordingHook` 记录工具调用轨迹 + `Suite` 批量运行）+ `SetupHermeticEnv`（清除所有 API Key，标准 Hermetic 隔离环境（密封测试，防止 eval 调用真实 API），本地与 CI 环境一致）+ `BuildReport`/`WriteJSON`/`WriteMarkdown`（JSON + Markdown 评估报告生成）；`internal/evals/dataset/` 黄金数据集（22 个用例：工具调用准确性 × 6 + Planning 完成率 × 4 + Context Engineering × 4 + Error Handling/Self-Healing × 3 + Memory 持久化 × 2 + Context Compaction × 3）；`.github/workflows/eval.yml` CI Quality Gate（PR 触发 hermetic eval，失败则阻断合并）
+- **Test & Eval（自动化测试与评估）**: `internal/evals/` 包；`ScriptedProvider`（确定性 LLM mock，按预设 Turn 序列返回回复，不发起真实 API 调用）+ `Assertion` 接口（Hard 断言：ToolCalled/ToolNotCalled/OutputContains/OutputExcludes/NoError/Error；Soft 断言：MaxTurns/MaxToolCalls，仅记警告不影响通过率）+ `EvalHarness`（`RunCase` 构建最小化隔离引擎 + `recordingHook` 记录工具调用轨迹 + `Suite` 批量运行）+ `SetupHermeticEnv`（清除所有 API Key，标准 Hermetic 隔离环境（密封测试，防止 eval 调用真实 API），本地与 CI 环境一致）+ `BuildReport`/`WriteJSON`/`WriteMarkdown`（JSON + Markdown 评估报告生成）；`internal/evals/dataset/` 黄金数据集（24 个用例：工具调用准确性 × 6 + Planning 完成率 × 5 + Context Engineering × 4 + Error Handling/Self-Healing × 3 + Memory 持久化 × 2 + Context Compaction × 4）；`.github/workflows/eval.yml` CI Quality Gate（PR 触发 hermetic eval，失败则阻断合并）
 - **MCP 工具集成（Model Context Protocol）**: `internal/mcp/` 包；JSON-RPC 2.0 over stdio/HTTP；`Config`（`.mcp.json` 加载，file-not-found 静默返回空）+ `StdioTransport`（subprocess + NDJSON async reader goroutine + pending map ID 关联 + 三路 select ctx/done/response；`transport_proc_unix.go` 独立进程组 + SIGKILL 终止 npx 孤儿 node 子进程，`transport_proc_windows.go` stub 回退单进程 kill）+ `HTTPTransport`（无状态 POST）+ `Client`（initialize → notifications/initialized → tools/list → tools/call 握手与调用）+ `Manager`（并发 Start 30s per-server timeout，fail-soft，`ServerStatus` + `ToolDetails` TUI 通知链，`InjectTools` 闭包捕获避免循环变量 bug，`WithNotify` channel 回调；`Start` 始终返回 nil，失败状态通过 `Statuses()` 的 `StatusFailed` 暴露）+ `MCPToolAdapter`（实现 `BaseTool` 接口，`mcp__{server}__{tool}` 双下划线命名，对 Engine 完全透明）；TUI MCPBar（状态栏实时展示）+ `/mcp` 模态工具面板（工具列表，`e` 键 `tea.ExecProcess` 打开 `$EDITOR` 编辑 `.mcp.json`；鼠标滚轮 + ↑↓/jk 双支持）；`.mcp.json` 配置文件驱动，main.go 中异步启动不阻塞 TUI 渲染；`defer mcpMgr.Stop()` Session 级生命周期；`mcpPanelOverhead=4` 与 `contentH=m.height-4` 保持一致，确保面板撑满屏幕不遮挡对话区
 - **AutoDev（自举开发闭环）**: `skills/autodev/SKILL.md`（`/autodev` AgentSkill，三阶段：需求澄清→Spec 生成与强制确认关卡→委派 dev sub-agent）+ `.harness9/agents/dev.md`（dev sub-agent 定义：读规范→探索→实现→`go build/test` 迭代循环（≤3 次）→gofmt→commit→push→`gh pr create`）；git worktree（`.autodev/<slug>/`，代码隔离）+ Docker Sandbox（执行隔离，需 `SANDBOX_IMAGE=golang:1.25-bookworm`）；零新 Go 代码，完全由 Skill 文件 + Agent 定义文件驱动，复用现有 Skills 系统、Sub-Agent 系统、Sandbox 基础设施
 
@@ -189,17 +189,17 @@ harness9/
 ├── internal/
 │   ├── engine/                      # Agent 核心引擎 — 标准 ReAct 主循环（按职责拆分为多个文件）
 │   │   ├── agent_loop.go            # 引擎结构 + NewAgentEngine + emitter 定义 + 阻塞式 Run + runLoop 阶段编排器
-│   │   ├── options.go               # With* 函数式配置选项 + 运行期 SetSession/SetPlanMode + PromptBuilder 接口
+│   │   ├── options.go               # With* 函数式配置选项 + 运行期 SetSession + PromptBuilder 接口
 │   │   ├── retry.go                 # LLM 生成调用双档重试（默认预算/网络传输预算）+ backoffDelay 封顶 + isTransientNetworkError
-│   │   ├── loop_phases.go           # runLoop 阶段化实现：beginInteraction/beginTurn/prepareTurnInput/generateTurn/trackStall/injectObservations/saveHistory/saveTodos
+│   │   ├── loop_phases.go           # runLoop 阶段化实现：beginInteraction/beginTurn/prepareTurnInput（含 Plan 注入 4c）/generateTurn/trackStall/injectObservations/saveHistory/checkpointPlan+savePlan
 │   │   ├── history.go               # 会话历史加载/持久化（loadHistoryWith/saveHistoryWith）+ system prompt 构建 + 压缩适配
-│   │   ├── planmode.go              # Plan Mode 只读工具白名单 + 规划前缀 + 进展工具判定 + appendUserNudge
+│   │   ├── nudge.go                 # appendUserNudge（Plan 注入复用）+ progressToolNames（停滞检测）
 │   │   ├── tools_exec.go            # executeTools：同 Turn 多工具并发调度（信号量 + 每工具独立超时）
 │   │   ├── compact.go               # Compact 方法：TUI /compact 命令触发的手动强制压缩（写回失败自动回滚）
 │   │   ├── observer.go              # EngineObserver 接口 + noopObserver（可观测层无侵入接入点）
 │   │   ├── permission.go            # PermissionMode 枚举（Default/AutoApprove/ReadOnly/BypassAll）+ WithPermissionMode
 │   │   ├── stream.go                # 流式入口 RunStream + engine.Event 事件类型 + ToolResultData
-│   │   ├── agent_loop_test.go       # 主循环单元测试（重试/终止保障/Plan Mode/nudge）
+│   │   ├── agent_loop_test.go       # 主循环单元测试（重试/终止保障/Plan 检查点与恢复注入/nudge）
 │   │   ├── loop_phases_test.go      # 阶段方法单元测试（退避计算/空响应防护/压缩视图隔离/Observation 注入）
 │   │   ├── compact_test.go          # Compact 单元测试
 │   │   ├── memory_test.go           # Session 集成测试（历史持久化/加载/压缩器）
@@ -209,7 +209,7 @@ harness9/
 │   │   ├── decision.go              # HookDecision 结构体 + Allow/Deny/Ask 三种决策构造函数
 │   │   ├── danger_hook.go           # DangerHook：19 条高危 bash 模式检测（高/中风险两级 Ask）
 │   │   ├── offload.go               # OffloadHook：超大工具输出自动写入文件系统
-│   │   ├── plan_writer.go           # FilePlanWriter：todo 计划持久化到 markdown
+│   │   ├── plan_writer.go           # FilePlanWriter：执行计划持久化到 markdown
 │   │   ├── hook_test.go             # HookRegistry 单元测试
 │   │   ├── offload_test.go          # OffloadHook 单元测试
 │   │   ├── plan_writer_test.go      # FilePlanWriter 单元测试
@@ -231,16 +231,14 @@ harness9/
 │   │   ├── loader.go                # LoadSkills：扫描 skills/<name>/SKILL.md → Index
 │   │   ├── use_skill_tool.go        # UseSkillTool：use_skill 工具（按需加载 skill 全文）
 │   │   └── skills_test.go           # 全组件单元测试（parseFrontmatter/Index/LoadSkills/UseSkillTool）
-│   ├── planning/                    # Planning 模块 — Plan Mode + 任务列表
-│   │   ├── mode.go                  # PlanMode 枚举（Default/Plan/AutoEdit）+ Next()/Label()
-│   │   ├── mode_test.go             # PlanMode 单元测试
-│   │   ├── plan_writer.go           # PlanWriter 接口（供 TodoWriteTool 依赖，避免循环导入）
-│   │   ├── todo.go                  # TodoStore（线程安全）+ TodoItem/TodoStatus + FormatForInjection
-│   │   └── todo_test.go             # TodoStore 单元测试
+│   ├── planning/                    # Planning 模块 — 原生规划能力（Session 级执行计划）
+│   │   ├── plan.go                  # PlanStore（线程安全）+ PlanItem/PlanStatus + FormatPlan
+│   │   ├── plan_test.go             # PlanStore 单元测试
+│   │   └── plan_writer.go           # PlanWriter 接口（供 PlanWriteTool 依赖，避免循环导入）
 │   ├── memory/                      # Short-Term Memory — 会话历史持久化与上下文压缩
 │   │   ├── session.go               # Session 接口 + SessionInfo 类型
 │   │   ├── manager.go               # Manager：SQLite 连接持有者 + 会话 CRUD（NewSession/OpenSession/List/Delete）+ DB() 访问器
-│   │   ├── sqlite_session.go        # SQLiteSession：WAL + 事务 + tool_calls JSON 序列化
+│   │   ├── sqlite_session.go        # SQLiteSession：WAL + 事务 + tool_calls JSON 序列化 + session_plans UPSERT
 │   │   ├── mem_session.go           # MemorySession：纯内存实现（测试用）
 │   │   ├── compaction.go            # Compactor 接口 + TokenBudgetCompactor + SlidingWindowCompactor
 │   │   ├── summarization.go         # SummarizationCompactor：LLM 摘要压缩 + Summarizer 接口 + 增量更新；MemoryExtractor 接口 + WithMemoryExtractor
@@ -289,8 +287,8 @@ harness9/
 │   │   ├── read_file.go             # read_file 工具（沙箱保护，offset/limit 分页，8192 字节默认上限）
 │   │   ├── write_file.go            # write_file 工具（沙箱保护，Auto-Mkdir）
 │   │   ├── edit_file.go             # edit_file 工具（多级模糊匹配文件编辑，沙箱保护）
-│   │   ├── todo_write.go            # todo_write 工具（读写 TodoStore + 状态转换校验 + WithPlanWriter 注入）
-│   │   ├── todo_write_test.go       # todo_write 工具单元测试（含状态校验测试）
+│   │   ├── plan_write.go            # plan_write 工具（读写 PlanStore + 防作弊状态校验 + WithPlanWriter 注入）
+│   │   ├── plan_write_test.go       # plan_write 工具单元测试（含防作弊校验测试）
 │   │   ├── memory_write.go          # memory_write 工具（add/update[merge]/remove 三动作 + Precis 重建）
 │   │   ├── memory_search.go         # memory_search 工具（FTS5 全文检索 + 命中强化）
 │   │   ├── mcp_adapter.go           # MCPToolAdapter：MCP 工具包装为 BaseTool（mcp__{server}__{tool} 命名 + SanitizeMCPName）
@@ -325,7 +323,7 @@ harness9/
 │   │   ├── harness.go               # RunCase / Suite / recordingHook / extractFinalOutput
 │   │   ├── testenv.go               # SetupHermeticEnv：标准 Hermetic 隔离环境（清除 API Key，禁止真实 LLM 调用）
 │   │   ├── report.go                # BuildReport / WriteJSON / WriteMarkdown（评估报告生成）
-│   │   └── dataset/                 # 黄金数据集（go test 可直接运行，22 个用例）
+│   │   └── dataset/                 # 黄金数据集（go test 可直接运行，24 个用例）
 │   │       ├── tool_calling_test.go # 工具调用准确性（6 用例：bash/read_file/write+read/L4 模糊匹配/并行工具/纯对话）
 │   │       ├── planning_test.go     # Planning 完成率（4 用例：生成计划/不写文件/先规划后执行/只读探索）
 │   │       ├── memory_test.go       # Memory 持久化（2 用例：memory_write/memory_search）
@@ -344,7 +342,7 @@ harness9/
 │   │   ├── config_test.go           # LoadConfig / ServerConfig.transportType 测试
 │   │   └── transport_test.go        # newTransport / HTTPTransport / StdioTransport ctx 取消测试
 │   ├── context/                     # Context Engineering — System Prompt 组装
-│   │   └── builder.go               # DefaultPromptBuilder：基础 prompt + AGENTS.md + Skills 索引 + todo/offload/Sandbox/LTM 段落
+│   │   └── builder.go               # DefaultPromptBuilder：基础 prompt + AGENTS.md + Skills 索引 + 规划准则/offload/Sandbox/LTM 段落
 │   ├── env/                         # 环境配置
 │   │   ├── env.go                   # 零依赖 .env 文件加载器（系统变量优先）
 │   │   └── env_test.go              # 配置加载单元测试
@@ -375,7 +373,7 @@ harness9/
 │   │   ├── agent-loop.md            # Agent Loop 核心实现原理
 │   │   ├── tool-calling.md          # Tool Calling 工具调用系统详解
 │   │   ├── context-engineering.md   # Context Engineering 技术方案（含 Short-Term Memory）
-│   │   ├── planning.md              # Planning 模块：Plan Mode、TodoStore、执行自动化
+│   │   ├── planning.md              # Planning 模块：原生规划能力、PlanStore、写时检查点、压缩免疫
 │   │   ├── sub-agent.md             # Sub-Agent 系统：general-purpose、task 工具、前台/后台、@agent、TaskTracker
 │   │   ├── file-system.md           # 文件系统能力：OffloadHook、FilePlanWriter、分页读取、GC
 │   │   ├── shell-execution.md       # Shell 执行功能：! 前缀、异步机制、LLM 上下文注入、截断策略
@@ -448,18 +446,18 @@ harness9/
 | 模块 | 职责 | 状态 |
 |------|------|:----:|
 | **cmd/harness9** | 主入口：TTY 自动检测选择 TUI / CLI；`--help` / `--version` flag；`upgrade` 子命令；初始化 Memory Manager + SummarizationCompactor + Session + OffloadHook + FilePlanWriter + HookRegistry | ✅ |
-| **tui** | 全屏 TUI（Bubbletea）：WelcomeBanner + 对话页双 Phase、Spinner 动词轮换、内置命令 Tab 补全 + Skills 补全、Markdown 渲染、会话管理、状态栏 token 用量实时展示（颜色告警）+ 压缩通知 + Plan Mode 色调 + 审查对话框 + autoExecuting 续跑；ToolResultData 携带引擎侧精确耗时；Thinking 块流式渲染（EventThinkingDelta → 深灰 │ 前缀行，flushPendingThinking 在工具/正文边界自动关闭）；Shell 执行模式（`!` 前缀 → dispatchShellCommand → tea.Cmd 异步 → shellResultMsg → pendingShellOutput 注入 LLM 上下文） | ✅ |
-| **engine** | 标准 ReAct 主循环（按职责拆分：agent_loop.go 编排器 + loop_phases.go 阶段方法 + options/retry/history/planmode/tools_exec 子模块），阻塞 + 流式双模式，并发工具调度，Session/Compactor 集成，EventTokenUpdate / EventCompaction / EventToolResult（ToolResultData）/ EventThinkingDelta 事件，WithContextWindow 选项，双档 LLM 重试（默认/网络预算），PlanMode 工具过滤 + prompt 注入，TodoStore 跨会话持久化，Compact 写回失败自动回滚，WithMemoryNudge（每 N 轮向防御性副本注入长期记忆提示，不持久化），WithStallNudge（连续 N 轮无进展工具（edit_file/write_file）调用时注入一次停滞提示打断空转，防御性副本，不持久化），provider 空响应防御（转为可重试错误而非 panic） | ✅ |
-| **hooks** | 文件系统能力：ToolHook 接口 + HookRegistry（洋葱模型）；OffloadHook（超大输出 offload 到 `~/.harness9/tool_results/`，fail-open）；FilePlanWriter（todo 计划持久化为 markdown，git 项目写入 workDir/.harness9/plans/） | ✅ |
-| **planning** | PlanMode 枚举（Default/Plan/AutoEdit）、PlanWriter 接口（解耦 TodoWriteTool 与 FilePlanWriter）、TodoStore（线程安全，全量替换）、TodoItem 状态机、todo_write 工具（状态转换校验 + WithPlanWriter 注入） | ✅ |
-| **subagent** | Sub-Agent 子代理委派：SubAgentDefinition（ResolveTools 白名单∩全集-黑名单-task）、Registry（编程式 + `.harness9/agents/*.md` 文件式定义）、Runner（构建隔离子引擎 + RunStream + 桥接审批与进度）、TaskTool（task 工具，前台/后台双模式）、TaskTracker（后台任务单一事实源）；内置 general-purpose 通用子代理（继承父全部可用工具与模型）；防递归 + 权限不扩权 + 上下文隔离 | ✅ |
+| **tui** | 全屏 TUI（Bubbletea）：WelcomeBanner + 对话页双 Phase、Spinner 动词轮换、内置命令 Tab 补全 + Skills 补全、Markdown 渲染、会话管理、状态栏 token 用量实时展示（颜色告警）+ 压缩通知 + 计划渲染 + autoExecuting 自动续跑（plan_write 成功激活，停滞 3 次放弃，取消即停）；ToolResultData 携带引擎侧精确耗时；Thinking 块流式渲染（EventThinkingDelta → 深灰 │ 前缀行，flushPendingThinking 在工具/正文边界自动关闭）；Shell 执行模式（`!` 前缀 → dispatchShellCommand → tea.Cmd 异步 → shellResultMsg → pendingShellOutput 注入 LLM 上下文） | ✅ |
+| **engine** | 标准 ReAct 主循环（按职责拆分：agent_loop.go 编排器 + loop_phases.go 阶段方法 + options/retry/history/nudge/tools_exec 子模块），阻塞 + 流式双模式，并发工具调度，Session/Compactor 集成，EventTokenUpdate / EventCompaction / EventToolResult（ToolResultData）/ EventThinkingDelta 事件，WithContextWindow 选项，双档 LLM 重试（默认/网络预算），原生规划集成（PlanStore 跨会话持久化 + plan_write 写时检查点 + 每轮活跃 Plan 原样注入发送视图，Compactor 零改动），Compact 写回失败自动回滚，WithMemoryNudge（每 N 轮向防御性副本注入长期记忆提示，不持久化），WithStallNudge（连续 N 轮无进展工具（edit_file/write_file）调用时注入一次停滞提示打断空转，防御性副本，不持久化），provider 空响应防御（转为可重试错误而非 panic） | ✅ |
+| **hooks** | 文件系统能力：ToolHook 接口 + HookRegistry（洋葱模型）；OffloadHook（超大输出 offload 到 `~/.harness9/tool_results/`，fail-open）；FilePlanWriter（执行计划持久化为 markdown，git 项目写入 workDir/.harness9/plans/） | ✅ |
+| **planning** | Plan 是 Agent 原生能力：PlanStore（Session 级，线程安全，全量替换）、PlanItem/PlanStatus 状态机（pending/in_progress/completed/cancelled）、FormatPlan（活跃条目原样注入文本）、PlanWriter 接口（解耦 PlanWriteTool 与 FilePlanWriter）；plan_write 工具（tools 包）承担防作弊校验 | ✅ |
+| **subagent** | Sub-Agent 子代理委派：SubAgentDefinition（ResolveTools 白名单∩全集-黑名单-task）、Registry（编程式 + `.harness9/agents/*.md` 文件式定义）、Runner（构建隔离子引擎 + RunStream + 桥接审批与进度）、TaskTool（task 工具，前台/后台双模式）、TaskTracker（后台任务单一事实源）；内置 general-purpose 通用子代理（继承父全部可用工具与模型）；防递归 + 权限不扩权 + 上下文隔离 + Plan 双向隔离（每次委派构造独立 PlanStore + 独立 plan_write 实例，子代理拥有原生规划能力） | ✅ |
 | **skills** | Progressive Disclosure 技能系统：`Skill` 结构体（YAML frontmatter 解析）、`Index`（技能集合 + Summary/GetFullContent/Names）、`LoadSkills`（扫描 `skills/<name>/SKILL.md` → Index，目录不存在静默跳过）、`UseSkillTool`（`use_skill` 工具，LLM 按需按名称加载 skill 全文，避免启动时整体注入 context）；结构类型隐式满足 `tools.BaseTool` 接口，无循环依赖 | ✅ |
 | **memory** | Context Engineering：Session 接口、Manager（SQLite CRUD + WithToolResultsDir + DeleteSession 级联 GC + DB() 访问器）、SQLiteSession（WAL + 事务）、SummarizationCompactor（默认，LLM 摘要压缩 + 增量更新 + 错误回退）、TokenBudgetCompactor（回退，80% 阈值 + 孤立工具对双向修复）、SlidingWindowCompactor（回退方案）、token 估算工具；MemoryExtractor 接口 + WithMemoryExtractor（压缩前提取钩子） | ✅ |
 | **ltm** | Long-Term Memory：Store（`long_term_memories` 表 + standalone FTS5 `memories_fts`，复用 `state.db`，Add 签名去重 / Search FTS5 强化 / SoftDelete signature=NULL / List top-N / PurgeExpired / StaleCandidates）、Precis（MEMORY.md 物化视图，top-30 渲染 + 5KB 截断）、Extractor（LLM 压缩前事实提取，fail-open，实现 MemoryExtractor 接口）、Phase 3 接缝（Provider/Embedder/Consolidator + noopProvider） | ✅ |
-| **context** | DefaultPromptBuilder：System Prompt 结构化组装（基础 prompt + AGENTS.md + Skills 索引 + todo 指引 + offload 检索指引 + 长期记忆精华），WithOffloadEnabled 注入分页检索说明，WithLongTermMemory 接收读取闭包、每轮 Build 时实时重读 MEMORY.md 精华注入（写入即下一轮可见）；**每次 Build() 注入 `当前日期：YYYY-MM-DD`**（`time.Now()` 实时生成，防止 Agent 因训练截止日期偏差产生陈旧搜索词） | ✅ |
+| **context** | DefaultPromptBuilder：System Prompt 结构化组装（基础 prompt + AGENTS.md + Skills 索引 + 规划准则 + offload 检索指引 + 长期记忆精华），WithOffloadEnabled 注入分页检索说明，WithLongTermMemory 接收读取闭包、每轮 Build 时实时重读 MEMORY.md 精华注入（写入即下一轮可见）；**每次 Build() 注入 `当前日期：YYYY-MM-DD`**（`time.Now()` 实时生成，防止 Agent 因训练截止日期偏差产生陈旧搜索词） | ✅ |
 | **provider** | LLM 统一接口 + OpenAI / Anthropic SDK 适配器 + 实际 token 用量提取（Usage 类型）+ 模型 context window 注册表；AnthropicProvider 支持 WithThinkingBudget（extended thinking，≥1024 clamp）；OpenAIProvider 支持 WithIncludeReasoning + OpenRouter 自动检测，流式中通过 extractReasoningContent 提取 reasoning_content / reasoning 字段 | ✅ |
 | **schema** | 跨组件共享的核心数据类型（Message、ToolCall、Usage 等）；StreamChunk 定义 text_delta / thinking_delta / done / error 四种流式增量类型 | ✅ |
-| **tools** | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file / todo_write / memory_write（add/update/remove + Precis 重建）/ memory_search（FTS5 检索 + 命中强化）/ web_search（DuckDuckGo，无 API Key）/ web_fetch（go-readability + html-to-markdown，Markdown 输出））+ 路径沙箱（safe_path.go）+ SSRF 防护（web_safety.go） | ✅ |
+| **tools** | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file / plan_write / memory_write（add/update/remove + Precis 重建）/ memory_search（FTS5 检索 + 命中强化）/ web_search（DuckDuckGo，无 API Key）/ web_fetch（go-readability + html-to-markdown，Markdown 输出））+ 路径沙箱（safe_path.go）+ SSRF 防护（web_safety.go） | ✅ |
 | **env** | 零依赖 `.env` 配置加载器（系统变量优先） | ✅ |
 | **logfmt** | 跨模块共享的块状日志渲染（FormatMsg/ToolStart/LoopStart 等 11 个格式函数） | ✅ |
 | **sandbox** | Docker 容器级 Sandbox：Environment 接口（LocalEnvironment 进程级 / DockerEnvironment 容器级）、Container 五状态机（Pending/Running/Stopping/Terminated/Failed）、Manager（Create/Destroy/DestroyAll/ReapOrphans/ListAll，并发安全）、工具透明路由（bash via docker exec，文件 via bind mount）、安全加固（cap-drop all + security-opt no-new-privileges + pids-limit + tmpfs）、Agent 级隔离（主 Agent + 每个 Sub-Agent 独立容器）、TUI SandboxBar、孤儿容器回收、向后兼容（默认启用，`SANDBOX_ENABLED=false` 才关闭，行为与引入前完全一致） | ✅ |
@@ -589,7 +587,7 @@ func (t *XxxTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 | 功能维度 | 对应 dataset 文件 | 核心验证点 |
 |---------|----------------|-----------|
 | Tool Calling | `tool_calling_test.go` | 工具被调用、工具不被调用、多工具顺序/并行调用 |
-| Planning | `planning_test.go` | todo_write 生成计划、Plan Mode 不写文件、先规划后执行 |
+| Planning | `planning_test.go` | plan_write 生成计划、探索后规划不写文件、先规划后执行、简单任务不强制规划 |
 | Memory | `memory_test.go` | memory_write/memory_search 工具调用 |
 | Context Engineering | `context_test.go` | 多轮工具链、工具结果被观察后调整行为 |
 | Error Handling | `error_handling_test.go` | 工具失败后 self-healing、MaxTurns 受控终止 |
@@ -635,7 +633,7 @@ go test ./internal/evals/... ./internal/evals/dataset/... -v
 # 见 .github/workflows/eval.yml —— eval 失败则阻断合并
 ```
 
-当前黄金数据集：22 个用例，覆盖 tool_calling（6）/ planning（4）/ memory（2）/ context（4）/ error_handling（3）/ compaction（3）。新 feature 只能**增加**用例，不能删除或降低覆盖率。
+当前黄金数据集：24 个用例，覆盖 tool_calling（6）/ planning（5）/ memory（2）/ context（4）/ error_handling（3）/ compaction（4）。新 feature 只能**增加**用例，不能删除或降低覆盖率。
 
 ### 5.9 文档双语规范
 

@@ -1,6 +1,6 @@
-// Package memory — SQLiteSession：会话消息和 todos 的 SQLite 持久化实现。
+// Package memory — SQLiteSession：会话消息和执行计划的 SQLite 持久化实现。
 // 本文件实现 SQLiteSession，通过共享的 *sql.DB 连接（Manager 持有）执行 SQLite 操作。
-// 写入操作（AddMessages、SaveTodos）使用显式事务（BEGIN/COMMIT）保证原子性。
+// 写入操作（AddMessages、SavePlan）使用显式事务或 UPSERT 保证原子性。
 // defer tx.Rollback() 配合 //nolint:errcheck 确保任何错误路径都能回滚事务，
 // 避免 SQLite 连接进入错误状态。
 package memory
@@ -181,54 +181,45 @@ func (s *SQLiteSession) Clear(ctx context.Context) error {
 	return nil
 }
 
-// GetTodos 返回该会话已持久化的任务列表，按 position 升序排列。
-func (s *SQLiteSession) GetTodos(ctx context.Context) ([]planning.TodoItem, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, content, status FROM session_todos
-		 WHERE session_id = ? ORDER BY position ASC`,
-		s.sessionID)
+// GetPlan 返回该会话已持久化的计划条目（单行 JSON 反序列化）。无记录时返回 nil, nil。
+func (s *SQLiteSession) GetPlan(ctx context.Context) ([]planning.PlanItem, error) {
+	var js sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT items FROM session_plans WHERE session_id = ?`, s.sessionID).Scan(&js)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
-		return nil, fmt.Errorf("查询 todos: %w", err)
+		return nil, fmt.Errorf("查询 plan: %w", err)
 	}
-	defer rows.Close()
-
-	var items []planning.TodoItem
-	for rows.Next() {
-		var item planning.TodoItem
-		var statusStr string
-		if err := rows.Scan(&item.ID, &item.Content, &statusStr); err != nil {
-			return nil, fmt.Errorf("扫描 todo: %w", err)
-		}
-		item.Status = planning.TodoStatus(statusStr)
-		items = append(items, item)
+	if !js.Valid || js.String == "" {
+		return nil, nil
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("迭代 todos: %w", err)
+	var items []planning.PlanItem
+	if err := json.Unmarshal([]byte(js.String), &items); err != nil {
+		return nil, fmt.Errorf("反序列化 plan: %w", err)
 	}
 	return items, nil
 }
 
-// SaveTodos 原子性保存任务列表（write-replace 语义）。
-// 事务内先删除该会话所有旧 todos，再全量插入新列表。
-func (s *SQLiteSession) SaveTodos(ctx context.Context, items []planning.TodoItem) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("开始事务：%w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM session_todos WHERE session_id = ?`, s.sessionID); err != nil {
-		return fmt.Errorf("清除旧 todos: %w", err)
-	}
-
-	for i, item := range items {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO session_todos (id, session_id, content, status, position)
-			 VALUES (?, ?, ?, ?, ?)`,
-			item.ID, s.sessionID, item.Content, string(item.Status), i); err != nil {
-			return fmt.Errorf("插入 todo: %w", err)
+// SavePlan 原子性保存计划条目（write-replace，UPSERT 单行 JSON）。
+func (s *SQLiteSession) SavePlan(ctx context.Context, items []planning.PlanItem) error {
+	js := "[]"
+	if len(items) > 0 {
+		b, err := json.Marshal(items)
+		if err != nil {
+			return fmt.Errorf("序列化 plan: %w", err)
 		}
+		js = string(b)
 	}
-	return tx.Commit()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO session_plans (session_id, items, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(session_id) DO UPDATE
+		    SET items = excluded.items, updated_at = excluded.updated_at`,
+		s.sessionID, js, time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("保存 plan: %w", err)
+	}
+	return nil
 }

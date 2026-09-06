@@ -1,6 +1,6 @@
-// Package hooks — FilePlanWriter：todo 计划持久化到 Markdown 文件。
-// 本文件实现 FilePlanWriter，在每次 todo_write 工具成功写入后，
-// 将当前 TodoItem 列表序列化为 Markdown 格式并覆写固定路径的计划文件。
+// Package hooks — FilePlanWriter：执行计划持久化到 Markdown 文件。
+// 本文件实现 FilePlanWriter，在每次 plan_write 工具成功写入后，
+// 将当前 PlanItem 列表序列化为 Markdown 格式并覆写固定路径的计划文件。
 // 路径策略：git 项目写入 workDir/.harness9/plans/；否则写入 homeDir/.harness9/plans/。
 // FilePlanWriter 实现了 planning.PlanWriter 接口，通过 tools.WithPlanWriter 注入 TodoWriteTool。
 package hooks
@@ -15,7 +15,7 @@ import (
 	"github.com/harness9/internal/planning"
 )
 
-// FilePlanWriter 将 todo 列表写入固定路径的 markdown 文件，每次调用覆写。
+// FilePlanWriter 将计划条目列表写入固定路径的 markdown 文件，每次调用覆写。
 // 路径在构造时确定：git 项目写入 workDir/.harness9/plans/，否则写入 homeDir/.harness9/plans/。
 type FilePlanWriter struct {
 	path      string
@@ -59,35 +59,35 @@ func isGitRepo(workDir string) bool {
 // Write 将 todos 序列化为 markdown 并覆写计划文件。
 // 写入失败时返回 error（调用方决定是否记录日志，不中断主流程）。
 // 目录已在构造时由 NewFilePlanWriter 创建，此处无需再次检查。
-func (w *FilePlanWriter) Write(todos []planning.TodoItem) error {
-	return os.WriteFile(w.path, []byte(formatPlanMarkdown(w.sessionID, todos)), 0600)
+func (w *FilePlanWriter) Write(items []planning.PlanItem) error {
+	return os.WriteFile(w.path, []byte(formatPlanMarkdown(w.sessionID, items)), 0600)
 }
 
 // Path 返回计划文件的绝对路径（供测试和日志使用）。
 func (w *FilePlanWriter) Path() string { return w.path }
 
-func formatPlanMarkdown(sessionID string, todos []planning.TodoItem) string {
+func formatPlanMarkdown(sessionID string, items []planning.PlanItem) string {
 	var sb strings.Builder
 	sb.WriteString("# 执行计划\n\n")
 	fmt.Fprintf(&sb, "session: %s\n", sessionID)
 	fmt.Fprintf(&sb, "updated: %s\n\n", time.Now().Format(time.RFC3339))
-	sb.WriteString("## 任务列表\n\n")
-	for _, item := range todos {
-		marker := todoMarker(item.Status)
+	sb.WriteString("## 计划条目\n\n")
+	for _, item := range items {
+		marker := planMarker(item.Status)
 		fmt.Fprintf(&sb, "- %s %s\n", marker, item.Content)
 	}
 	return sb.String()
 }
 
-func todoMarker(status planning.TodoStatus) string {
+func planMarker(status planning.PlanStatus) string {
 	switch status {
-	case planning.TodoPending:
+	case planning.PlanPending:
 		return "[ ]"
-	case planning.TodoInProgress:
+	case planning.PlanInProgress:
 		return "[>]"
-	case planning.TodoCompleted:
+	case planning.PlanCompleted:
 		return "[x]"
-	case planning.TodoCancelled:
+	case planning.PlanCancelled:
 		return "[-]"
 	default:
 		return "[ ]"

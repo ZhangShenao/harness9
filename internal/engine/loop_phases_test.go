@@ -201,26 +201,6 @@ func TestBeginTurn_RejectsOverMaxTurns(t *testing.T) {
 	}
 }
 
-// TestApplyPlanModePrefix 验证 Plan Mode 前缀注入的开关行为：
-// Plan 模式加前缀且保留原始 prompt，其余模式原样返回。
-func TestApplyPlanModePrefix(t *testing.T) {
-	const prompt = "implement feature X"
-
-	if got := applyPlanModePrefix(planning.PlanModeDefault, prompt); got != prompt {
-		t.Errorf("Default 模式不应注入前缀，got %q", got)
-	}
-	if got := applyPlanModePrefix(planning.PlanModeAutoEdit, prompt); got != prompt {
-		t.Errorf("AutoEdit 模式不应注入前缀，got %q", got)
-	}
-	plan := applyPlanModePrefix(planning.PlanModePlan, prompt)
-	if plan == prompt {
-		t.Error("Plan 模式应注入规划前缀")
-	}
-	if len(plan) <= len(prompt) || plan[len(plan)-len(prompt):] != prompt {
-		t.Error("原始 prompt 应保留在前缀之后")
-	}
-}
-
 // ctxMarkKey 是 ctx 传播回归测试的自定义 key（模拟 observer 注入的 Span 等值）。
 type ctxMarkKey struct{}
 
@@ -297,5 +277,59 @@ func TestGenerateRetry_UsesLogPrefix(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "engine-stream") {
 		t.Errorf("重试日志应使用传入的 logPrefix %q，实际输出: %q", "engine-stream", buf.String())
+	}
+}
+
+// TestPrepareTurnInput_InjectsActivePlan 验证 Plan 注入三要素（Spec §5.2）：
+//  1. 活跃条目存在时，发送视图末尾追加 FormatPlan() 全文（原样，含标题行）
+//  2. 注入只作用于当次发送副本，lc.history 不被污染（视图隔离）
+//  3. 无活跃条目（全部 completed）或 nil store 时不注入
+func TestPrepareTurnInput_InjectsActivePlan(t *testing.T) {
+	newLC := func(store *planning.PlanStore) *loopContext {
+		eng := &AgentEngine{registry: &staticRegistry{output: "ok"}}
+		lc := &loopContext{engine: eng, planStore: store, em: noopEmitter(), history: []schema.Message{
+			{Role: schema.RoleSystem, Content: "sys"},
+			{Role: schema.RoleUser, Content: "user prompt"},
+		}}
+		return lc
+	}
+
+	// 场景 1：有活跃条目 → 注入（原样、含标题行、不含已完成条目）
+	store := planning.NewPlanStore()
+	store.Write([]planning.PlanItem{
+		{ID: "1", Content: "创建 parser.go", Status: planning.PlanInProgress},
+		{ID: "2", Content: "已完成步骤", Status: planning.PlanCompleted},
+	})
+	lc := newLC(store)
+	in := lc.prepareTurnInput()
+	last := in.history[len(in.history)-1]
+	if !strings.Contains(last.Content, "当前执行计划") || !strings.Contains(last.Content, "创建 parser.go") {
+		t.Errorf("active plan should be injected verbatim, got: %q", last.Content)
+	}
+	if strings.Contains(last.Content, "已完成步骤") {
+		t.Error("completed items should not be injected")
+	}
+	// 视图隔离：lc.history 长度不变（仍为 system+user），注入消息不在其中
+	if len(lc.history) != 2 {
+		t.Errorf("lc.history must stay untouched, got %d msgs", len(lc.history))
+	}
+	if lc.history[len(lc.history)-1].Content != "user prompt" {
+		t.Errorf("lc.history tail must stay the original user prompt, got: %q", lc.history[len(lc.history)-1].Content)
+	}
+
+	// 场景 2：无活跃条目 → 不注入
+	empty := planning.NewPlanStore()
+	empty.Write([]planning.PlanItem{{ID: "1", Content: "done", Status: planning.PlanCompleted}})
+	lc2 := newLC(empty)
+	in2 := lc2.prepareTurnInput()
+	if last2 := in2.history[len(in2.history)-1]; strings.Contains(last2.Content, "当前执行计划") {
+		t.Error("no injection expected when no active items")
+	}
+
+	// 场景 3：nil store → 不注入、不 panic
+	lc3 := newLC(nil)
+	in3 := lc3.prepareTurnInput()
+	if last3 := in3.history[len(in3.history)-1]; strings.Contains(last3.Content, "当前执行计划") {
+		t.Error("no injection expected for nil store")
 	}
 }

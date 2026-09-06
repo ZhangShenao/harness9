@@ -69,7 +69,7 @@ New conversation to merge:
 // LLM 摘要与截断回退，是 harness9 渐进式上下文压缩的核心组件。
 //
 // 字段说明：
-//   - Provider / Fallback / TodoInjector / extractor / offloader / recordStore：
+//   - Provider / Fallback / extractor / offloader / recordStore：
 //     通过构造选项注入的协作组件，nil 时各 tier 自行降级处理。
 //   - lastSummary / lastAnchors：跨轮增量更新状态，由 SetLastSummary / SetLastAnchors
 //     或成功的 TierSoft/TierFull 调用更新。
@@ -79,7 +79,6 @@ type ProgressiveCompactor struct {
 	ContextWindow   int
 	MinTailMessages int
 	Fallback        Compactor
-	TodoInjector    TodoInjector
 	extractor       MemoryExtractor
 	offloader       *CompactionOffloader
 	sessionID       string
@@ -97,11 +96,6 @@ type ProgressiveCompactor struct {
 
 // ProgressiveOption 是 NewProgressiveCompactor 的函数选项。
 type ProgressiveOption func(*ProgressiveCompactor)
-
-// WithProgressiveTodoInjector 注入活跃任务列表，在压缩消息末尾追加 Active Tasks 段落。
-func WithProgressiveTodoInjector(ti TodoInjector) ProgressiveOption {
-	return func(c *ProgressiveCompactor) { c.TodoInjector = ti }
-}
 
 // WithProgressiveMemoryExtractor 注入长期记忆提取器，在 head 被摘要抹除前提取持久事实。
 func WithProgressiveMemoryExtractor(ex MemoryExtractor) ProgressiveOption {
@@ -443,7 +437,6 @@ func (c *ProgressiveCompactor) summarizeAndExtract(head []schema.Message) (strin
 //	## Summary
 //	<summary>
 //	## Offloaded References (若有)
-//	## Active Tasks (若 TodoInjector 非空且有活跃任务)
 func (c *ProgressiveCompactor) buildCompactionMsg(anchors []Anchor, summary string, offloaded []OffloadEntry) schema.Message {
 	var sb strings.Builder
 	sb.WriteString(compactionMarker)
@@ -455,12 +448,6 @@ func (c *ProgressiveCompactor) buildCompactionMsg(anchors []Anchor, summary stri
 		sb.WriteString("\n\n## Offloaded References\n")
 		for _, e := range offloaded {
 			sb.WriteString(fmt.Sprintf("- %s (%d行) - offloaded tool result\n", e.FilePath, e.Lines))
-		}
-	}
-	if c.TodoInjector != nil {
-		if todoText := c.TodoInjector.FormatForInjection(); todoText != "" {
-			sb.WriteString("\n\n## Active Tasks\n")
-			sb.WriteString(todoText)
 		}
 	}
 	return schema.Message{Role: schema.RoleUser, Content: sb.String()}

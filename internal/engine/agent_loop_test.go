@@ -475,10 +475,10 @@ func TestWithPromptBuilder_FallbackDefault(t *testing.T) {
 	}
 }
 
-// TestRunLoop_WithTodoStore_RestoresAndSaves 验证 WithTodoStore 的跨会话持久化行为：
-//  1. runLoop 启动时从 Session 恢复 TodoStore 状态（Session 是持久化的 source of truth）
+// TestRunLoop_WithPlanStore_RestoresAndSaves 验证 WithPlanStore 的跨会话持久化行为：
+//  1. runLoop 启动时从 Session 恢复 PlanStore 状态（Session 是持久化的 source of truth）
 //  2. runLoop 结束时通过 defer 将最终状态保存回 Session
-func TestRunLoop_WithTodoStore_RestoresAndSaves(t *testing.T) {
+func TestRunLoop_WithPlanStore_RestoresAndSaves(t *testing.T) {
 	p := &countingProvider{
 		responses: []func([]schema.ToolDefinition) *schema.Message{
 			func(_ []schema.ToolDefinition) *schema.Message {
@@ -488,79 +488,45 @@ func TestRunLoop_WithTodoStore_RestoresAndSaves(t *testing.T) {
 	}
 	reg := &staticRegistry{output: "ok"}
 
-	// 准备一个已有持久化 todos 的 Session（模拟上次 Run 结束后保存的状态）。
+	// 准备一个已有持久化 plans 的 Session（模拟上次 Run 结束后保存的状态）。
 	sess := newMemorySessionForTest("sess-1")
-	if err := sess.SaveTodos(context.Background(), []planning.TodoItem{
-		{ID: "t1", Content: "pre-existing task", Status: planning.TodoPending},
+	if err := sess.SavePlan(context.Background(), []planning.PlanItem{
+		{ID: "t1", Content: "pre-existing task", Status: planning.PlanPending},
 	}); err != nil {
-		t.Fatalf("SaveTodos setup error: %v", err)
+		t.Fatalf("SavePlan setup error: %v", err)
 	}
 
-	todoStore := planning.NewTodoStore()
+	planStore := planning.NewPlanStore()
 
 	eng := NewAgentEngine(p, reg, t.TempDir(),
-		WithTodoStore(todoStore),
+		WithPlanStore(planStore),
 		WithSession(sess),
 	)
 	if err := eng.Run(context.Background(), "test"); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 
-	// 验证：runLoop 启动时应从 Session 恢复 todos 到 todoStore。
-	// 恢复后 todoStore 中应有 t1（在 Run 开始时加载）。
-	// Run 结束时 defer 将（恢复后、未被修改的）todos 重新保存到 Session。
-	saved, err := sess.GetTodos(context.Background())
+	// 验证：runLoop 启动时应从 Session 恢复 plans 到 planStore。
+	// 恢复后 planStore 中应有 t1（在 Run 开始时加载）。
+	// Run 结束时 defer 将（恢复后、未被修改的）plans 重新保存到 Session。
+	saved, err := sess.GetPlan(context.Background())
 	if err != nil {
-		t.Fatalf("GetTodos error: %v", err)
+		t.Fatalf("GetPlan error: %v", err)
 	}
 	if len(saved) != 1 || saved[0].ID != "t1" {
-		t.Errorf("expected saved todos to contain t1, got %+v", saved)
-	}
-}
-
-// TestRunLoop_PlanMode_InjectsPlanPrefix 验证 Plan Mode 下用户 prompt 被注入了规划前缀。
-func TestRunLoop_PlanMode_InjectsPlanPrefix(t *testing.T) {
-	var receivedUserPrompt string
-	p := &countingProvider{
-		responses: []func([]schema.ToolDefinition) *schema.Message{
-			func(_ []schema.ToolDefinition) *schema.Message {
-				return &schema.Message{Role: schema.RoleAssistant, Content: "done"}
-			},
-		},
-	}
-	// 注入一个回调 provider 捕获历史消息内容
-	capturing := &capturingProvider{inner: p, onGenerate: func(msgs []schema.Message) {
-		for _, m := range msgs {
-			if m.Role == schema.RoleUser && receivedUserPrompt == "" {
-				receivedUserPrompt = m.Content
-			}
-		}
-	}}
-	reg := &staticRegistry{output: "ok"}
-	eng := NewAgentEngine(capturing, reg, t.TempDir(),
-		WithPlanMode(planning.PlanModePlan),
-	)
-	if err := eng.Run(context.Background(), "implement feature X"); err != nil {
-		t.Fatalf("Run error: %v", err)
-	}
-	// Plan Mode 前缀必须存在于用户消息中
-	if !strings.Contains(receivedUserPrompt, "todo_write") {
-		t.Errorf("Plan Mode should inject planning prefix mentioning todo_write, got: %q", receivedUserPrompt)
-	}
-	if !strings.Contains(receivedUserPrompt, "implement feature X") {
-		t.Errorf("original user prompt should be preserved, got: %q", receivedUserPrompt)
+		t.Errorf("expected saved plans to contain t1, got %+v", saved)
 	}
 }
 
 // ---- 测试辅助类型 ----
 
-// memorySessionForTest 是支持真实 GetTodos/SaveTodos 持久化语义的 Session 桩。
-// 注意：memory.MemorySession 的 SaveTodos 是 no-op、GetTodos 始终返回空列表，
-// 无法用于验证跨 runLoop 的 todo restore/save 行为，因此此处独立实现。
+// memorySessionForTest 是支持真实 GetPlan/SavePlan 持久化语义的 Session 桩。
+// 与 memory.MemorySession（内存字段实现）语义一致，此处独立实现以避免测试间
+// 对 memory 包内部状态的耦合，并支持 planOrderSession 等时序记录包装。
 type memorySessionForTest struct {
-	id    string
-	msgs  []schema.Message
-	todos []planning.TodoItem
+	id   string
+	msgs []schema.Message
+	plan []planning.PlanItem
 }
 
 func newMemorySessionForTest(id string) *memorySessionForTest {
@@ -584,11 +550,11 @@ func (s *memorySessionForTest) PopMessage(_ context.Context) (*schema.Message, e
 	return &m, nil
 }
 func (s *memorySessionForTest) Clear(_ context.Context) error { s.msgs = nil; return nil }
-func (s *memorySessionForTest) GetTodos(_ context.Context) ([]planning.TodoItem, error) {
-	return append([]planning.TodoItem(nil), s.todos...), nil
+func (s *memorySessionForTest) GetPlan(_ context.Context) ([]planning.PlanItem, error) {
+	return append([]planning.PlanItem(nil), s.plan...), nil
 }
-func (s *memorySessionForTest) SaveTodos(_ context.Context, items []planning.TodoItem) error {
-	s.todos = append([]planning.TodoItem(nil), items...)
+func (s *memorySessionForTest) SavePlan(_ context.Context, items []planning.PlanItem) error {
+	s.plan = append([]planning.PlanItem(nil), items...)
 	return nil
 }
 
@@ -778,59 +744,6 @@ func TestEngineObserver_NilFallback(t *testing.T) {
 	}
 }
 
-// TestRunLoop_PlanMode_FiltersWriteTools 验证 Plan Mode 下写操作工具被过滤，只读工具保留。
-func TestRunLoop_PlanMode_FiltersWriteTools(t *testing.T) {
-	p := &countingProvider{
-		responses: []func([]schema.ToolDefinition) *schema.Message{
-			func(tools []schema.ToolDefinition) *schema.Message {
-				return &schema.Message{Role: schema.RoleAssistant, Content: "done"}
-			},
-		},
-	}
-
-	allTools := []schema.ToolDefinition{
-		{Name: "read_file", Description: "read"},
-		{Name: "write_file", Description: "write"},
-		{Name: "bash", Description: "bash"},
-		{Name: "edit_file", Description: "edit"},
-		{Name: "todo_write", Description: "todo"},
-	}
-	reg := &staticRegistry{tools: allTools, output: "ok"}
-
-	eng := NewAgentEngine(p, reg, t.TempDir(),
-		WithMaxTurns(1),
-		WithPlanMode(planning.PlanModePlan),
-	)
-	err := eng.Run(context.Background(), "plan this")
-	if err != nil {
-		t.Fatalf("Run error: %v", err)
-	}
-
-	if len(p.calls) != 1 {
-		t.Fatalf("expected 1 LLM call, got %d", len(p.calls))
-	}
-	visibleTools := p.calls[0].tools
-	for _, tool := range visibleTools {
-		switch tool.Name {
-		case "write_file", "edit_file":
-			t.Errorf("tool %q should be filtered in PlanMode, but was visible", tool.Name)
-		}
-	}
-	found := make(map[string]bool)
-	for _, tool := range visibleTools {
-		found[tool.Name] = true
-	}
-	if !found["read_file"] {
-		t.Error("read_file should be visible in PlanMode")
-	}
-	if !found["bash"] {
-		t.Error("bash should be visible in PlanMode")
-	}
-	if !found["todo_write"] {
-		t.Error("todo_write should be visible in PlanMode (needed to write the plan)")
-	}
-}
-
 // readToolCall 返回一个调用只读工具 read_file 的助手响应（非"进展"工具）。
 func readToolCall(_ []schema.ToolDefinition) *schema.Message {
 	return &schema.Message{
@@ -921,5 +834,98 @@ func TestStallNudge_NotPersisted(t *testing.T) {
 		if strings.Contains(m.Content, nudge) {
 			t.Errorf("停滞提示不应被持久化，却出现在: %q", m.Content)
 		}
+	}
+}
+
+// planOrderSession 包装 memorySessionForTest，记录 SavePlan 与 LLM 调用的相对时序，
+// 用于验证"写时检查点"（plan_write 成功轮立即落盘，而非 defer 到 Run 结束）。
+type planOrderSession struct {
+	*memorySessionForTest
+	events *[]string
+}
+
+func (s *planOrderSession) SavePlan(ctx context.Context, items []planning.PlanItem) error {
+	*s.events = append(*s.events, "save_plan")
+	return s.memorySessionForTest.SavePlan(ctx, items)
+}
+
+// TestRunLoop_PlanWrite_CheckpointOnWrite 验证写时检查点：
+// plan_write 成功的 Turn 内立即 SavePlan，先于下一次 LLM 调用——
+// 崩溃窗口从"整个 Run"缩小到"单轮之内"（Spec §5.1）。
+func TestRunLoop_PlanWrite_CheckpointOnWrite(t *testing.T) {
+	events := []string{}
+	sess := &planOrderSession{
+		memorySessionForTest: newMemorySessionForTest("sess-ck"),
+		events:               &events,
+	}
+	p := &countingProvider{
+		responses: []func([]schema.ToolDefinition) *schema.Message{
+			// Turn 1：调用 plan_write 创建计划
+			func(_ []schema.ToolDefinition) *schema.Message {
+				events = append(events, "llm_turn1")
+				return &schema.Message{
+					Role: schema.RoleAssistant,
+					ToolCalls: []schema.ToolCall{
+						{ID: "c1", Name: "plan_write", Arguments: []byte(
+							`{"steps":[{"id":"1","content":"步骤一","status":"pending"}]}`)},
+					},
+				}
+			},
+			// Turn 2：纯文本终止
+			func(_ []schema.ToolDefinition) *schema.Message {
+				events = append(events, "llm_turn2")
+				return &schema.Message{Role: schema.RoleAssistant, Content: "done"}
+			},
+		},
+	}
+	reg := &staticRegistry{output: "ok"}
+	planStore := planning.NewPlanStore()
+	eng := NewAgentEngine(p, reg, t.TempDir(),
+		WithPlanStore(planStore), WithSession(sess))
+	if err := eng.Run(context.Background(), "test"); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	// 首次 save_plan 必须发生在 llm_turn2 之前（写时检查点，而非仅 defer 兜底）。
+	saveIdx, turn2Idx := -1, -1
+	for i, e := range events {
+		if e == "save_plan" && saveIdx == -1 {
+			saveIdx = i
+		}
+		if e == "llm_turn2" {
+			turn2Idx = i
+		}
+	}
+	if saveIdx == -1 || turn2Idx == -1 || saveIdx > turn2Idx {
+		t.Errorf("expected first save_plan before llm_turn2 (write-time checkpoint), events: %v", events)
+	}
+}
+
+// TestRunLoop_PlanRestore_InjectedOnFirstTurn 验证会话恢复语义：
+// Session 中已持久化的 Plan 在 Run 首轮即注入发送视图（崩溃恢复后基于 Plan 继续）。
+func TestRunLoop_PlanRestore_InjectedOnFirstTurn(t *testing.T) {
+	sess := newMemorySessionForTest("sess-resume")
+	if err := sess.SavePlan(context.Background(), []planning.PlanItem{
+		{ID: "1", Content: "恢复后继续的步骤", Status: planning.PlanPending},
+	}); err != nil {
+		t.Fatalf("SavePlan setup error: %v", err)
+	}
+
+	var sawPlan bool
+	p := providertest.NewMockWithCallback(func(msgs []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		for _, m := range msgs {
+			if strings.Contains(m.Content, "恢复后继续的步骤") {
+				sawPlan = true
+			}
+		}
+		return schema.Message{Role: schema.RoleAssistant, Content: "继续执行"}
+	})
+	eng := NewAgentEngine(p, &staticRegistry{output: "ok"}, t.TempDir(),
+		WithPlanStore(planning.NewPlanStore()), WithSession(sess))
+	if err := eng.Run(context.Background(), "继续"); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if !sawPlan {
+		t.Error("restored plan should be visible in first turn's view")
 	}
 }

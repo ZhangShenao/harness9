@@ -10,7 +10,7 @@
 //	trackStall         → 停滞检测：进展工具计数维护
 //	injectObservations → 结果注入：工具执行结果作为 Observation（user 角色）追加
 //	saveHistory        → 收尾：本次 Run 新增消息持久化（仅自然终止路径）
-//	saveTodos          → 收尾：TodoStore 持久化（所有退出路径，defer 保证）
+//	savePlan          → 收尾：PlanStore 持久化（所有退出路径，defer 保证）
 //
 // 并发模型：loopContext 的字段仅在 runLoop 所在 goroutine 中读写（emitter 内部
 // 回调除外，其自身保证并发安全），因此无需加锁；与 TUI goroutine 的隔离通过
@@ -37,12 +37,11 @@ type loopContext struct {
 	logPrefix string
 	em        emitter
 
-	// 以下字段在入口一次性快照自 AgentEngine，运行期不受 SetSession/SetPlanMode
+	// 以下字段在入口一次性快照自 AgentEngine，运行期不受 SetSession
 	// 等跨 goroutine 修改的影响（修改仅对下一次交互生效）。
 	sess      memory.Session
 	comp      memory.Compactor
-	todoStore *planning.TodoStore
-	planMode  planning.PlanMode
+	planStore *planning.PlanStore
 
 	obs                EngineObserver   // 非 nil：入口已兜底为 noopObserver
 	obsCtx             context.Context  // interaction span 注入后的 ctx，所有 Turn ctx 的祖先
@@ -59,12 +58,12 @@ type turnInput struct {
 	// history 是发送给 LLM 的历史视图：在完整历史之上应用压缩与 nudge 注入后的副本，
 	// 仅作用于当次调用——lc.history 保持完整增长，不因压缩或 nudge 而改变。
 	history []schema.Message
-	// toolDefs 是本 Turn 对 LLM 可见的工具定义（Plan Mode 下已过滤为只读白名单）。
+	// toolDefs 是本 Turn 对 LLM 可见的工具定义（全量，Plan Mode 工具过滤已移除）。
 	toolDefs []schema.ToolDefinition
 }
 
 // beginInteraction 完成 runLoop 入口的全部一次性准备，返回携带快照状态的 loopContext。
-// 此方法不返回错误：所有可失败步骤（Todo 恢复、历史加载）均降级处理并记录告警，
+// 此方法不返回错误：所有可失败步骤（Plan 恢复、历史加载）均降级处理并记录告警，
 // 保证 Run/RunStream 的失败语义完全由循环阶段决定（与重构前行为一致）。
 func (e *AgentEngine) beginInteraction(ctx context.Context, userPrompt, logPrefix string, em emitter) *loopContext {
 	lc := &loopContext{
@@ -88,33 +87,28 @@ func (e *AgentEngine) beginInteraction(ctx context.Context, userPrompt, logPrefi
 	}
 	e.mu.RUnlock()
 	lc.obsCtx = lc.obs.OnInteractionStart(ctx, sessIDForObs, userPrompt)
-	// 后续所有阶段（Todo 恢复 / 历史加载 / Turn / 收尾）统一使用 obsCtx：
+	// 后续所有阶段（Plan 恢复 / 历史加载 / Turn / 收尾）统一使用 obsCtx：
 	// observer 可能在 OnInteractionStart 中注入 Span 或其他值，若继续使用原始 ctx，
 	// 这些注入会丢失（OTELEngineObserver 的 interaction→turn Span 父子关系即依赖此传播）。
 	ctx = lc.obsCtx
 
-	// 在循环开始时快照 session/compactor/planMode/todoStore，避免与 TUI goroutine 的
-	// SetSession/SetPlanMode 产生数据竞争。
+	// 在循环开始时快照 session/compactor/planStore，避免与 TUI goroutine 的
+	// SetSession 产生数据竞争。
 	e.mu.RLock()
 	lc.sess = e.session
 	lc.comp = e.compactor
-	lc.planMode = e.planMode
-	lc.todoStore = e.todoStore
+	lc.planStore = e.planStore
 	e.mu.RUnlock()
 
-	// 启动时从 Session 恢复 TodoStore 状态（跨会话续接未完成任务）。
-	// 失败不终止 Run：todo 是辅助状态，丢失可接受，仅记录告警。
-	if lc.sess != nil && lc.todoStore != nil {
-		if todos, err := lc.sess.GetTodos(ctx); err != nil {
-			log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf("加载 todos 失败: %v", err)))
+	// 启动时从 Session 恢复 PlanStore 状态（跨会话续接未完成计划；会话恢复/崩溃恢复路径）。
+	// 失败不终止 Run：plan 是辅助状态，丢失可接受，仅记录告警。
+	if lc.sess != nil && lc.planStore != nil {
+		if plan, err := lc.sess.GetPlan(ctx); err != nil {
+			log.Print(logfmt.FormatMsg(logPrefix, fmt.Sprintf("加载 plan 失败: %v", err)))
 		} else {
-			lc.todoStore.Write(todos)
+			lc.planStore.Write(plan)
 		}
 	}
-
-	// Plan Mode：注入规划行为约束（write_file/edit_file 已由 filterReadOnlyTools 在工具层
-	// 硬性过滤，此处只补充 bash 只读限制和 todo_write 输出要求等无法在工具层表达的行为规则）。
-	userPrompt = applyPlanModePrefix(lc.planMode, userPrompt)
 
 	lc.history, lc.startLen = e.loadHistoryWith(ctx, userPrompt, lc.sess, logPrefix)
 	return lc
@@ -145,10 +139,10 @@ func (lc *loopContext) beginTurn(ctx context.Context) (context.Context, error) {
 // prepareTurnInput 完成每轮 LLM 调用前的上下文预处理（保持以下执行顺序，
 // 与压缩通知 → token 上报 → nudge 注入的对外事件顺序一致）：
 //
-//  1. 工具过滤：读取本 Turn 可用工具列表，Plan Mode 下过滤为只读白名单
+//  1. 工具列表：读取本 Turn 可用工具列表（Plan Mode 已移除，恒为全量）
 //  2. 压缩检查：超过阈值时生成本轮的压缩视图，并上报压缩详情
 //  3. token 估算上报：压缩后消息 + 工具定义的估算值（LLM 调用后由实际用量覆盖）
-//  4. nudge 注入：记忆 nudge（周期性）与停滞 nudge（无进展检测），
+//  4. nudge/Plan 注入：记忆 nudge（周期性）、停滞 nudge（无进展检测）与活跃 Plan（原样注入），
 //     均只注入发送副本，绝不写入 lc.history（因此不会被持久化、不会累积）
 //
 // 压缩审计记录在方法内部经 em.compaction 上报后即完成使命，不再外泄给调用方。
@@ -157,9 +151,6 @@ func (lc *loopContext) prepareTurnInput() turnInput {
 
 	// 1. 工具列表每轮重新读取：注册表内容可能在运行期变化（如 MCP 异步注入）。
 	availableTools := e.registry.GetAvailableTools()
-	if lc.planMode == planning.PlanModePlan {
-		availableTools = filterReadOnlyTools(availableTools)
-	}
 
 	// 2. 压缩检查：comp 为 nil 时原样返回。压缩是逐轮视图——结果仅用于本次调用，
 	//    lc.history 保留完整历史，保证下一轮压缩仍能看到全部上下文重新计算。
@@ -182,6 +173,17 @@ func (lc *loopContext) prepareTurnInput() turnInput {
 	if e.stallWindow > 0 && e.stallText != "" && lc.turnsSinceProgress >= e.stallWindow {
 		compactedHistory = appendUserNudge(compactedHistory, e.stallText)
 		lc.turnsSinceProgress = 0
+	}
+
+	// 4c. Plan 注入：活跃计划原样追加到发送视图末尾（Spec §5.2）。
+	// 覆盖三个场景且为同一条代码路径：压缩后（本视图即压缩产物，无论哪个 Compactor 实现）、
+	// 会话恢复后（beginInteraction 已从 Session 恢复 PlanStore）、运行中（每轮重算，
+	// plan_write 更新次轮即可见）。仅注入临时副本，不写入 lc.history、不持久化、不累积
+	// （与 nudge 同机制）。
+	if lc.planStore != nil {
+		if planText := lc.planStore.FormatPlan(); planText != "" {
+			compactedHistory = appendUserNudge(compactedHistory, planText)
+		}
 	}
 
 	return turnInput{history: compactedHistory, toolDefs: availableTools}
@@ -247,13 +249,28 @@ func (lc *loopContext) saveHistory(ctx context.Context) {
 	lc.engine.saveHistoryWith(ctx, lc.sess, lc.history, lc.startLen, lc.logPrefix)
 }
 
-// saveTodos 将 TodoStore 持久化到 Session（write-replace）。
-// 以 defer 注册、在所有退出路径执行；失败仅记录告警，不影响 Run 结果。
-func (lc *loopContext) saveTodos(ctx context.Context) {
-	if lc.sess == nil || lc.todoStore == nil {
+// savePlan 将 PlanStore 持久化到 Session（write-replace）。
+// 以 defer 注册、在所有退出路径执行（幂等兜底）；失败仅记录告警，不影响 Run 结果。
+func (lc *loopContext) savePlan(ctx context.Context) {
+	if lc.sess == nil || lc.planStore == nil {
 		return
 	}
-	if err := lc.sess.SaveTodos(ctx, lc.todoStore.Read()); err != nil {
-		log.Print(logfmt.FormatMsg(lc.logPrefix, fmt.Sprintf("保存 todos 失败: %v", err)))
+	if err := lc.sess.SavePlan(ctx, lc.planStore.Read()); err != nil {
+		log.Print(logfmt.FormatMsg(lc.logPrefix, fmt.Sprintf("保存 plan 失败: %v", err)))
+	}
+}
+
+// checkpointPlan 写时检查点：本轮包含成功的 plan_write 调用时立即持久化 Plan 到 Session。
+// 崩溃窗口从"整个 Run"缩小到"单轮之内"；失败仅告警（fail-open），不阻断主循环。
+// defer 的 savePlan 保留为幂等兜底，覆盖检查点中途失败的重试与未来新增的状态变更路径。
+func (lc *loopContext) checkpointPlan(calls []schema.ToolCall, results []schema.ToolResult) {
+	if lc.sess == nil || lc.planStore == nil {
+		return
+	}
+	for i, tc := range calls {
+		if tc.Name == "plan_write" && i < len(results) && !results[i].IsError {
+			lc.savePlan(lc.obsCtx)
+			return
+		}
 	}
 }
