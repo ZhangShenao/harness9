@@ -233,7 +233,7 @@ PromptBuilder 新增 Planning 段落：
 
 ## 16. 非目标（Out of Scope）
 
-- Mission 级 Plan 挂载（`internal/mission` 仍未接入主循环）
+- Mission 级 Plan 挂载（`internal/mission` 模块已移除，该能力从未接入主循环）
 - Plan 版本冲突合并 / 多端协同
 - 规划审批 UX（用户已确认彻底移除）
 - 旧 `session_todos` 表数据迁移（残留无害，不做迁移脚本）

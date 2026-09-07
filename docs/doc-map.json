@@ -11,7 +11,6 @@
   { "paths": ["internal/ltm"], "docs": ["docs/核心功能/long-term-memory.md"] },
   { "paths": ["internal/mcp"], "docs": ["docs/核心功能/mcp.md"] },
   { "paths": ["internal/memory"], "docs": ["docs/核心功能/context-engineering.md", "docs/核心功能/progressive-compactor.md"] },
-  { "paths": ["internal/mission"], "docs": [] },
   { "paths": ["internal/observability"], "docs": ["docs/核心功能/eval.md"] },
   { "paths": ["internal/permission"], "docs": ["docs/核心功能/human-in-the-loop.md"] },
   { "paths": ["internal/planning"], "docs": ["docs/核心功能/planning.md"] },
