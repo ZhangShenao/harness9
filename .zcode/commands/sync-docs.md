@@ -19,7 +19,7 @@ CI 中有对应的机械式漂移检测（`scripts/check-doc-drift.sh`，warn �
 
 - 修改了任何 `internal/`、`cmd/`、`skills/` 源码之后、提交 PR 之前
 - 创建或修改了 `docs/核心功能/` 下任何文件之后
-- 用户执行 `/sync-docs`（可附带 diff 范围参数，如 `/sync-docs HEAD~3`）
+- 用户执行 `/sync-docs`（`$ARGUMENTS` 为可选 diff 范围参数，如 `/sync-docs HEAD~3`）
 
 ## Phase 1: 代码变更 → 中文文档
 

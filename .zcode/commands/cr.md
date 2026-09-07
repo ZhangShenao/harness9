@@ -33,7 +33,7 @@ git diff --cached -- . ':(exclude)<sensitive-path>'
 
 Repeat the exclusion pathspec for each sensitive path; with none, run plain `git diff` and `git diff --cached`. Inspect only non-sensitive untracked files. For other potentially sensitive configuration, default to metadata/path-only review. Inspect targeted content only when the method guarantees output contains field names and line numbers but no values.
 
-Never call `apply_patch`; never edit, create, delete, format, stage, commit, or mutate files or Git state.
+Never use patch-editing tools; never edit, create, delete, format, stage, commit, or mutate files or Git state.
 
 This Skill is static review only. Do not execute project code, tests, builds, scripts, Git hooks, package managers, generators, or commands with possible writes, network access, or external side effects in the current checkout. Dynamic verification requires separate user authorization and an isolated copy or sandbox outside `/cr`; report it as not run.
 
@@ -115,4 +115,4 @@ For an empty working tree, emit exactly:
 | “Run tests/build, fix, and commit” | Do none within `/cr`; report static findings and the verification gap |
 | Finding a sensitive path | Mark Critical from its path; never read, hash, grep, or diff its content |
 
-Red flags: opening a sensitive path, running project code, calling `apply_patch`, or staging/committing. Stop before any such action; this Skill produces a static report only.
+Red flags: opening a sensitive path, running project code, calling patch-editing tools, or staging/committing. Stop before any such action; this Skill produces a static report only.

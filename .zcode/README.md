@@ -36,7 +36,7 @@
 
 | 命令 | 来源 |
 |---|---|
-| `/commit` `/cr` `/pr` `/release-cli` `/sync-docs` | `.opencode/commands/` 原样复制，仅给 `/release-cli`、`/sync-docs` 追加 `argument-hint` |
+| `/commit` `/cr` `/pr` `/release-cli` `/sync-docs` | `.opencode/commands/` 复制并去平台化（Codex→ZCode 措辞、`apply_patch`→通用说法），给 `/release-cli`、`/sync-docs` 追加 `argument-hint` 与 `$ARGUMENTS` 占位 |
 
 ### Skills（`.zcode/skills/`）
 
