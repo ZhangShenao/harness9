@@ -47,11 +47,11 @@
 
 `skills/`（仓库根目录）仍是 **harness9 二进制自身技能系统**的唯一信息源，两者内容可能有平台化差异，属预期行为。`commit`/`cr`/`pr`/`release-cli` 四个工作流在 ZCode 侧由 `commands/` 承担，不再复制为技能，避免双份漂移。
 
-### MCP + Hooks（`config.json`）
+### Hooks（`config.json`）
 
 | 配置 | 来源 | 说明 |
 |---|---|---|
-| `mcp.servers.context7` | `.mcp.json`（npx stdio 版） | 版本钉在 `@4.0.5`——researcher 硬引用其工具名，上游 rename 会静默破坏；升级时先 `tools/list` 核对再改 |
+| ~~`mcp.servers.context7`~~ | `.mcp.json`（npx stdio 版） | 已于 2026-09-07 提升到**用户级** `~/.zcode/cli/config.json`（全项目可用），版本仍钉 `@4.0.5`——researcher 硬引用其工具名，升级时先 `tools/list` 核对再改 |
 | `hooks.events.PostToolUse`（matcher `Write|Edit`） | `.claude/settings.json` + `.codex/hooks.json` | 调用仓库根 `scripts/sync-to-obsidian.sh`（stdin 协议与 ZCode 兼容） |
 
 **Hooks 注意事项**：部分 ZCode 版本对工作区级 hooks 需要信任确认或暂不执行；若发现 Obsidian 同步未生效，把 `config.json` 中的 `hooks` 段复制到用户级 `~/.zcode/cli/config.json`（同样需要 `hooks.enabled: true`）。

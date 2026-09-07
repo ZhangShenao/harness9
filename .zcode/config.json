@@ -1,15 +1,4 @@
 {
-  "mcp": {
-    "servers": {
-      "context7": {
-        "command": "npx",
-        "args": [
-          "-y",
-          "@upstash/context7-mcp@4.0.5"
-        ]
-      }
-    }
-  },
   "hooks": {
     "enabled": true,
     "events": {
