@@ -349,9 +349,6 @@ harness9/
 │   ├── permission/                  # 工具权限规则系统（JSON 配置驱动）
 │   │   ├── rules.go                 # Rules：有序规则列表 + Evaluate/matchPattern（glob 匹配）+ LoadRules/SaveRules
 │   │   └── hook.go                  # Hook：实现 hooks.ToolHook（NewHook 内存 / NewFileHook 每次调用重载配置文件）
-│   ├── mission/                     # Mission Control 持久化领域（协调长期运行的 Agent 工作，不依赖单个会话）
-│   │   ├── types.go                 # MissionStatus/TaskStatus 枚举 + Mission/Task/TaskAttempt/Artifact/Evidence 类型 + validTaskTransition
-│   │   └── store.go                 # Store：SQLite 事实源（CreateMission/CreateTask/TransitionTask/AddArtifact/AddEvidence，含依赖就绪排队与不可变触发器）
 │   └── logfmt/                      # 跨模块共享的块状日志格式化工具
 │       ├── format.go                # 块状日志格式化（FormatMsg/ToolStart/LoopStart 等）
 │       └── format_test.go           # 格式化函数单元测试
@@ -464,7 +461,6 @@ harness9/
 | **observability** | OpenTelemetry 可观测层：`Config`/`Setup`（noop/stdout/otlp 三种 Exporter）、`OTELEngineObserver`（Interaction + Turn Span）、`TracingProvider`（LLM Request Span + Token Metrics）、`ObservabilityHook`（Tool Execution Span + Tool Metrics）；默认 noop 零开销，`OTEL_ENABLED=true` 激活 | ✅ |
 | **evals** | 自动化评估框架：`ScriptedProvider`（确定性 mock）、`Assertion`（Hard/Soft 断言，8 种实现）、`RunCase`/`Suite`（最小化隔离引擎 + `recordingHook`）、`SetupHermeticEnv`（Hermetic CI 隔离）、`BuildReport`/`WriteJSON`/`WriteMarkdown`（评估报告）；`dataset/` 黄金数据集 22 用例（tool_calling/planning/context/error_handling/memory/compaction）；`.github/workflows/eval.yml` Quality Gate | ✅ |
 | **permission** | 工具权限规则系统（JSON 配置驱动）：`Rules`（有序规则列表，glob 模式匹配，无匹配默认 ask）、`LoadRules`/`SaveRules`（配置文件重载，TUI "总是允许"动态生效）、`Hook`（实现 hooks.ToolHook，`NewHook` 内存 / `NewFileHook` 每次调用重载） | ✅ |
-| **mission** | Mission Control 持久化领域：`MissionStatus`/`TaskStatus` 枚举 + `Mission`/`Task`/`TaskAttempt`/`Artifact`/`Evidence` 类型 + `validTaskTransition` 状态机校验；`Store`（SQLite 事实源：CreateMission/CreateTask/TransitionTask/AddArtifact/AddEvidence，依赖就绪自动排队 + evidence/artifact 不可变触发器 + workspace lease 唯一索引） | ✅ |
 | **mcp** | MCP Client 集成：`Config`（`.mcp.json` 加载，file-not-found 静默返回空）、`StdioTransport`（subprocess + NDJSON async reader goroutine + pending map ID 关联 + 三路 select）、`HTTPTransport`（无状态 POST）、`Client`（initialize/notifications-initialized/tools-list/tools-call）、`Manager`（并发 Start 30s per-server timeout fail-soft、`ServerStatus`+`ToolDetails` TUI 通知、`InjectTools` 无循环变量 bug 闭包捕获、`WithNotify` channel 回调）；`MCPToolAdapter` 实现 `BaseTool` 接口、`mcp__{server}__{tool}` 双下划线命名、对 Engine 完全透明；TUI MCPBar + `/mcp` 模态面板（`e` 键 `tea.ExecProcess` 编辑配置） | ✅ |
 | **autodev** | 自举开发闭环：`skills/autodev/SKILL.md`（`/autodev` AgentSkill，三阶段工作流：需求澄清→Spec 强制确认→委派）+ `.harness9/agents/dev.md`（dev sub-agent：读规范→探索→实现→go build/test 循环≤3 次→gofmt→commit→push→gh pr create）；git worktree（`.autodev/<slug>/`）+ Docker Sandbox（`SANDBOX_IMAGE=golang:1.25-bookworm`）；零新 Go 代码，复用 Skills/Sub-Agent/Sandbox 基础设施 | ✅ |
 | **provider/providertest** | 测试基础设施（mock provider），不进入生产二进制 | ✅ |

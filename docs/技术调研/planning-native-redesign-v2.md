@@ -264,6 +264,6 @@ SavePlan(ctx context.Context, items []planning.PlanItem) error         // write-
 
 - Plan 版本化元数据（Goal/Version/UpdatedAt）——轻量模型已满足需求，需要时再演进
 - 规划审批 UX（用户已确认彻底移除）
-- Mission 级 Plan 挂载（`internal/mission` 仍未接入主循环）
+- Mission 级 Plan 挂载（`internal/mission` 模块已移除，该能力从未接入主循环）
 - 旧 `session_todos` 表数据迁移（残留无害）
 - 自动续跑增强（/resume 后是否免输入自动继续执行）——本期为"恢复注入 + 用户一句'继续'"
