@@ -23,7 +23,7 @@
 |---|---|---|
 | `harness-blog-writer.md` | `.claude/agents/`（2026-09-01 最新版） | 公众号读者画像版 |
 | `harness-enhancer.md` | `.claude/agents/` | 全仓库质量提升 |
-| `harness-researcher.md` | `.claude/agents/` | Context7 工具名已修正为 `get-library-docs` |
+| `harness-researcher.md` | `.claude/agents/` | Context7 工具名按实测修正（v4.x 为 `resolve-library-id` + `query-docs`） |
 | `test-runner.md` | `.claude/agents/` | `model: claude-haiku-*` 改为 `inherit` |
 | `analyzer.md` / `collector.md` / `organizer.md` | `.opencode/agents/`（仅此系统有） | 知识库日报流水线；`mode`/`tools` 布尔表转 ZCode 工具列表 |
 | `dev.md` / `doc-writer.md` / `explorer.md` | `.harness9/agents/`（**未被 git 跟踪**，本次迁移顺便纳入版本化） | harness9 工具名（`read_file` 等）已转换为 ZCode 内置工具名 |
@@ -51,7 +51,7 @@
 
 | 配置 | 来源 | 说明 |
 |---|---|---|
-| `mcp.servers.context7` | `.mcp.json`（npx stdio 版） | AGENTS.md §6.7 要求第三方 API/SDK 文档优先走 context7 |
+| `mcp.servers.context7` | `.mcp.json`（npx stdio 版） | 版本钉在 `@4.0.5`——researcher 硬引用其工具名，上游 rename 会静默破坏；升级时先 `tools/list` 核对再改 |
 | `hooks.events.PostToolUse`（matcher `Write|Edit`） | `.claude/settings.json` + `.codex/hooks.json` | 调用仓库根 `scripts/sync-to-obsidian.sh`（stdin 协议与 ZCode 兼容） |
 
 **Hooks 注意事项**：部分 ZCode 版本对工作区级 hooks 需要信任确认或暂不执行；若发现 Obsidian 同步未生效，把 `config.json` 中的 `hooks` 段复制到用户级 `~/.zcode/cli/config.json`（同样需要 `hooks.enabled: true`）。

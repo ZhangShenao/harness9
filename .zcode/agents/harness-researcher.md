@@ -10,7 +10,7 @@ tools:
   - WebSearch
   - WebFetch
   - mcp__context7__resolve-library-id
-  - mcp__context7__get-library-docs
+  - mcp__context7__query-docs
 mcpServers:
   - context7
 ---
@@ -91,7 +91,7 @@ mcpServers:
 
 3. **Context7 API 文档查询**
    - 使用 `mcp__context7__resolve-library-id` 工具解析库 ID
-   - 使用 `mcp__context7__get-library-docs` 工具查询最新的 API 文档和代码示例
+   - 使用 `mcp__context7__query-docs` 工具查询最新的 API 文档和代码示例
    - 查询关键词包括但不限于：agent definition、tool system、context management、streaming、multi-agent
 
 4. **示例代码分析**
