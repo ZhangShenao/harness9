@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "enabled": true,
+    "events": {
+      "PostToolUse": [
+        {
+          "matcher": "Write|Edit",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "bash \"$(git rev-parse --show-toplevel)/scripts/sync-to-obsidian.sh\"",
+              "timeoutMs": 30000,
+              "statusMessage": "Syncing Markdown to Obsidian",
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
