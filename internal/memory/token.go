@@ -38,7 +38,7 @@ func EstimateToolTokens(tools []schema.ToolDefinition) int {
 			if b, err := json.Marshal(t.InputSchema); err == nil {
 				total += len(b)
 			}
-			// marshalling failure silently → conservative estimate (0 for schema)
+			// 序列化失败时静默跳过 schema 部分，宁可低估也不中断估算流程
 		}
 	}
 	return total / charsPerToken

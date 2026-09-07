@@ -45,7 +45,7 @@ func (c *SlidingWindowCompactor) Compact(msgs []schema.Message) []schema.Message
 		max = 100
 	}
 	if max < 2 {
-		max = 2 // must hold at least system + one turn
+		max = 2 // 窗口至少容纳 system 消息 + 一轮对话
 	}
 	if len(msgs) <= max {
 		return msgs

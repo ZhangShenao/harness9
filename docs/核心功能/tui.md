@@ -369,7 +369,6 @@ glamour.NewTermRenderer(
 | `!`（首字符） | 实时切换 Shell 模式（状态栏/输入区视觉变化，无需 Enter） | 忽略 |
 | `Esc` | Shell 模式时：清空输入框，退出 Shell 模式 | 忽略 |
 | `Tab` | 内置命令 + Skills 补全循环（内置命令优先） | 忽略 |
-| `Shift-Tab` | 循环切换 Plan Mode（Default → Plan → AutoEdit → Default） | 忽略 |
 | `Ctrl-C` / `Ctrl-D` | 退出 TUI | 调用 `cancelFn()` 中断 Agent；清除 autoExecuting |
 | 鼠标滚轮上 / `PgUp` / `Ctrl-↑` | 向上滚动 | 同左 |
 | 鼠标滚轮下 / `PgDn` / `Ctrl-↓` | 向下滚动，到底回到 auto-scroll | 同左 |
@@ -408,13 +407,15 @@ enter 发送  / 技能命令  ↑↓ 滚动  end 回底部 (42%)  ctrl+c 退出
 
 ### 内置命令
 
-TUI 内置四条斜杠命令，优先于 Skills 处理：
+TUI 内置六条斜杠命令，优先于 Skills 处理：
 
 | 命令 | 行为 |
 |------|------|
 | `/new` | 新建会话，替换引擎绑定，状态栏刷新 |
 | `/resume` | 列出历史会话，进入序号选择模式 |
-| `/plan [任务描述]` | 进入 Plan Mode；带任务描述时直接发送规划请求，不带时提示输入 |
+| `/compact` | 手动强制压缩上下文（异步执行，完成后插入压缩通知） |
+| `/tasks` | 打开后台子代理任务面板（模态，等同 Ctrl+T） |
+| `/mcp` | 打开 MCP 工具面板（模态，`e` 键编辑 `.mcp.json`） |
 | `/exit` | 退出 TUI（等同于空闲时按 Ctrl-C） |
 
 ```go
@@ -515,9 +516,10 @@ signal.NotifyContext(SIGINT/SIGTERM)  ← outerCtx（main.go）
 | `cyanStyle` | Color "81" | Default 模式 accent 文字 |
 | `brandStyle` | Color "226"，Bold | harness9 品牌名 |
 | `sepStyle` | Color "237" | 分隔线 |
-| `planAccentStyle` | Color "220" | Plan Mode accent 文字（琥珀黄） |
-| `planStatusBarStyle` | Bg "94" / Fg "220" | Plan Mode StatusBar 背景 |
-| `planModeLabelStyle` | Color "208"，Bold | 状态栏 `[PLAN]` 标签 |
+| `approvalBoxStyle` | RoundedBorder / BorderForeground "160" / Width 60 | 工具审批对话框容器 |
+| `approvalTitleHighStyle` | Bold + Color "160" | 审批标题（高风险，红） |
+| `approvalTitleMedStyle` | Bold + Color "208" | 审批标题（中风险，橙） |
+| `approvalTitleLowStyle` | Bold + Color "220" | 审批标题（低风险，黄） |
 | `thinkingHeaderStyle` | Color "238"，Italic | Thinking 块标题（« thinking »） |
 | `thinkingLineStyle` | Color "238" | Thinking 块内容行（│ 前缀） |
 | `thinkingEndStyle` | Color "236" | Thinking 块结束线（└ 分隔线） |

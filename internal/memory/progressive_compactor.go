@@ -72,7 +72,8 @@ New conversation to merge:
 //   - Provider / Fallback / extractor / offloader / recordStore：
 //     通过构造选项注入的协作组件，nil 时各 tier 自行降级处理。
 //   - lastSummary / lastAnchors：跨轮增量更新状态，由 SetLastSummary / SetLastAnchors
-//     或成功的 TierSoft/TierFull 调用更新。
+//     或成功的 TierSoft/TierFull 调用更新。并发模型：与 Compactor 接口的整体约定一致，
+//     本类型仅被引擎主循环单 goroutine 调用（SetLastSummary/SetLastAnchors 仅供测试使用），故不加锁。
 //   - 阈值字段：分级触发档位，默认 0.60/0.70/0.80/0.95，可按模型特性调整。
 type ProgressiveCompactor struct {
 	Provider        Summarizer

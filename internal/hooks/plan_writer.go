@@ -2,7 +2,7 @@
 // 本文件实现 FilePlanWriter，在每次 plan_write 工具成功写入后，
 // 将当前 PlanItem 列表序列化为 Markdown 格式并覆写固定路径的计划文件。
 // 路径策略：git 项目写入 workDir/.harness9/plans/；否则写入 homeDir/.harness9/plans/。
-// FilePlanWriter 实现了 planning.PlanWriter 接口，通过 tools.WithPlanWriter 注入 TodoWriteTool。
+// FilePlanWriter 实现了 planning.PlanWriter 接口，通过 tools.WithPlanWriter 注入 PlanWriteTool。
 package hooks
 
 import (

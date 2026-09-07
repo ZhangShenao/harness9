@@ -43,10 +43,10 @@ harness9 的核心是一个**标准 ReAct 循环**引擎，每个 Turn 执行一
 | `AgentEngine.RunStream` | `internal/engine/stream.go` | 流式 ReAct 主循环，逐 token 输出 |
 | `engine.Event` | `internal/engine/stream.go` | 引擎面向客户端的流式事件类型 |
 | `runLoop 阶段化实现` | `internal/engine/loop_phases.go` | 主循环各阶段私有方法：初始化 / Turn 前置 / 预处理 / 生成 / 停滞检测 / Observation 注入 / 收尾 |
-| `With* 配置选项` | `internal/engine/options.go` | 函数式选项与运行期 `SetSession` / `SetPlanMode` |
+| `With* 配置选项` | `internal/engine/options.go` | 函数式选项与运行期 `SetSession` |
 | `generateWithRetry` | `internal/engine/retry.go` | LLM 调用双档重试（默认预算 / 网络传输预算）+ 网络错误分类 |
 | `历史加载与持久化` | `internal/engine/history.go` | Session 历史加载 / 保存、system prompt 构建、压缩适配 |
-| `Plan Mode 过滤` | `internal/engine/planmode.go` | 只读工具白名单、规划前缀、进展工具与 nudge 判定 |
+| `nudge 注入与停滞检测` | `internal/engine/nudge.go` | appendUserNudge（记忆/停滞 nudge 与 Plan 注入共用）+ 进展工具集判定 |
 | `executeTools` | `internal/engine/tools_exec.go` | 同 Turn 多工具并发调度（信号量 + 每工具独立超时） |
 | `env` | `internal/env/env.go` | 基于 .env 文件的环境变量配置加载 |
 
@@ -191,7 +191,7 @@ Turn 2:
 循环由 `runLoop` 编排器（`agent_loop.go`）按阶段调度，各阶段实现为 `loop_phases.go` 中的独立私有方法，共享一个聚合交互状态的 `loopContext`：
 
 ```
-beginInteraction      初始化：observer 接入、状态快照、Todo 恢复、Plan 前缀、历史加载
+beginInteraction      初始化：observer 接入、状态快照、Plan 恢复、历史加载
 for {
     beginTurn          Turn 计数 + 双重终止判定（MaxTurns / ctx 取消）
     prepareTurnInput   工具过滤 + 压缩检查 + token 估算上报 + nudge 注入
@@ -554,19 +554,22 @@ eng := engine.NewAgentEngine(p, r, workDir,
 
 | 选项 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `WithMaxTurns(n)` | `int` | 50 | 单次 Run 最大 Turn 数，0 = 不限制 |
+| `WithMaxTurns(n)` | `int` | 500 | 单次 Run 最大 Turn 数，0 = 不限制 |
 | `WithToolTimeout(d)` | `time.Duration` | 60s | 单个工具执行超时，0 = 使用原始 context |
 | `WithMaxConcurrentTools(n)` | `int` | 0 | 同一 Turn 内最大并发工具数，0 = 不限制 |
 | `WithSession(s)` | `memory.Session` | nil | 注入会话存储，启用历史消息持久化 |
 | `WithCompactor(c)` | `memory.Compactor` | nil | 注入上下文压缩器，控制上下文窗口大小 |
 | `WithContextWindow(n)` | `int` | 0 | 模型 context window（tokens），用于 TUI token 使用率展示 |
 | `WithPromptBuilder(pb)` | `PromptBuilder` | nil | 自定义 system prompt 构建器，nil 时使用内置默认文案 |
-| `WithPlanMode(mode)` | `planning.PlanMode` | Default | 初始执行模式；可运行时通过 `SetPlanMode` 更新 |
-| `WithTodoStore(s)` | `*planning.TodoStore` | nil | 绑定任务列表，启用跨会话 todo 持久化 |
+| `WithPlanStore(s)` | `*planning.PlanStore` | nil | 绑定计划存储：启动时从 Session 恢复、plan_write 写时检查点、每轮活跃 Plan 注入发送视图 |
+| `WithStallNudge(n, text)` | `int, string` | 0, "" | 连续 n 轮无进展工具调用时注入一次停滞提示，0 关闭 |
+| `WithGenerateRetry(n, base)` | `int, time.Duration` | 3, 1s | LLM 生成调用应用层重试（含流式中途断连） |
+| `WithNetworkRetry(n, base)` | `int, time.Duration` | 6, 5s | 网络传输层错误（TLS/DNS/连接建立）独立重试预算 |
+| `WithPermissionMode(m)` | `PermissionMode` | Default | 全局权限策略（Default/AutoApprove/ReadOnly/BypassAll） |
 | `WithEngineObserver(o)` | `EngineObserver` | noopObserver | 注入生命周期观察者（OTEL Tracing 等），nil 时退化为 noop |
 | `WithMemoryNudge(n, text)` | `int, string` | 0, "" | 每隔 n 轮向防御性副本注入长期记忆提示，0 关闭 |
 
-运行时可通过 `eng.SetSession(sess)` 切换会话，`eng.SetPlanMode(mode)` 切换执行模式（均并发安全，内部使用 `sync.RWMutex`，但对当前正在运行的 `runLoop` 无影响）。
+运行时可通过 `eng.SetSession(sess)` 切换会话（并发安全，内部使用 `sync.RWMutex`，但对当前正在运行的 `runLoop` 无影响）。
 
 **双模式调用：**
 
@@ -720,10 +723,10 @@ Turn 2:
 | 限制 | 当前状态 | 演进方向 |
 |------|---------|---------|
 | **上下文窗口控制** | 已实现 `SummarizationCompactor`（默认，LLM 摘要 + 增量更新）、`TokenBudgetCompactor`（回退）、`SlidingWindowCompactor`（消息数窗口） | 进一步优化摘要质量；支持自定义摘要模板 |
-| **会话历史持久化** | 已实现 SQLiteSession（WAL 模式，`~/.harness9/sessions.db`）+ TodoStore 跨会话持久化 | 多工作目录隔离；会话标签与搜索（FTS5） |
+| **会话历史持久化** | 已实现 SQLiteSession（WAL 模式，`~/.harness9/sessions.db`）+ PlanStore 跨会话持久化（session_plans 表） | 多工作目录隔离；会话标签与搜索（FTS5） |
 | **流式输出** | 已实现 `RunStream` + `GenerateStream`，支持逐 token delta + EventTokenUpdate/EventCompaction | 扩展 SSE HTTP 端点，对接外部实时推送渠道 |
-| **Planning** | 已实现 Plan Mode + TodoStore + 自动续跑 + 停滞检测 | PlanModeAutoEdit 逐步确认编辑模式 |
-| **权限控制** | Plan Mode 提供工具层只读约束 | 工具执行前统一 PermissionChecker，支持交互式确认 |
+| **Planning** | 已实现原生规划（PlanStore + plan_write 写时检查点 + 压缩免疫 + 子代理隔离）+ 自动续跑 + 停滞检测 | 计划模板库；跨会话计划合并 |
+| **权限控制** | 已实现 HookDecision（allow/deny/ask）+ PermissionHook JSON 白名单 + TUI 五选项审批对话框 | 工具执行前统一 PermissionChecker，支持更细粒度规则 |
 | **Hook 系统** | 无 | PreToolUse / PostToolUse / Stop / TurnComplete 事件钩子 |
 | **多 Agent 编排** | 单 Agent 模式 | 子 Agent 调度、并行 Agent、专用角色 Agent |
 

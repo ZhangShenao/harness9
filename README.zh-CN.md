@@ -63,11 +63,11 @@ harness9 --version
 - **[Long-Term Memory](https://zhangshenao.github.io/harness9/zh/docs/long-term-memory)** —— 跨会话记忆持久化到 SQLite + FTS5，MEMORY.md 物化视图实时注入 System Prompt。
 - **[Agent Skills](https://zhangshenao.github.io/harness9/zh/docs/agent-skills)** —— Progressive Disclosure：领域知识按需加载，System Prompt 始终精简。
 - **[Human-in-the-Loop 权限控制](https://zhangshenao.github.io/harness9/zh/docs/human-in-the-loop)** —— 规则引擎自动评估风险，只有真正需要人类判断的操作才会暂停审批。
-- **[Planning 模块](https://zhangshenao.github.io/harness9/zh/docs/planning)** —— Plan Mode 在工具层强制先规划后执行，配合停滞检测。
+- **[Planning 模块](https://zhangshenao.github.io/harness9/zh/docs/planning)** —— 规划是 Agent 原生能力：LLM 通过 `plan_write` 自主规划复杂任务，配合写时检查点、压缩免疫与停滞检测。
 - **[文件系统能力](https://zhangshenao.github.io/harness9/zh/docs/file-system)** —— OffloadHook 把超大工具输出转存到磁盘，FilePlanWriter 把计划持久化为 markdown。
 - **[Sub-Agent 子代理委派](https://zhangshenao.github.io/harness9/zh/docs/sub-agent)** —— 把边界清晰的子任务委派给受限工具集的独立子代理。
 - **[Observability](https://zhangshenao.github.io/harness9/zh/docs/eval)** —— OpenTelemetry Span + Metrics 贯穿引擎、LLM 调用与工具执行，开箱支持接入 Langfuse/Grafana/Jaeger。
-- **[Test & Eval](https://zhangshenao.github.io/harness9/zh/docs/eval)** —— 确定性 `ScriptedProvider` + 断言体系 + 22 用例黄金数据集，CI 质量门禁。
+- **[Test & Eval](https://zhangshenao.github.io/harness9/zh/docs/eval)** —— 确定性 `ScriptedProvider` + 断言体系 + 24 用例黄金数据集，CI 质量门禁。
 - **[Sandbox](https://zhangshenao.github.io/harness9/zh/docs/sandbox)** —— 默认在加固过的 Docker 容器内执行所有工具调用，Docker 不可用时自动降级为本地执行。
 - **[AutoDev（`/autodev`）](https://zhangshenao.github.io/harness9/zh/docs/autodev)** —— 自举开发闭环：需求澄清 → Spec 确认 → 委派 dev sub-agent 编码、测试、创建 PR。
 - **[MCP 工具集成](https://zhangshenao.github.io/harness9/zh/docs/mcp)** —— 通过 `.mcp.json` 接入任意 Model Context Protocol Server，工具透明注入注册表。
@@ -92,14 +92,14 @@ harness9 --version
 | **Hooks** | 工具拦截器：HookRegistry（洋葱模型）+ OffloadHook + FilePlanWriter + DangerHook |
 | **Permission** | Human-in-the-Loop：PermissionHook（JSON 规则）+ 五选项审批对话框 + 动态白名单 + 敏感路径硬保护 |
 | **Sub-Agent** | 子代理委派：内置 general-purpose 子代理、文件式定义（`.harness9/agents/*.md`）、前台/后台 `task` 工具、`@agent` 直跑 |
-| **Planning** | Plan Mode、TodoStore、`todo_write` 工具、工具层权限过滤、自动续跑 + 停滞检测 |
+| **Planning** | 原生规划能力：PlanStore（Session 级状态机）、`plan_write` 工具（防作弊校验）、写时检查点、压缩免疫、子代理隔离、自动续跑 + 停滞检测 |
 | **Memory** | 会话持久化（SQLite WAL）、SummarizationCompactor（默认）+ TokenBudgetCompactor（回退） |
 | **LTM** | 长期记忆存储（SQLite + FTS5）、MEMORY.md 物化视图、Extractor、Phase 3 接缝（Provider/Embedder/Consolidator） |
-| **Context** | System Prompt 组装：基础 + AGENTS.md + Skills 索引 + todo/offload/sandbox/LTM 段落 |
+| **Context** | System Prompt 组装：基础 + AGENTS.md + Skills 索引 + planning/offload/sandbox/LTM 段落 |
 | **Skills** | Skills 解析、索引、按需加载（`use_skill` 工具） |
 | **Provider** | LLM 统一接口，OpenAI/Anthropic 适配器，实际 Token 用量提取 |
 | **Schema** | 跨组件共享的核心数据类型（Message、ToolCall、Usage 等） |
-| **Tools** | 工具注册表 + 内置工具（bash、read_file、write_file、edit_file、todo_write、memory_write/search、web_search/web_fetch） |
+| **Tools** | 工具注册表 + 内置工具（bash、read_file、write_file、edit_file、plan_write、memory_write/search、web_search/web_fetch） |
 | **Sandbox** | Docker 容器级隔离：进程沙箱、Agent 级独立容器、孤儿回收；默认开启 |
 | **Observability** | OpenTelemetry 链路追踪：贯穿引擎、LLM 调用与工具执行；默认 noop |
 | **Evals** | 自动化评估框架、黄金数据集、CI 质量门禁 |

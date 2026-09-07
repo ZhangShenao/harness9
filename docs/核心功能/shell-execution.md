@@ -76,7 +76,7 @@ Footer：正常快捷键               Footer：enter 执行 / esc 取消 / ctrl
 
 | 变量 | 用途 |
 |------|------|
-| `shellStatusBarStyle` | 深绿底（#22）+ 浅绿文字（#120）状态栏，与默认灰底和 Plan Mode 橙底明确区分 |
+| `shellStatusBarStyle` | 深绿底（#22）+ 浅绿文字（#120）状态栏，与默认灰底状态栏明确区分 |
 | `shellModeTagStyle` | 输入区 `[SHELL]` 徽章：深橄榄背景（#58）+ 亮黄文字（#226） |
 | `shellModeAccentStyle` | 亮绿色（#83）accent，替换默认青色 |
 | `shellModePromptStyle` | `$` 提示符样式，预计算避免每帧 `.Bold(true)` 分配 |
