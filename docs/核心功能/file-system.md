@@ -7,7 +7,7 @@
 | 问题 | 解决方案 |
 |------|---------|
 | 工具输出过大导致 context 窗口爆炸 | OffloadHook — 自动将超阈值输出写入文件，context 中仅保留摘要引用 |
-| Agent 执行计划仅存在于内存，进程重启后丢失 | FilePlanWriter — todo_write 每次写入后同步输出 markdown 计划文件 |
+| Agent 执行计划仅存在于内存，进程重启后丢失 | FilePlanWriter — plan_write 每次写入后同步输出 markdown 计划文件 |
 | 删除会话时 offload 文件残留磁盘 | Manager.DeleteSession 级联清理 `~/.harness9/tool_results/{sessionID}/` |
 
 这三个问题通过**钩子机制**（Hooks）、**接口注入**（PlanWriter）和**选项模式**（ManagerOption）解决，各自可以独立启用或禁用，不改变引擎核心逻辑。
@@ -146,7 +146,7 @@ type OffloadHook struct {
 
 ### 4.1 设计动机
 
-Planning 模块的 `TodoStore` 将任务列表保存在内存（每次会话启动时从 SQLite 恢复）。但用户往往希望将计划以**人类可读的格式**保存到项目目录，方便：
+Planning 模块的 `PlanStore` 将执行计划保存在内存（每次会话启动时从 SQLite `session_plans` 恢复）。但用户往往希望将计划以**人类可读的格式**保存到项目目录，方便：
 - 在 IDE 或文本编辑器中查看当前执行进度
 - 在 git 仓库中追踪 AI 执行的任务历史
 
@@ -155,14 +155,14 @@ Planning 模块的 `TodoStore` 将任务列表保存在内存（每次会话启�
 ```go
 // internal/planning/plan_writer.go
 type PlanWriter interface {
-    Write(todos []TodoItem) error
+    Write(items []PlanItem) error
 }
 ```
 
 接口定义在 `planning` 包（使用者侧），避免 `tools → hooks → tools` 的循环导入：
 
 ```
-tools.TodoWriteTool
+tools.PlanWriteTool
   └─ planning.PlanWriter（接口）
        └─ hooks.FilePlanWriter（实现）
 ```
@@ -201,19 +201,19 @@ updated: 2026-05-22T15:30:00+08:00
 
 状态标记映射：
 
-| TodoStatus | 标记 |
+| PlanStatus | 标记 |
 |------------|------|
 | pending    | `[ ]` |
 | in_progress | `[>]` |
 | completed  | `[x]` |
 | cancelled  | `[-]` |
 
-**Fail-open：** `Write` 失败时，`todo_write` 工具仅记录日志，不中断 agent loop：
+**Fail-open：** `Write` 失败时，`plan_write` 工具仅记录日志，不中断 agent loop：
 
 ```go
-// tools/todo_write.go
+// tools/plan_write.go
 if err := t.planWriter.Write(current); err != nil {
-    log.Print(logfmt.FormatMsg("todo_write", fmt.Sprintf("写入计划文件失败: %v", err)))
+    log.Print(logfmt.FormatMsg("plan_write", fmt.Sprintf("写入计划文件失败: %v", err)))
 }
 ```
 
@@ -222,7 +222,7 @@ if err := t.planWriter.Write(current); err != nil {
 通过选项模式注入，`nil` 时跳过（无操作）：
 
 ```go
-tools.NewTodoWriteTool(todoStore, tools.WithPlanWriter(planWriter))
+tools.NewPlanWriteTool(planStore, tools.WithPlanWriter(planWriter))
 ```
 
 ---
@@ -280,13 +280,13 @@ func (m *Manager) DeleteSession(ctx context.Context, id string) error {
 LLM 需要完整内容时：
     read_file({path, offset, limit}) → 分页返回文件内容
 
-todo_write 每次写入时：
-    TodoStore.Write → planWriter.Write
+plan_write 每次写入时：
+    PlanStore.Write → planWriter.Write
                       └─ os.WriteFile({workDir}/.harness9/plans/{ts}-{sid}.md)
 
 会话删除时：
     Manager.DeleteSession
-        ├─ SQL DELETE（级联删除 messages、todos）
+        ├─ SQL DELETE（级联删除 messages、session_plans）
         └─ os.RemoveAll(~/.harness9/tool_results/{sessionID}/)
 ```
 

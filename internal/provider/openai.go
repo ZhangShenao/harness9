@@ -77,9 +77,6 @@ func WithIncludeReasoning() OpenAIOption {
 
 // baseURLEnablesReasoning 判断给定的 base URL 是否为需要 include_reasoning=true
 // 才会暴露推理内容的 OpenAI 兼容网关（OpenRouter、Requesty）。
-// baseURLEnablesReasoning reports whether the base URL is an OpenAI-compatible
-// gateway (OpenRouter, Requesty) that needs include_reasoning=true to surface
-// reasoning content in delta.reasoning.
 func baseURLEnablesReasoning(baseURL string) bool {
 	return strings.Contains(baseURL, "openrouter") || strings.Contains(baseURL, "requesty")
 }
@@ -108,7 +105,6 @@ func NewOpenAIProvider(model string, opts ...OpenAIOption) (*OpenAIProvider, err
 		model: model,
 		// OpenRouter 和 Requesty 需要 include_reasoning=true 才会在 delta.reasoning 中返回推理内容。
 		// 两者均为 OpenAI 兼容网关，使用相同的 reasoning 字段；其他后端不含此参数时默认忽略，不产生副作用。
-		// OpenRouter and Requesty both expose reasoning via delta.reasoning when include_reasoning=true.
 		includeReasoning: baseURLEnablesReasoning(baseURL),
 	}
 	for _, opt := range opts {

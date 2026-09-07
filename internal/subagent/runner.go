@@ -99,12 +99,15 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 		effectiveBaseTools = wrapToolsWithSandbox(r.baseTools, sandboxEnv, r.workDir)
 	}
 
-	// 子代理独立 PlanStore（Spec §7 隔离）：与父代理零共享，委派结束即随
+	// childPlanStore + plan_write 追加到工具集副本末尾。显式在独立副本上 append
+	//（effectiveBaseTools 的 cap==len，append 必然分配新数组），确保多个并发 Run
+	//（后台子代理并行）之间不共享任何可变底层数组，也绝不污染 r.baseTools。
+	// 独立 PlanStore（Spec §7 隔离）：与父代理零共享，委派结束即随
 	// MemorySession 丢弃，不写主代理的 SQLite/markdown 审计文件。
 	// 独立 plan_write 实例绑定 childPlanStore 后追加到工具集，使子代理具备
 	// 与主代理相同的原生规划能力（双向隔离：子看不到父 Plan，父不受子写入影响）。
 	childPlanStore := planning.NewPlanStore()
-	effectiveBaseTools = append(effectiveBaseTools, tools.NewPlanWriteTool(childPlanStore))
+	effectiveBaseTools = append(append([]tools.BaseTool{}, effectiveBaseTools...), tools.NewPlanWriteTool(childPlanStore))
 
 	childReg, err := r.buildChildRegistry(def, effectiveBaseTools)
 	if err != nil {

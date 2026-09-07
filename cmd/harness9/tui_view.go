@@ -8,10 +8,9 @@
 //   - renderToolProgress()   — 工具执行 Spinner 进度行
 //   - renderSubAgentProgress() — 子代理流式进度块
 //   - renderStatusBar()      — 常驻状态栏（model/mode/workdir/token）
-//   - renderPlanReviewDialog() — Plan Mode 审查对话框（模态）
 //   - renderApprovalDialog() — 工具审批对话框（模态）
 //   - renderTaskPanel()      — 后台任务面板（模态）
-//   - renderInput()          — 底部输入框（含 Shell/Plan 模式适配）
+//   - renderInput()          — 底部输入框（含 Shell 模式适配）
 //   - renderFooter()         — 底部快捷键提示行
 //   - renderPlanLines()      — todo 任务列表快照行
 //   - accentStyle()          — 当前模式对应的强调色

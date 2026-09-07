@@ -100,6 +100,9 @@ func marshalTags(tags []string) string {
 	return string(b)
 }
 
+// newID 生成随机 UUID v4 作为记忆条目主键。
+// crypto/rand.Read 自 Go 1.24 起契约保证"永不返回 error 且总是填满切片"，
+// 因此此处忽略返回的 error 是安全的。
 func newID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])

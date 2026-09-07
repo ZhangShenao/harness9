@@ -44,10 +44,10 @@ The core of harness9 is a **standard ReAct loop** engine: each Turn executes one
 | `AgentEngine.RunStream` | `internal/engine/stream.go` | Streaming ReAct main loop, token-by-token output |
 | `engine.Event` | `internal/engine/stream.go` | Client-facing streaming event type from the engine |
 | `runLoop phased implementation` | `internal/engine/loop_phases.go` | Private methods for each loop phase: initialization / turn preamble / preprocessing / generation / stall detection / Observation injection / teardown |
-| `With* options` | `internal/engine/options.go` | Functional options and runtime `SetSession` / `SetPlanMode` |
+| `With* options` | `internal/engine/options.go` | Functional options and runtime `SetSession` |
 | `generateWithRetry` | `internal/engine/retry.go` | Dual-tier LLM retry (default budget / network-transport budget) + network error classification |
 | `History load & persist` | `internal/engine/history.go` | Session history load/save, system prompt building, compaction adapter |
-| `Plan Mode filtering` | `internal/engine/planmode.go` | Read-only tool whitelist, planning prefix, progress-tool & nudge detection |
+| `Nudge injection & stall detection` | `internal/engine/nudge.go` | appendUserNudge (shared by memory/stall nudges and plan injection) + progress-tool set detection |
 | `executeTools` | `internal/engine/tools_exec.go` | Concurrent tool scheduling within a turn (semaphore + per-tool timeout) |
 | `env` | `internal/env/env.go` | Environment variable configuration loading based on .env files |
 
@@ -192,8 +192,8 @@ Turn 2:
 The loop is orchestrated by the `runLoop` orchestrator (`agent_loop.go`), which dispatches to independent private methods defined in `loop_phases.go`, one per phase, all sharing a `loopContext` that aggregates the interaction state:
 
 ```
-beginInteraction      Initialization: observer hookup, state snapshot, todo restore,
-                      Plan Mode prefix, history loading
+beginInteraction      Initialization: observer hookup, state snapshot, plan restore,
+                      history loading
 for {
     beginTurn          Turn counter + dual termination checks (MaxTurns / ctx cancel)
     prepareTurnInput   Tool filtering + compaction check + token estimate report + nudge injection
@@ -560,19 +560,22 @@ eng := engine.NewAgentEngine(p, r, workDir,
 
 | Option | Type | Default | Description |
 |------|------|--------|------|
-| `WithMaxTurns(n)` | `int` | 50 | Maximum number of Turns per Run, 0 = unlimited |
+| `WithMaxTurns(n)` | `int` | 500 | Maximum number of Turns per Run, 0 = unlimited |
 | `WithToolTimeout(d)` | `time.Duration` | 60s | Timeout for a single tool execution, 0 = use the original context |
 | `WithMaxConcurrentTools(n)` | `int` | 0 | Maximum concurrent tools within the same Turn, 0 = unlimited |
 | `WithSession(s)` | `memory.Session` | nil | Injects session storage, enabling persistence of historical messages |
 | `WithCompactor(c)` | `memory.Compactor` | nil | Injects a context compactor, controlling context window size |
 | `WithContextWindow(n)` | `int` | 0 | Model's context window (tokens), used for TUI token usage display |
 | `WithPromptBuilder(pb)` | `PromptBuilder` | nil | Custom system prompt builder; when nil, the built-in default text is used |
-| `WithPlanMode(mode)` | `planning.PlanMode` | Default | Initial execution mode; can be updated at runtime via `SetPlanMode` |
-| `WithTodoStore(s)` | `*planning.TodoStore` | nil | Binds a todo list, enabling cross-session todo persistence |
+| `WithPlanStore(s)` | `*planning.PlanStore` | nil | Binds a plan store: restored from the Session at startup, write-time checkpointing on plan_write, active plan injected into the sent view each turn |
+| `WithStallNudge(n, text)` | `int, string` | 0, "" | Injects a one-off stall hint after n consecutive turns without progress-tool calls, 0 disables it |
+| `WithGenerateRetry(n, base)` | `int, time.Duration` | 3, 1s | Application-level retry for LLM generation calls (including mid-stream disconnects) |
+| `WithNetworkRetry(n, base)` | `int, time.Duration` | 6, 5s | Independent retry budget for transport-layer errors (TLS/DNS/connection setup) |
+| `WithPermissionMode(m)` | `PermissionMode` | Default | Global permission policy (Default/AutoApprove/ReadOnly/BypassAll) |
 | `WithEngineObserver(o)` | `EngineObserver` | noopObserver | Injects a lifecycle observer (OTEL Tracing, etc.); degrades to noop if nil |
 | `WithMemoryNudge(n, text)` | `int, string` | 0, "" | Injects a Long-Term Memory hint into the defensive copy every n turns, 0 disables it |
 
-At runtime, `eng.SetSession(sess)` can switch sessions and `eng.SetPlanMode(mode)` can switch execution mode (both are concurrency-safe, using `sync.RWMutex` internally, but have no effect on a `runLoop` currently in progress).
+At runtime, `eng.SetSession(sess)` can switch sessions (concurrency-safe, using `sync.RWMutex` internally, but has no effect on a `runLoop` currently in progress).
 
 **Dual-mode invocation:**
 
@@ -726,10 +729,10 @@ Both Providers' message conversion logic is factored out into `convertMessages` 
 | Limitation | Current Status | Direction of Evolution |
 |------|---------|---------|
 | **Context window control** | Implemented: `SummarizationCompactor` (default, LLM summarization + incremental update), `TokenBudgetCompactor` (fallback), `SlidingWindowCompactor` (message-count window) | Further optimize summary quality; support custom summary templates |
-| **Session history persistence** | Implemented: SQLiteSession (WAL mode, `~/.harness9/sessions.db`) + TodoStore cross-session persistence | Multi-working-directory isolation; session tagging and search (FTS5) |
+| **Session history persistence** | Implemented: SQLiteSession (WAL mode, `~/.harness9/sessions.db`) + PlanStore cross-session persistence (`session_plans` table) | Multi-working-directory isolation; session tagging and search (FTS5) |
 | **Streaming output** | Implemented: `RunStream` + `GenerateStream`, supporting token-by-token deltas + EventTokenUpdate/EventCompaction | Extend to an SSE HTTP endpoint, connecting to external real-time push channels |
-| **Planning** | Implemented: Plan Mode + TodoStore + auto-continuation + stagnation detection | PlanModeAutoEdit for step-by-step confirmed edit mode |
-| **Permission control** | Plan Mode provides tool-layer read-only constraints | Unified PermissionChecker before tool execution, supporting interactive confirmation |
+| **Planning** | Implemented: native planning (PlanStore + plan_write write-time checkpointing + compaction immunity + sub-agent isolation) + auto-continuation + stagnation detection | Plan template library; cross-session plan merging |
+| **Permission control** | Implemented: HookDecision (allow/deny/ask) + PermissionHook JSON allowlist + 5-option TUI approval dialog | Unified PermissionChecker before tool execution, supporting finer-grained rules |
 | **Hook system** | None | PreToolUse / PostToolUse / Stop / TurnComplete event hooks |
 | **Multi-Agent orchestration** | Single-Agent mode | Sub-Agent scheduling, parallel Agents, dedicated role Agents |
 

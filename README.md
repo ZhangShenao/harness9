@@ -63,11 +63,11 @@ Each feature below links to its full technical writeup on the [documentation sit
 - **[Long-Term Memory](https://zhangshenao.github.io/harness9/docs/long-term-memory)** — cross-session memory persisted to SQLite + FTS5, MEMORY.md materialized view injected into every prompt.
 - **[Agent Skills](https://zhangshenao.github.io/harness9/docs/agent-skills)** — Progressive Disclosure: domain knowledge loaded on demand, keeping the system prompt lean.
 - **[Human-in-the-Loop permissions](https://zhangshenao.github.io/harness9/docs/human-in-the-loop)** — a rule engine auto-classifies risk; only genuinely risky actions pause for approval.
-- **[Planning module](https://zhangshenao.github.io/harness9/docs/planning)** — Plan Mode enforces plan-then-execute at the tool layer, with a stagnation detector.
+- **[Planning module](https://zhangshenao.github.io/harness9/docs/planning)** — planning is a native capability: the LLM plans complex tasks via `plan_write` on its own, with checkpoint persistence, compaction immunity, and a stagnation detector.
 - **[File system capabilities](https://zhangshenao.github.io/harness9/docs/file-system)** — OffloadHook moves oversized tool output to disk; FilePlanWriter persists plans as markdown.
 - **[Sub-Agent delegation](https://zhangshenao.github.io/harness9/docs/sub-agent)** — delegate well-scoped subtasks to isolated sub-agents with restricted tool sets.
 - **[Observability](https://zhangshenao.github.io/harness9/docs/eval)** — OpenTelemetry spans + metrics across the engine, LLM calls, and tool execution; ships with a Langfuse/Grafana/Jaeger-ready exporter.
-- **[Test & Eval](https://zhangshenao.github.io/harness9/docs/eval)** — deterministic `ScriptedProvider` + assertion framework + a 16-case golden dataset gating CI.
+- **[Test & Eval](https://zhangshenao.github.io/harness9/docs/eval)** — deterministic `ScriptedProvider` + assertion framework + a 24-case golden dataset gating CI.
 - **[Sandbox](https://zhangshenao.github.io/harness9/docs/sandbox)** — every tool call runs inside a locked-down Docker container by default, with automatic fallback to local execution.
 - **[AutoDev (`/autodev`)](https://zhangshenao.github.io/harness9/docs/autodev)** — a self-hosted development loop: clarify requirements → confirm a spec → delegate to a dev sub-agent that codes, tests, and opens the PR.
 - **[MCP integration](https://zhangshenao.github.io/harness9/docs/mcp)** — connect any Model Context Protocol server via `.mcp.json`; tools appear transparently in the registry.
@@ -92,14 +92,14 @@ Each feature below links to its full technical writeup on the [documentation sit
 | **Hooks** | Tool interceptors: HookRegistry (onion model) + OffloadHook + FilePlanWriter + DangerHook. |
 | **Permission** | Human-in-the-loop: PermissionHook (JSON rules) + 5-option approval dialog + dynamic allowlist + hard-protected sensitive paths. |
 | **Sub-Agent** | Task delegation: built-in general-purpose sub-agent, file-defined agents (`.harness9/agents/*.md`), foreground/background `task` tool, `@agent` direct invocation. |
-| **Planning** | Plan Mode, TodoStore, `todo_write` tool, tool-layer permission filtering, auto-continue + stagnation detection. |
+| **Planning** | Native planning capability: PlanStore (session-level state machine), `plan_write` tool with anti-cheat validation, write-time checkpointing, compaction immunity, sub-agent isolation, auto-continue + stagnation detection. |
 | **Memory** | Session persistence (SQLite WAL), SummarizationCompactor (default) + TokenBudgetCompactor (fallback). |
 | **LTM** | Long-term memory store (SQLite + FTS5), MEMORY.md materialized view, extractor, Phase 3 seams (Provider/Embedder/Consolidator). |
-| **Context** | System prompt assembly: base + AGENTS.md + skills index + todo/offload/sandbox/LTM sections. |
+| **Context** | System prompt assembly: base + AGENTS.md + skills index + planning/offload/sandbox/LTM sections. |
 | **Skills** | Skill parsing, indexing, on-demand loading (`use_skill` tool). |
 | **Provider** | Unified LLM interface, OpenAI/Anthropic adapters, real token usage extraction. |
 | **Schema** | Shared core data types (Message, ToolCall, Usage, etc.). |
-| **Tools** | Tool registry + built-ins (bash, read_file, write_file, edit_file, todo_write, memory_write/search, web_search/web_fetch). |
+| **Tools** | Tool registry + built-ins (bash, read_file, write_file, edit_file, plan_write, memory_write/search, web_search/web_fetch). |
 | **Sandbox** | Docker-level isolation: process sandboxing, per-agent containers, orphan reaping; on by default. |
 | **Observability** | OpenTelemetry tracing/metrics across engine, LLM calls, and tools; noop by default. |
 | **Evals** | Automated evaluation framework, golden dataset, CI quality gate. |

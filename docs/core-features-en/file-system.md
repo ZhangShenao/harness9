@@ -7,7 +7,7 @@ The file system capability is an **infrastructure enhancement** layered on top o
 | Problem | Solution |
 |------|---------|
 | Oversized tool output blows up the context window | OffloadHook — automatically writes output exceeding a threshold to a file, keeping only a summary reference in context |
-| The Agent's execution plan exists only in memory and is lost on process restart | FilePlanWriter — writes a markdown plan file in sync with every `todo_write` call |
+| The Agent's execution plan exists only in memory and is lost on process restart | FilePlanWriter — writes a markdown plan file in sync with every `plan_write` call |
 | Offload files remain on disk after a session is deleted | Manager.DeleteSession cascades cleanup of `~/.harness9/tool_results/{sessionID}/` |
 
 These three problems are solved via the **hook mechanism** (Hooks), **interface injection** (PlanWriter), and the **options pattern** (ManagerOption), each of which can be independently enabled or disabled without changing the engine's core logic.
@@ -146,7 +146,7 @@ Example: read_file({"path": "/path/to/offload/file.txt", "offset": 8192, "limit"
 
 ### 4.1 Design Motivation
 
-The Planning module's `TodoStore` keeps the task list in memory (restored from SQLite each time a session starts). However, users often want the plan saved to the project directory in a **human-readable format**, to make it convenient to:
+The Planning module's `PlanStore` keeps the execution plan in memory (restored from the SQLite `session_plans` table each time a session starts). However, users often want the plan saved to the project directory in a **human-readable format**, to make it convenient to:
 - View the current execution progress in an IDE or text editor
 - Track the AI's task execution history in a git repository
 
@@ -155,14 +155,14 @@ The Planning module's `TodoStore` keeps the task list in memory (restored from S
 ```go
 // internal/planning/plan_writer.go
 type PlanWriter interface {
-    Write(todos []TodoItem) error
+    Write(items []PlanItem) error
 }
 ```
 
 The interface is defined in the `planning` package (the consumer side), avoiding a `tools → hooks → tools` circular import:
 
 ```
-tools.TodoWriteTool
+tools.PlanWriteTool
   └─ planning.PlanWriter (interface)
        └─ hooks.FilePlanWriter (implementation)
 ```
@@ -201,19 +201,19 @@ updated: 2026-05-22T15:30:00+08:00
 
 Status marker mapping:
 
-| TodoStatus | Marker |
+| PlanStatus | Marker |
 |------------|------|
 | pending    | `[ ]` |
 | in_progress | `[>]` |
 | completed  | `[x]` |
 | cancelled  | `[-]` |
 
-**Fail-open:** when `Write` fails, the `todo_write` tool only logs it, without interrupting the agent loop:
+**Fail-open:** when `Write` fails, the `plan_write` tool only logs it, without interrupting the agent loop:
 
 ```go
-// tools/todo_write.go
+// tools/plan_write.go
 if err := t.planWriter.Write(current); err != nil {
-    log.Print(logfmt.FormatMsg("todo_write", fmt.Sprintf("failed to write plan file: %v", err)))
+    log.Print(logfmt.FormatMsg("plan_write", fmt.Sprintf("failed to write plan file: %v", err)))
 }
 ```
 
@@ -222,7 +222,7 @@ if err := t.planWriter.Write(current); err != nil {
 Injected via the options pattern; skipped (no-op) when `nil`:
 
 ```go
-tools.NewTodoWriteTool(todoStore, tools.WithPlanWriter(planWriter))
+tools.NewPlanWriteTool(planStore, tools.WithPlanWriter(planWriter))
 ```
 
 ---
@@ -280,8 +280,8 @@ User input → engine.runLoop
 When the LLM needs the full content:
     read_file({path, offset, limit}) → returns file content in pages
 
-Each time todo_write writes:
-    TodoStore.Write → planWriter.Write
+Each time plan_write writes:
+    PlanStore.Write → planWriter.Write
                       └─ os.WriteFile({workDir}/.harness9/plans/{ts}-{sid}.md)
 
 When a session is deleted:

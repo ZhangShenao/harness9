@@ -9,7 +9,7 @@
 //	retry.go       — LLM 生成调用的双档重试策略（默认预算 / 网络预算）
 //	loop_phases.go — runLoop 的阶段化实现（初始化 / Turn 前置 / 预处理 / 生成 / 注入 / 收尾）
 //	history.go     — 会话历史加载、持久化与压缩适配
-//	planmode.go    — Plan Mode 工具白名单、prompt 前缀与 nudge 工具集判定
+//	nudge.go       — 记忆/停滞 nudge 注入与进展工具集判定（原 planmode.go，Plan Mode 已移除）
 //	tools_exec.go  — 同 Turn 多工具的并发调度
 //	stream.go      — 流式入口 RunStream 与事件类型定义
 //	compact.go     — TUI /compact 触发的手动强制压缩

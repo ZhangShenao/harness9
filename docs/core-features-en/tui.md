@@ -369,7 +369,6 @@ glamour.NewTermRenderer(
 | `!` (first character) | Toggles Shell mode in real time (status bar/input area visual change, no Enter needed) | Ignored |
 | `Esc` | In Shell mode: clears the input box, exits Shell mode | Ignored |
 | `Tab` | Cycles through built-in command + Skills completion (built-in commands take priority) | Ignored |
-| `Shift-Tab` | Cycles through Plan Mode (Default → Plan → AutoEdit → Default) | Ignored |
 | `Ctrl-C` / `Ctrl-D` | Exits the TUI | Calls `cancelFn()` to interrupt the Agent; clears autoExecuting |
 | Mouse wheel up / `PgUp` / `Ctrl-↑` | Scrolls up | Same as idle |
 | Mouse wheel down / `PgDn` / `Ctrl-↓` | Scrolls down, returns to auto-scroll at the bottom | Same as idle |
@@ -408,13 +407,15 @@ enter send  / skill commands  ↑↓ scroll  end back to bottom (42%)  ctrl+c qu
 
 ### Built-in Commands
 
-The TUI has four built-in slash commands, processed before Skills:
+The TUI has six built-in slash commands, processed before Skills:
 
 | Command | Behavior |
 |------|------|
 | `/new` | Creates a new session, replaces the bound engine, refreshes the status bar |
 | `/resume` | Lists historical sessions, enters index-selection mode |
-| `/plan [task description]` | Enters Plan Mode; sends the planning request directly if a task description is given, otherwise prompts for input |
+| `/compact` | Manually forces context compaction (runs asynchronously; a compaction notice is inserted on completion) |
+| `/tasks` | Opens the background sub-agent task panel (modal, same as Ctrl+T) |
+| `/mcp` | Opens the MCP tool panel (modal; press `e` to edit `.mcp.json`) |
 | `/exit` | Exits the TUI (equivalent to pressing Ctrl-C while idle) |
 
 ```go
@@ -515,9 +516,10 @@ All `lipgloss.Style` values are defined in a package-level `var` block, avoiding
 | `cyanStyle` | Color "81" | Default mode accent text |
 | `brandStyle` | Color "226", Bold | harness9 brand name |
 | `sepStyle` | Color "237" | Separator line |
-| `planAccentStyle` | Color "220" | Plan Mode accent text (amber) |
-| `planStatusBarStyle` | Bg "94" / Fg "220" | Plan Mode StatusBar background |
-| `planModeLabelStyle` | Color "208", Bold | Status bar `[PLAN]` label |
+| `approvalBoxStyle` | RoundedBorder / BorderForeground "160" / Width 60 | Tool approval dialog container |
+| `approvalTitleHighStyle` | Bold + Color "160" | Approval title (high risk, red) |
+| `approvalTitleMedStyle` | Bold + Color "208" | Approval title (medium risk, orange) |
+| `approvalTitleLowStyle` | Bold + Color "220" | Approval title (low risk, yellow) |
 | `thinkingHeaderStyle` | Color "238", Italic | Thinking block header (« thinking ») |
 | `thinkingLineStyle` | Color "238" | Thinking block content line (│ prefix) |
 | `thinkingEndStyle` | Color "236" | Thinking block closing line (└ separator) |

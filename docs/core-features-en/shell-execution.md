@@ -76,7 +76,7 @@ Footer: normal shortcuts         Footer: enter to execute / esc to cancel / ctrl
 
 | Variable | Purpose |
 |------|------|
-| `shellStatusBarStyle` | Dark green background (#22) + light green text (#120) status bar, clearly distinguished from the default gray background and Plan Mode orange background |
+| `shellStatusBarStyle` | Dark green background (#22) + light green text (#120) status bar, clearly distinguished from the default gray status bar |
 | `shellModeTagStyle` | `[SHELL]` badge in the input area: dark olive background (#58) + bright yellow text (#226) |
 | `shellModeAccentStyle` | Bright green (#83) accent, replacing the default cyan |
 | `shellModePromptStyle` | `$` prompt style, precomputed to avoid `.Bold(true)` allocation on every frame |
