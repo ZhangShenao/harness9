@@ -1,0 +1,29 @@
+{
+  "$schema": "https://zcode.z.ai/config.schema.json",
+  "mcp": {
+    "servers": {
+      "context7": {
+        "command": "npx",
+        "args": ["-y", "@upstash/context7-mcp"]
+      }
+    }
+  },
+  "hooks": {
+    "enabled": true,
+    "events": {
+      "PostToolUse": [
+        {
+          "matcher": "Write|Edit",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "bash \"$(git rev-parse --show-toplevel)/scripts/sync-to-obsidian.sh\"",
+              "timeoutMs": 30000,
+              "statusMessage": "Syncing Markdown to Obsidian"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
