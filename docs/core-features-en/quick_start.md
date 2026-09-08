@@ -55,6 +55,19 @@ export OPENAI_API_KEY="<your-openrouter-key>"
 export LLM_MODEL="openai/gpt-4o"
 ```
 
+### Using OrcaRouter
+
+[OrcaRouter](https://orcarouter.ai) is an OpenAI-compatible model-routing gateway: a single API key grants access to models from many upstream providers (model names keep the provider prefix, e.g. `openai/gpt-4o-mini`, `deepseek/deepseek-chat`):
+
+```bash
+export ORCAROUTER_API_KEY="sk-orca-..."
+export LLM_MODEL="openai/gpt-4o-mini"
+```
+
+The gateway URL defaults to `https://api.orcarouter.ai/v1`; override it with `ORCAROUTER_BASE_URL` for self-hosted or proxied gateways.
+
+When both `OPENAI_API_KEY` and `ORCAROUTER_API_KEY` are present, choose explicitly with `LLM_PROVIDER` (`orcarouter` or `openai`); with only an OrcaRouter key configured, OrcaRouter is selected automatically — no extra setup needed.
+
 ### Using Anthropic
 
 ```bash

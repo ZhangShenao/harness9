@@ -94,7 +94,12 @@ func NewOpenAIProvider(model string, opts ...OpenAIOption) (*OpenAIProvider, err
 	if baseURL == "" {
 		return nil, fmt.Errorf("请设置 OPENAI_BASE_URL 环境变量")
 	}
+	return newOpenAICompatProvider(apiKey, baseURL, model, opts...)
+}
 
+// newOpenAICompatProvider 是所有 OpenAI 兼容端点（OPENAI_* 环境变量、OrcaRouter 网关）
+// 的共享构造路径，统一封装认证、端点、超时/重试与 includeReasoning 白名单判断。
+func newOpenAICompatProvider(apiKey, baseURL, model string, opts ...OpenAIOption) (*OpenAIProvider, error) {
 	p := &OpenAIProvider{
 		client: openai.NewClient(
 			option.WithAPIKey(apiKey),

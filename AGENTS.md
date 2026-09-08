@@ -266,11 +266,14 @@ harness9/
 │   ├── provider/                    # 大模型接口抽象与具体厂商 SDK 实现
 │   │   ├── interface.go             # LLMProvider 接口定义（Generate + GenerateStream）
 │   │   ├── openai.go                # OpenAI 兼容 API 适配器（支持 OpenRouter / Azure）；WithIncludeReasoning + extractReasoningContent
+│   │   ├── orcarouter.go            # OrcaRouter 网关适配器（NewOrcaRouterProvider + NewFromEnv 统一装配点；ORCAROUTER_* + LLM_PROVIDER 环境变量驱动）
 │   │   ├── anthropic.go             # Anthropic 兼容 API 适配器（Messages API）；WithThinkingBudget（extended thinking）
 │   │   ├── model_limits.go          # 已知模型上下文窗口注册表 + GetModelLimits（剥离前缀，未知回退 256K）
 │   │   ├── tool_call_accumulator.go # OpenAI/Anthropic 共享的流式工具调用累积器
 │   │   ├── anthropic_thinking_test.go # WithThinkingBudget 单元测试（含 clamp 测试）
 │   │   ├── openai_reasoning_test.go # WithIncludeReasoning + extractReasoningContent + auto-detect 测试
+│   │   ├── orcarouter_test.go       # OrcaRouter 构造器与 NewFromEnv 选择规则单元测试
+│   │   ├── orcarouter_live_test.go  # OrcaRouter 真实网关集成测试（未配置 Key 自动跳过，保持 CI 密封）
 │   │   └── providertest/            # 测试基础设施（仅在 _test 编译单元中可见）
 │   │       └── mock.go              # 确定性 mock provider（NewMock / NewMockWithCallback）
 │   ├── schema/                      # 跨组件共享的核心数据类型
@@ -455,7 +458,7 @@ harness9/
 | **memory** | Context Engineering：Session 接口、Manager（SQLite CRUD + WithToolResultsDir + DeleteSession 级联 GC + DB() 访问器）、SQLiteSession（WAL + 事务）、SummarizationCompactor（默认，LLM 摘要压缩 + 增量更新 + 错误回退）、TokenBudgetCompactor（回退，80% 阈值 + 孤立工具对双向修复）、SlidingWindowCompactor（回退方案）、token 估算工具；MemoryExtractor 接口 + WithMemoryExtractor（压缩前提取钩子） | ✅ |
 | **ltm** | Long-Term Memory：Store（`long_term_memories` 表 + standalone FTS5 `memories_fts`，复用 `state.db`，Add 签名去重 / Search FTS5 强化 / SoftDelete signature=NULL / List top-N / PurgeExpired / StaleCandidates）、Precis（MEMORY.md 物化视图，top-30 渲染 + 5KB 截断）、Extractor（LLM 压缩前事实提取，fail-open，实现 MemoryExtractor 接口）、Phase 3 接缝（Provider/Embedder/Consolidator + noopProvider） | ✅ |
 | **context** | DefaultPromptBuilder：System Prompt 结构化组装（基础 prompt + AGENTS.md + Skills 索引 + 规划准则 + offload 检索指引 + 长期记忆精华），WithOffloadEnabled 注入分页检索说明，WithLongTermMemory 接收读取闭包、每轮 Build 时实时重读 MEMORY.md 精华注入（写入即下一轮可见）；**每次 Build() 注入 `当前日期：YYYY-MM-DD`**（`time.Now()` 实时生成，防止 Agent 因训练截止日期偏差产生陈旧搜索词） | ✅ |
-| **provider** | LLM 统一接口 + OpenAI / Anthropic SDK 适配器 + 实际 token 用量提取（Usage 类型）+ 模型 context window 注册表；AnthropicProvider 支持 WithThinkingBudget（extended thinking，≥1024 clamp）；OpenAIProvider 支持 WithIncludeReasoning + OpenRouter 自动检测，流式中通过 extractReasoningContent 提取 reasoning_content / reasoning 字段 | ✅ |
+| **provider** | LLM 统一接口 + OpenAI / Anthropic SDK 适配器 + 实际 token 用量提取（Usage 类型）+ 模型 context window 注册表；AnthropicProvider 支持 WithThinkingBudget（extended thinking，≥1024 clamp）；OpenAIProvider 支持 WithIncludeReasoning + OpenRouter 自动检测，流式中通过 extractReasoningContent 提取 reasoning_content / reasoning 字段；OrcaRouter 网关一等支持（OpenAI 兼容模型路由网关，`NewOrcaRouterProvider` 复用 OpenAI 实现，`NewFromEnv` 依据 `ORCAROUTER_API_KEY` / `LLM_PROVIDER` 在 main / 子代理 / SWE-bench runner 间统一装配，推理内容无需 include_reasoning 标志） | ✅ |
 | **schema** | 跨组件共享的核心数据类型（Message、ToolCall、Usage 等）；StreamChunk 定义 text_delta / thinking_delta / done / error 四种流式增量类型 | ✅ |
 | **tools** | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file / plan_write / memory_write（add/update/remove + Precis 重建）/ memory_search（FTS5 检索 + 命中强化）/ web_search（DuckDuckGo，无 API Key）/ web_fetch（go-readability + html-to-markdown，Markdown 输出））+ 路径沙箱（safe_path.go）+ SSRF 防护（web_safety.go） | ✅ |
 | **env** | 零依赖 `.env` 配置加载器（系统变量优先） | ✅ |

@@ -55,6 +55,19 @@ export OPENAI_API_KEY="<your-openrouter-key>"
 export LLM_MODEL="openai/gpt-4o"
 ```
 
+### 使用 OrcaRouter
+
+[OrcaRouter](https://orcarouter.ai) 是 OpenAI 兼容的模型路由网关，一个 API Key 即可访问多家上游模型（模型名沿用 provider 前缀，如 `openai/gpt-4o-mini`、`deepseek/deepseek-chat`）：
+
+```bash
+export ORCAROUTER_API_KEY="sk-orca-..."
+export LLM_MODEL="openai/gpt-4o-mini"
+```
+
+网关地址默认 `https://api.orcarouter.ai/v1`，自建/代理网关时用 `ORCAROUTER_BASE_URL` 覆盖。
+
+当 `OPENAI_API_KEY` 与 `ORCAROUTER_API_KEY` 同时存在时，用 `LLM_PROVIDER` 显式选择：`orcarouter` 或 `openai`；仅配置 OrcaRouter 一个 Key 时自动走 OrcaRouter，无需额外设置。
+
 ### 使用 Anthropic
 
 ```bash

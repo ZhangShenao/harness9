@@ -49,7 +49,7 @@ harness9 --help
 harness9 --version
 ```
 
-> 完整安装选项、Anthropic/OpenRouter 配置、AGENTS.md 设置和常见问题，见[快速启动指南](https://zhangshenao.github.io/harness9/zh/docs/quick-start)。
+> 完整安装选项、Anthropic/OpenRouter/OrcaRouter 配置、AGENTS.md 设置和常见问题，见[快速启动指南](https://zhangshenao.github.io/harness9/zh/docs/quick-start)。
 
 ---
 
