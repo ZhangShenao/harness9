@@ -196,8 +196,8 @@ func preflight(cfg Config) error {
 	if cfg.SampleN <= 0 {
 		return fmt.Errorf("--sample 必须 >= 1，当前值：%d", cfg.SampleN)
 	}
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		return fmt.Errorf("OPENAI_API_KEY 未配置")
+	if os.Getenv("OPENAI_API_KEY") == "" && os.Getenv("ORCAROUTER_API_KEY") == "" {
+		return fmt.Errorf("OPENAI_API_KEY 未配置（也可配置 ORCAROUTER_API_KEY 走 OrcaRouter 网关）")
 	}
 	if _, err := os.Stat(cfg.DatasetPath); err != nil {
 		return fmt.Errorf("dataset 文件不可读：%w", err)

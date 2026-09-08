@@ -120,8 +120,9 @@ func resolveModelName(model string) string {
 
 // newProvider 根据模型名创建 LLM provider。
 // 优先级：cfg.Model > LLM_MODEL 环境变量 > 默认值 openai/gpt-4o-mini。
+// 经 NewFromEnv 装配，与主入口共享 Provider 选择规则（OPENAI_* / OrcaRouter 网关）。
 func newProvider(model string) (provider.LLMProvider, error) {
-	return provider.NewOpenAIProvider(resolveModelName(model))
+	return provider.NewFromEnv(resolveModelName(model))
 }
 
 // runInstance 对单个 SWE-bench instance 执行完整的 clone → sandbox → engine → patch 流程。

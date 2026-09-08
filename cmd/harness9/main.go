@@ -6,9 +6,12 @@
 //
 // 环境变量（可通过 .env 文件或系统环境变量提供）：
 //
-//	OPENAI_API_KEY     LLM Provider API Key（必填）
-//	OPENAI_BASE_URL    自定义 OpenAI 兼容 API 地址（可选）
-//	LLM_MODEL          模型名称（默认：openai/gpt-4o-mini）
+//	OPENAI_API_KEY      OpenAI 兼容端点 API Key
+//	OPENAI_BASE_URL     自定义 OpenAI 兼容 API 地址
+//	ORCAROUTER_API_KEY  OrcaRouter 网关 API Key（可选，OpenAI 兼容网关）
+//	ORCAROUTER_BASE_URL OrcaRouter 网关地址（可选，默认官方地址）
+//	LLM_PROVIDER        显式指定 Provider：openai / orcarouter（可选）
+//	LLM_MODEL           模型名称（默认：openai/gpt-4o-mini）
 package main
 
 import (
@@ -86,9 +89,12 @@ Flags:
   upgrade     升级 harness9 到最新版本
 
 环境变量：
-  LLM_MODEL        模型名称（默认：openai/gpt-4o-mini）
-  OPENAI_API_KEY   OpenAI 兼容 API Key（必填）
-  OPENAI_BASE_URL  自定义 API 地址（可选，用于 OpenRouter / Azure 等）
+  LLM_MODEL           模型名称（默认：openai/gpt-4o-mini）
+  OPENAI_API_KEY      OpenAI 兼容 API Key
+  OPENAI_BASE_URL     自定义 API 地址（可选，用于 OpenRouter / Azure 等）
+  ORCAROUTER_API_KEY  OrcaRouter 网关 API Key（可选）
+  ORCAROUTER_BASE_URL OrcaRouter 网关地址（可选，默认官方地址）
+  LLM_PROVIDER        显式指定 Provider：openai / orcarouter（可选）
 
 示例：
   harness9                  启动（TTY 自动进入 TUI，管道模式退回 CLI REPL）
@@ -142,7 +148,7 @@ Flags:
 	if modelName == "" {
 		modelName = "openai/gpt-4o-mini"
 	}
-	rawLLM, err := provider.NewOpenAIProvider(modelName)
+	rawLLM, err := provider.NewFromEnv(modelName)
 	if err != nil {
 		log.Fatal(logfmt.FormatMsg("main", fmt.Sprintf("创建 Provider 失败: %v", err)))
 	}
@@ -384,7 +390,7 @@ Flags:
 			if model == "" {
 				return llm, modelLimits.ContextTokens, nil
 			}
-			p, err := provider.NewOpenAIProvider(model)
+			p, err := provider.NewFromEnv(model)
 			if err != nil {
 				return nil, 0, err
 			}

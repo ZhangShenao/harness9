@@ -49,7 +49,7 @@ harness9 --help
 harness9 --version
 ```
 
-> For full install options, Anthropic/OpenRouter configuration, AGENTS.md setup, and FAQ, see the [Quick Start Guide](https://zhangshenao.github.io/harness9/docs/quick-start).
+> For full install options, Anthropic/OpenRouter/OrcaRouter configuration, AGENTS.md setup, and FAQ, see the [Quick Start Guide](https://zhangshenao.github.io/harness9/docs/quick-start).
 
 ---
 
