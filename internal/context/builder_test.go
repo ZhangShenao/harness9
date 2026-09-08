@@ -3,6 +3,7 @@ package context
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -145,5 +146,32 @@ func TestBuild_PlanningSection(t *testing.T) {
 	out2 := NewPromptBuilder(t.TempDir(), nil).Build()
 	if strings.Contains(out2, "## 规划（Planning）") {
 		t.Error("planning section should be absent when disabled")
+	}
+}
+
+// TestBuild_WithSandboxDegraded 验证降级说明注入：Sandbox 已启用但启动失败时，
+// prompt 必须如实告知 Agent 当前运行在宿主机本地（含原因与真实 OS），
+// 且不再注入容器环境说明——降级后谎报"运行在 Ubuntu 容器"会误导 Agent
+// 高估隔离边界、误判操作系统（线上事故：Agent 依据陈旧记忆以为是 Ubuntu 沙箱）。
+func TestBuild_WithSandboxDegraded(t *testing.T) {
+	b := NewPromptBuilder(t.TempDir(), nil).
+		WithSandboxContext(true).
+		WithSandboxDegraded("Docker Sandbox 启动失败：daemon 不可用")
+	out := b.Build()
+
+	if !strings.Contains(out, "执行环境（Sandbox 已降级") {
+		t.Error("降级时 system prompt 应包含降级说明 Section")
+	}
+	if !strings.Contains(out, "daemon 不可用") {
+		t.Error("降级说明应包含启动失败原因")
+	}
+	if !strings.Contains(out, runtime.GOOS) {
+		t.Errorf("降级说明应注入宿主机真实 OS (%s)", runtime.GOOS)
+	}
+	if !strings.Contains(out, "真实系统") {
+		t.Error("降级说明应警示操作直接影响真实系统")
+	}
+	if strings.Contains(out, "Docker 容器（Ubuntu 22.04）") {
+		t.Error("降级时不应再注入容器环境说明（实际并未运行在容器内）")
 	}
 }

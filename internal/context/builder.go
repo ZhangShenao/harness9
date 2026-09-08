@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -25,6 +26,8 @@ type DefaultPromptBuilder struct {
 	offloadEnabled bool
 	ltmReader      func() string
 	sandboxEnabled bool
+	// sandboxDegraded 非空表示 Sandbox 已启用但启动失败，值为降级原因。
+	sandboxDegraded string
 }
 
 // NewPromptBuilder 创建绑定到指定工作目录和 Skills Index 的 PromptBuilder。
@@ -59,6 +62,15 @@ func (b *DefaultPromptBuilder) WithLongTermMemory(reader func() string) *Default
 // 当启用时，在 system prompt 中添加 Sandbox 特定指引，说明可用的环境能力。
 func (b *DefaultPromptBuilder) WithSandboxContext(enabled bool) *DefaultPromptBuilder {
 	b.sandboxEnabled = enabled
+	return b
+}
+
+// WithSandboxDegraded 注入 Sandbox 降级说明（值为启动失败原因）。
+// 优先级高于 WithSandboxContext：降级意味着工具调用实际运行在宿主机，
+// 此时再注入容器环境说明会让 Agent 误判隔离边界与操作系统
+// （线上事故：Agent 依据陈旧长期记忆误以为运行在 Ubuntu 沙箱，直到 uname 才发现是 macOS）。
+func (b *DefaultPromptBuilder) WithSandboxDegraded(reason string) *DefaultPromptBuilder {
+	b.sandboxDegraded = reason
 	return b
 }
 
@@ -116,6 +128,8 @@ func (b *DefaultPromptBuilder) Build() string {
 				"- 计划条目必须对应具体可执行动作（创建文件、实现函数、运行命令），"+
 				"禁止\"需求澄清\"、\"方案设计\"类无法直接执行的条目\n"+
 				"- 开始某条目前将其标记为 in_progress，完成后立即标记为 completed\n"+
+				"- 更新计划时可只提交仍在执行或新增的条目，已开始（in_progress/completed）的条目会自动保留；"+
+				"放弃条目请显式标记为 cancelled\n"+
 				"- 计划是权威状态：即使对话上下文被压缩，计划始终可见，以计划为准继续\n"+
 				"- 简单任务（1-2 步、问答、单命令）无需规划，直接执行",
 		)
@@ -133,8 +147,19 @@ func (b *DefaultPromptBuilder) Build() string {
 		)
 	}
 
-	// 5b. Sandbox 执行环境提示（仅在启用 Sandbox 时注入，与 Offload 提示平级）
-	if b.sandboxEnabled {
+	// 5b. Sandbox 执行环境提示：降级说明优先——降级后并未运行在容器内，
+	// 如实告知比沉默更安全（Agent 不再需要靠 uname 考古、猜测陈旧记忆的真伪）
+	if b.sandboxDegraded != "" {
+		parts = append(parts, fmt.Sprintf(
+			"## 执行环境（Sandbox 已降级，本地执行）\n\n"+
+				"%s\n"+
+				"本次会话的所有工具调用在宿主机本地直接执行（%s/%s），直接影响用户的真实系统：\n"+
+				"- 不可逆操作（删除文件、git push、安装或卸载软件）前必须征得用户同意\n"+
+				"- 不要假设这是 Linux/Ubuntu 环境；与宿主机环境相关的结论"+
+				"（路径、包管理器、内核能力）以实际命令输出为准",
+			b.sandboxDegraded, runtime.GOOS, runtime.GOARCH,
+		))
+	} else if b.sandboxEnabled {
 		parts = append(parts,
 			"## Sandbox 执行环境\n\n"+
 				"你当前在一个隔离的 Docker 容器（Ubuntu 22.04）内执行所有工具调用：\n"+

@@ -38,12 +38,14 @@ type SandboxConfig struct {
 // DefaultConfig 从环境变量读取配置，未设置时使用内置安全默认值。
 func DefaultConfig() SandboxConfig {
 	return SandboxConfig{
-		Enabled:          strings.ToLower(os.Getenv("SANDBOX_ENABLED")) != "false",
-		Image:            getenvOr("SANDBOX_IMAGE", "ubuntu:22.04"),
-		CPUs:             getenvOr("SANDBOX_CPUS", "1.0"),
-		Memory:           getenvOr("SANDBOX_MEMORY", "512m"),
-		PidsLimit:        256,
-		StartTimeout:     30 * time.Second,
+		Enabled:   strings.ToLower(os.Getenv("SANDBOX_ENABLED")) != "false",
+		Image:     getenvOr("SANDBOX_IMAGE", "ubuntu:22.04"),
+		CPUs:      getenvOr("SANDBOX_CPUS", "1.0"),
+		Memory:    getenvOr("SANDBOX_MEMORY", "512m"),
+		PidsLimit: 256,
+		// StartTimeout 默认 60s：macOS Docker Desktop 冷启动/镜像首次挂载（VirtioFS）较慢，
+		// 30s 偶发超时导致会话启动即降级；配合 Manager.CreateWithRetry 的重试兜底。
+		StartTimeout:     60 * time.Second,
 		StopTimeout:      10 * time.Second,
 		BootstrapCmd:     os.Getenv("SANDBOX_BOOTSTRAP_CMD"),
 		BootstrapTimeout: time.Duration(getenvIntOr("SANDBOX_BOOTSTRAP_TIMEOUT_SECS", 600)) * time.Second,

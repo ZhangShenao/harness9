@@ -160,6 +160,9 @@ Flags:
 	sandboxCfg := sandbox.DefaultConfig()
 	var sandboxMgr *sandbox.Manager
 	var sandboxEnv sandbox.Environment // nil = 工具走本地执行路径
+	// sandboxDegradeReason 非空 = 已启用 Sandbox 但启动失败（静默降级会让 Agent 与用户
+	// 都误以为沙箱在正常工作，原因会注入 system prompt 与 TUI SandboxBar）。
+	var sandboxDegradeReason string
 
 	// SandboxBar 通知 channel 必须在 Create 之前创建并注册，
 	// 否则 Create 内部触发的 notify() 因 onUpdate==nil 而丢失，TUI 永远不会收到初始状态。
@@ -182,12 +185,20 @@ Flags:
 		if err := sandboxMgr.ReapOrphans(ctx); err != nil {
 			log.Print(logfmt.FormatMsg("main", fmt.Sprintf("清理孤儿 Sandbox 失败（忽略）: %v", err)))
 		}
+		// CreateWithRetry：daemon 不可用时自动拉起（macOS 拉起 Docker Desktop）+ 有界等待，
+		// 创建失败自动重试一次——单次瞬时失败即永久降级整个会话，代价过高。
 		var sandboxErr error
-		sandboxEnv, sandboxErr = sandboxMgr.Create(ctx, workDir)
+		sandboxEnv, sandboxErr = sandboxMgr.CreateWithRetry(ctx, workDir)
 		if sandboxErr != nil {
 			log.Print(logfmt.FormatMsg("main", fmt.Sprintf("Sandbox 启动失败，已降级为本地进程模式: %v", sandboxErr)))
 			sandboxMgr = nil
 			sandboxEnv = nil
+			sandboxDegradeReason = fmt.Sprintf("Docker Sandbox 启动失败：%v", sandboxErr)
+			// 降级快照推送给 TUI SandboxBar：降级必须对用户可见，而非状态栏直接消失
+			select {
+			case sandboxCh <- []sandbox.SandboxInfo{{State: sandbox.StateFailed, Image: sandboxCfg.Image}}:
+			default:
+			}
 		} else {
 			defer sandboxMgr.DestroyAll(ctx)
 		}
@@ -197,8 +208,14 @@ Flags:
 	// 构建 System Prompt（基础 prompt + AGENTS.md + skills 索引），现已可访问 sandboxEnv
 	promptBuilder := harctx.NewPromptBuilder(workDir, skillsIndex).
 		WithPlanEnabled(true).
-		WithOffloadEnabled(true).
-		WithSandboxContext(sandboxEnv != nil)
+		WithOffloadEnabled(true)
+	// Sandbox 环境说明三态：运行中 → 容器说明；降级 → 如实的本地执行说明；
+	// 未启用 → 不注入（与引入 Sandbox 前行为一致）。
+	if sandboxEnv != nil {
+		promptBuilder = promptBuilder.WithSandboxContext(true)
+	} else if sandboxDegradeReason != "" {
+		promptBuilder = promptBuilder.WithSandboxDegraded(sandboxDegradeReason)
+	}
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -353,15 +370,16 @@ Flags:
 
 	subAgentTracker := subagent.NewTaskTracker()
 	subAgentRunner := subagent.NewRunner(subagent.RunnerConfig{
-		BaseTools:          subAgentBaseTools,
-		SharedHooks:        []hooks.ToolHook{dangerHook, offloadHook},
-		SettingsPath:       settingsPath,
-		SkillsIndex:        skillsIndex,
-		WorkDir:            workDir,
-		DefaultMaxTurns:    agentMaxTurns,
-		ToolTimeout:        60 * time.Second,
-		MaxConcurrentTools: 0,
-		SandboxMgr:         sandboxMgr,
+		BaseTools:             subAgentBaseTools,
+		SharedHooks:           []hooks.ToolHook{dangerHook, offloadHook},
+		SettingsPath:          settingsPath,
+		SkillsIndex:           skillsIndex,
+		WorkDir:               workDir,
+		DefaultMaxTurns:       agentMaxTurns,
+		ToolTimeout:           60 * time.Second,
+		MaxConcurrentTools:    0,
+		SandboxMgr:            sandboxMgr,
+		SandboxDegradedReason: sandboxDegradeReason,
 		ProviderFor: func(model string) (provider.LLMProvider, int, error) {
 			if model == "" {
 				return llm, modelLimits.ContextTokens, nil

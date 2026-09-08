@@ -31,13 +31,16 @@ type Manager struct {
 	onUpdate   func([]SandboxInfo)
 	// runnerFactory 用于测试注入 mock runner；nil 时使用 realCmdRunner。
 	runnerFactory func(id, workDir string, cfg SandboxConfig) cmdRunner
+	// daemonRunner 用于 docker daemon 探测（docker info）；测试可注入 mock。
+	daemonRunner cmdRunner
 }
 
 // NewManager 创建 Sandbox 管理器。
 func NewManager(cfg SandboxConfig) *Manager {
 	return &Manager{
-		containers: make(map[string]*Container),
-		cfg:        cfg,
+		containers:   make(map[string]*Container),
+		cfg:          cfg,
+		daemonRunner: realCmdRunner,
 	}
 }
 
@@ -77,6 +80,29 @@ func (m *Manager) Create(ctx context.Context, workDir string) (Environment, erro
 	m.mu.Unlock()
 
 	m.notify()
+	return env, nil
+}
+
+// CreateWithRetry 确保 docker daemon 可用后创建 Sandbox，创建失败自动重试一次。
+// 面向进程启动路径：Docker Desktop 冷启动（镜像首次挂载/VirtioFS 预热）下，
+// 单次 Create 在超时预算内偶发失败，重试通常即可成功——失败即永久降级的代价
+// （整个会话静默回退本地执行）远高于多等几秒。子代理委派路径仍用单次 Create，
+// 其失败会作为错误回传给主代理 LLM 自行决策，无需静默重试。
+func (m *Manager) CreateWithRetry(ctx context.Context, workDir string) (Environment, error) {
+	if err := ensureDaemonReady(ctx, m.daemonRunner); err != nil {
+		return nil, fmt.Errorf("sandbox: %w", err)
+	}
+
+	env, firstErr := m.Create(ctx, workDir)
+	if firstErr == nil {
+		return env, nil
+	}
+
+	log.Print(logfmt.FormatMsg("sandbox", fmt.Sprintf("首次创建失败，重试一次: %v", firstErr)))
+	env, retryErr := m.Create(ctx, workDir)
+	if retryErr != nil {
+		return nil, fmt.Errorf("sandbox: 重试后仍创建失败（首次错误: %v）: %w", firstErr, retryErr)
+	}
 	return env, nil
 }
 

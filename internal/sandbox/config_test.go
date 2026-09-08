@@ -28,8 +28,8 @@ func TestDefaultConfig_Defaults(t *testing.T) {
 	if cfg.PidsLimit != 256 {
 		t.Errorf("PidsLimit = %d, 期望 256", cfg.PidsLimit)
 	}
-	if cfg.StartTimeout != 30*time.Second {
-		t.Errorf("StartTimeout = %v, 期望 30s", cfg.StartTimeout)
+	if cfg.StartTimeout != 60*time.Second {
+		t.Errorf("StartTimeout = %v, 期望 60s", cfg.StartTimeout)
 	}
 	if cfg.StopTimeout != 10*time.Second {
 		t.Errorf("StopTimeout = %v, 期望 10s", cfg.StopTimeout)

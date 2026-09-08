@@ -277,6 +277,226 @@ func TestPlanWriteTool_BulkNewItemCompleted(t *testing.T) {
 	}
 }
 
+// TestPlanWriteTool_PartialUpdatePreservesCompleted 还原线上事故：LLM 增量更新计划时
+// 只发送仍需执行的条目（如 [7,8]），旧实现全量替换会把已完成的 1-6 丢失，
+// 权威状态缩水成 2 条（TUI 显示 1/2 而非 7/8）。
+// 核心不变量：已完成条目是既成事实的历史记录，部分更新时必须自动保留，
+// 且保持首次创建时的相对顺序，使 TUI 编号跨更新稳定。
+func TestPlanWriteTool_PartialUpdatePreservesCompleted(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
+
+	// 按合法协议构造初始状态：先建 8 条 pending → 全部标 in_progress → 1-6 标 completed
+	// （in_progress→completed 不受"单个允许"限制，防作弊校验仅拦截 pending/新建 → completed）
+	init, _ := json.Marshal(map[string]interface{}{
+		"steps": []map[string]string{
+			{"id": "1", "content": "s1", "status": "pending"},
+			{"id": "2", "content": "s2", "status": "pending"},
+			{"id": "3", "content": "s3", "status": "pending"},
+			{"id": "4", "content": "s4", "status": "pending"},
+			{"id": "5", "content": "s5", "status": "pending"},
+			{"id": "6", "content": "s6", "status": "pending"},
+			{"id": "7", "content": "s7", "status": "pending"},
+			{"id": "8", "content": "s8", "status": "pending"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), init); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	inProgress, _ := json.Marshal(map[string]interface{}{
+		"steps": []map[string]string{
+			{"id": "1", "content": "s1", "status": "in_progress"},
+			{"id": "2", "content": "s2", "status": "in_progress"},
+			{"id": "3", "content": "s3", "status": "in_progress"},
+			{"id": "4", "content": "s4", "status": "in_progress"},
+			{"id": "5", "content": "s5", "status": "in_progress"},
+			{"id": "6", "content": "s6", "status": "in_progress"},
+			{"id": "7", "content": "s7", "status": "in_progress"},
+			{"id": "8", "content": "s8", "status": "in_progress"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), inProgress); err != nil {
+		t.Fatalf("mark in_progress failed: %v", err)
+	}
+	completed, _ := json.Marshal(map[string]interface{}{
+		"steps": []map[string]string{
+			{"id": "1", "content": "s1", "status": "completed"},
+			{"id": "2", "content": "s2", "status": "completed"},
+			{"id": "3", "content": "s3", "status": "completed"},
+			{"id": "4", "content": "s4", "status": "completed"},
+			{"id": "5", "content": "s5", "status": "completed"},
+			{"id": "6", "content": "s6", "status": "completed"},
+			{"id": "7", "content": "s7", "status": "in_progress"},
+			{"id": "8", "content": "s8", "status": "in_progress"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), completed); err != nil {
+		t.Fatalf("mark completed failed: %v", err)
+	}
+
+	// 事故写入：只提交剩余条目（7 直接完成属单个允许范围，8 转入 in_progress）
+	update, _ := json.Marshal(map[string]interface{}{
+		"steps": []map[string]string{
+			{"id": "7", "content": "s7", "status": "completed"},
+			{"id": "8", "content": "s8", "status": "in_progress"},
+		},
+	})
+	result, err := tool.Execute(context.Background(), update)
+	if err != nil {
+		t.Fatalf("partial update failed: %v", err)
+	}
+
+	stored := store.Read()
+	if len(stored) != 8 {
+		t.Fatalf("部分更新后应保留全部 8 条（含已完成历史），实际 %d 条: %+v", len(stored), stored)
+	}
+	// 顺序必须稳定：1-8 保持首次创建顺序，TUI 编号不跳变
+	for i, want := range []string{"1", "2", "3", "4", "5", "6", "7", "8"} {
+		if stored[i].ID != want {
+			t.Errorf("stored[%d].ID = %q, want %q", i, stored[i].ID, want)
+		}
+	}
+	// 状态合并正确：历史 1-6 保持 completed，7 更新为 completed，8 更新为 in_progress
+	for _, item := range stored[:7] {
+		if item.Status != planning.PlanCompleted {
+			t.Errorf("item %s status = %q, want completed", item.ID, item.Status)
+		}
+	}
+	if stored[7].Status != planning.PlanInProgress {
+		t.Errorf("item 8 status = %q, want in_progress", stored[7].Status)
+	}
+
+	// 返回值与存储一致（也应是合并后的 8 条）
+	var got []planning.PlanItem
+	if err := json.Unmarshal([]byte(result), &got); err != nil {
+		t.Fatalf("result not valid JSON: %v — got %q", err, result)
+	}
+	if len(got) != 8 {
+		t.Errorf("返回值应包含合并后的 8 条，实际 %d 条", len(got))
+	}
+}
+
+// TestPlanWriteTool_PartialUpdateAppendsNewItems 验证部分更新中新增的条目
+// 追加在保留的已完成历史之后。
+func TestPlanWriteTool_PartialUpdateAppendsNewItems(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
+
+	init, _ := json.Marshal(map[string]interface{}{
+		"steps": []map[string]string{
+			{"id": "1", "content": "done", "status": "completed"},
+			{"id": "2", "content": "doing", "status": "in_progress"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), init); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	add, _ := json.Marshal(map[string]interface{}{
+		"steps": []map[string]string{
+			{"id": "3", "content": "new step", "status": "pending"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), add); err != nil {
+		t.Fatalf("append update failed: %v", err)
+	}
+
+	stored := store.Read()
+	if len(stored) != 3 {
+		t.Fatalf("want 3 items, got %d: %+v", len(stored), stored)
+	}
+	if stored[0].ID != "1" || stored[0].Status != planning.PlanCompleted {
+		t.Errorf("已完成条目应被保留且在前: %+v", stored[0])
+	}
+	if stored[1].ID != "2" || stored[1].Status != planning.PlanInProgress {
+		t.Errorf("活跃条目应更新为新版本: %+v", stored[1])
+	}
+	if stored[2].ID != "3" || stored[2].Content != "new step" {
+		t.Errorf("新增条目应追加在末尾: %+v", stored[2])
+	}
+}
+
+// TestPlanWriteTool_OmittedNonCompletedDropped 验证计划裁剪语义：
+// 被省略的 pending 条目视为有意裁剪（尚未开始的工作允许删减），
+// cancelled 条目同样不复活；只有 in_progress/completed 受保留保护。
+func TestPlanWriteTool_OmittedNonCompletedDropped(t *testing.T) {
+	store := planning.NewPlanStore()
+	tool := tools.NewPlanWriteTool(store)
+
+	init, _ := json.Marshal(map[string]interface{}{
+		"steps": []map[string]string{
+			{"id": "1", "content": "pending", "status": "pending"},
+			{"id": "2", "content": "active", "status": "in_progress"},
+			{"id": "3", "content": "done", "status": "completed"},
+			{"id": "4", "content": "cancelled", "status": "cancelled"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), init); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// 新增条目、省略其余：1（pending）与 4（cancelled）被裁剪，2/3 保留
+	replace, _ := json.Marshal(map[string]interface{}{
+		"steps": []map[string]string{
+			{"id": "5", "content": "fresh", "status": "pending"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), replace); err != nil {
+		t.Fatalf("replace failed: %v", err)
+	}
+
+	stored := store.Read()
+	if len(stored) != 3 {
+		t.Fatalf("want 3 items (保留 2/3 + 新增 5), got %d: %+v", len(stored), stored)
+	}
+	if stored[0].ID != "2" || stored[0].Status != planning.PlanInProgress {
+		t.Errorf("被省略的 in_progress 条目应保留: %+v", stored[0])
+	}
+	if stored[1].ID != "3" || stored[1].Status != planning.PlanCompleted {
+		t.Errorf("被省略的 completed 条目应保留: %+v", stored[1])
+	}
+	if stored[2].ID != "5" {
+		t.Errorf("新增条目应追加在末尾: %+v", stored[2])
+	}
+}
+
+// TestPlanWriteTool_PlanWriterReceivesMergedList 验证 PlanWriter（落盘/检查点）
+// 收到的是合并后的完整列表，而非 LLM 提交的子集——否则计划文件同样会丢失历史。
+func TestPlanWriteTool_PlanWriterReceivesMergedList(t *testing.T) {
+	store := planning.NewPlanStore()
+	pw := &mockPlanWriter{}
+	tool := tools.NewPlanWriteTool(store, tools.WithPlanWriter(pw))
+
+	init, _ := json.Marshal(map[string]interface{}{
+		"steps": []map[string]string{
+			{"id": "1", "content": "done", "status": "completed"},
+			{"id": "2", "content": "doing", "status": "in_progress"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), init); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	update, _ := json.Marshal(map[string]interface{}{
+		"steps": []map[string]string{
+			{"id": "2", "content": "doing", "status": "completed"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), update); err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+
+	if pw.calls != 2 {
+		t.Fatalf("PlanWriter.Write should be called twice, called %d times", pw.calls)
+	}
+	if len(pw.last) != 2 {
+		t.Errorf("PlanWriter 应收到合并后的 2 条，实际 %d 条: %+v", len(pw.last), pw.last)
+	}
+	if pw.last[0].ID != "1" || pw.last[0].Status != planning.PlanCompleted {
+		t.Errorf("PlanWriter 收到的列表应保留已完成条目: %+v", pw.last[0])
+	}
+}
+
 // mockPlanWriter 记录 Write 调用次数和最后收到的 todos。
 type mockPlanWriter struct {
 	calls int

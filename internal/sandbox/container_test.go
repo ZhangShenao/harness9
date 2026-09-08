@@ -188,3 +188,28 @@ func TestContainerDockerRunArgs(t *testing.T) {
 		}
 	}
 }
+
+// TestContainerStart_InspectTimeoutCleansUp 验证：就绪轮询超时（docker run 已成功、
+// 容器已存在）时 best-effort 清理容器，避免泄漏持有 bind mount 的孤儿容器
+// （孤儿容器在下次会话才被 ReapOrphans 回收，期间拖慢 macOS Docker Desktop）。
+func TestContainerStart_InspectTimeoutCleansUp(t *testing.T) {
+	mock := newMock(
+		"abc123", errNil(), // docker run 成功（容器已创建）
+		"false", errNil(), // inspect 返回 false（未就绪）
+		"", errNil(), // docker rm -f 清理
+	)
+	cfg := testCfg()
+	cfg.StartTimeout = 100 * time.Millisecond // 短于 200ms 轮询间隔，首次 inspect 后即超时
+	c := newContainer("cleanup-uuid", t.TempDir(), cfg, mock.run)
+
+	if err := c.Start(context.Background()); err == nil {
+		t.Fatal("inspect 持续返回 false 时 Start() 应返回 error")
+	}
+	if len(mock.Calls) == 0 {
+		t.Fatal("应有 docker 调用记录")
+	}
+	last := mock.Calls[len(mock.Calls)-1]
+	if last[0] != "rm" || last[1] != "-f" || last[2] != "abc123" {
+		t.Errorf("Start 超时后应对已创建容器执行 docker rm -f，实际最后调用: %v", last)
+	}
+}

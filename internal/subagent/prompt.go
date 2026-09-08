@@ -7,6 +7,7 @@ package subagent
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 )
 
@@ -19,11 +20,12 @@ type skillLoader func(name string) (string, error)
 // promptBuilder 是子代理的静态 PromptBuilder，实现 engine.PromptBuilder 接口（Build() string）。
 // 输出 = 子代理 system prompt + 预加载 skills 正文 + 工作目录信息 + Sandbox 环境说明（可选）。
 type promptBuilder struct {
-	systemPrompt   string
-	workDir        string
-	skills         []string
-	loader         skillLoader
-	sandboxContext bool
+	systemPrompt    string
+	workDir         string
+	skills          []string
+	loader          skillLoader
+	sandboxContext  bool
+	sandboxDegraded string // 非空 = 主会话 Sandbox 已启用但启动失败，值为降级原因
 }
 
 // newPromptBuilder 创建子代理 PromptBuilder。loader 为 nil 时不加载 skills。
@@ -34,6 +36,13 @@ func newPromptBuilder(systemPrompt, workDir string, skills []string, loader skil
 // WithSandboxContext 在子代理 system prompt 末尾注入 Sandbox 执行环境说明。
 func (b *promptBuilder) WithSandboxContext(enabled bool) *promptBuilder {
 	b.sandboxContext = enabled
+	return b
+}
+
+// WithSandboxDegraded 注入 Sandbox 降级说明（主会话启用 Sandbox 但启动失败的原因）。
+// 优先于 WithSandboxContext：降级时子代理同样运行在宿主机本地，必须如实告知。
+func (b *promptBuilder) WithSandboxDegraded(reason string) *promptBuilder {
+	b.sandboxDegraded = reason
 	return b
 }
 
@@ -48,6 +57,7 @@ func (b *promptBuilder) Build() string {
 	sb.WriteString("\n\n## 规划（Planning）\n\n" +
 		"面对复杂多步任务时，先用 `plan_write` 制定执行计划，再逐步执行；" +
 		"开始某条目前标记 in_progress，完成后立即标记 completed。" +
+		"更新计划时可只提交仍在执行或新增的条目，已开始的条目会自动保留，放弃条目请显式标记为 cancelled。" +
 		"计划是你的权威状态，上下文压缩后依然可见。简单任务无需规划。")
 
 	if b.loader != nil {
@@ -60,7 +70,16 @@ func (b *promptBuilder) Build() string {
 		}
 	}
 
-	if b.sandboxContext {
+	// Sandbox 环境说明：降级说明优先——降级时子代理运行在宿主机本地而非容器内，
+	// 容器环境说明会让子代理误判隔离边界与操作系统。
+	if b.sandboxDegraded != "" {
+		fmt.Fprintf(&sb, "\n\n## 执行环境（Sandbox 已降级，本地执行）\n\n"+
+			"%s\n"+
+			"你的所有工具调用在宿主机本地直接执行（%s/%s），直接影响用户真实系统。"+
+			"与宿主机环境相关的结论（路径、包管理器、内核能力）以实际命令输出为准，"+
+			"不可逆操作前必须遵循委派任务中的约束。",
+			b.sandboxDegraded, runtime.GOOS, runtime.GOARCH)
+	} else if b.sandboxContext {
 		sb.WriteString("\n\n## Sandbox 执行环境\n\n" +
 			"你当前在一个隔离的 Docker 容器（Ubuntu 22.04）内执行所有工具调用：\n" +
 			"- 这是与宿主机完全隔离的临时环境，容器内的任何操作都不会影响用户的真实系统\n" +

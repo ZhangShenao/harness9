@@ -24,18 +24,19 @@ import (
 
 // Runner 构建并运行子代理引擎。从 main.go 注入一次，运行期只读。
 type Runner struct {
-	baseTools          []tools.BaseTool // 全部基础工具实例（可安全跨引擎共享）
-	sharedHooks        []hooks.ToolHook // danger + offload（permission 单独派生）
-	settingsPath       string           // .harness9/settings.json（权限继承源）
-	skillsIndex        *skills.Index    // 预加载 skill 正文（可为 nil）
-	workDir            string
-	defaultMaxTurns    int
-	toolTimeout        time.Duration
-	maxConcurrentTools int
-	providerFor        func(model string) (provider.LLMProvider, int, error)
-	compactorFor       func(p provider.LLMProvider, ctxWin int) memory.Compactor
-	baseCtx            context.Context  // 会话级 ctx，后台任务从此派生
-	sandboxMgr         *sandbox.Manager // optional；nil = 子代理不使用 Sandbox
+	baseTools             []tools.BaseTool // 全部基础工具实例（可安全跨引擎共享）
+	sharedHooks           []hooks.ToolHook // danger + offload（permission 单独派生）
+	settingsPath          string           // .harness9/settings.json（权限继承源）
+	skillsIndex           *skills.Index    // 预加载 skill 正文（可为 nil）
+	workDir               string
+	defaultMaxTurns       int
+	toolTimeout           time.Duration
+	maxConcurrentTools    int
+	providerFor           func(model string) (provider.LLMProvider, int, error)
+	compactorFor          func(p provider.LLMProvider, ctxWin int) memory.Compactor
+	baseCtx               context.Context  // 会话级 ctx，后台任务从此派生
+	sandboxMgr            *sandbox.Manager // optional；nil = 子代理不使用 Sandbox
+	sandboxDegradedReason string           // 主会话 Sandbox 启用但启动失败的原因，注入子代理 prompt
 }
 
 // SubAgentResult 是子代理一次执行的结果。
@@ -125,6 +126,11 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 	}
 	spb := newPromptBuilder(def.SystemPrompt, r.workDir, def.Skills, loader).
 		WithSandboxContext(r.sandboxMgr != nil)
+	// 主会话 Sandbox 降级时，子代理同样运行在宿主机本地——如实注入降级说明，
+	// 避免子代理误以为操作隔离或运行在 Linux 容器内。
+	if r.sandboxMgr == nil && r.sandboxDegradedReason != "" {
+		spb = spb.WithSandboxDegraded(r.sandboxDegradedReason)
+	}
 
 	maxTurns := r.defaultMaxTurns
 	if def.MaxTurns > 0 {
@@ -240,35 +246,37 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 
 // RunnerConfig 是 NewRunner 的配置。
 type RunnerConfig struct {
-	BaseTools          []tools.BaseTool
-	SharedHooks        []hooks.ToolHook
-	SettingsPath       string
-	SkillsIndex        *skills.Index
-	WorkDir            string
-	DefaultMaxTurns    int
-	ToolTimeout        time.Duration
-	MaxConcurrentTools int
-	ProviderFor        func(model string) (provider.LLMProvider, int, error)
-	CompactorFor       func(p provider.LLMProvider, ctxWin int) memory.Compactor
-	BaseCtx            context.Context
-	SandboxMgr         *sandbox.Manager // optional；nil = 子代理不使用 Sandbox
+	BaseTools             []tools.BaseTool
+	SharedHooks           []hooks.ToolHook
+	SettingsPath          string
+	SkillsIndex           *skills.Index
+	WorkDir               string
+	DefaultMaxTurns       int
+	ToolTimeout           time.Duration
+	MaxConcurrentTools    int
+	ProviderFor           func(model string) (provider.LLMProvider, int, error)
+	CompactorFor          func(p provider.LLMProvider, ctxWin int) memory.Compactor
+	BaseCtx               context.Context
+	SandboxMgr            *sandbox.Manager // optional；nil = 子代理不使用 Sandbox
+	SandboxDegradedReason string           // 主会话 Sandbox 启用但启动失败的原因
 }
 
 // NewRunner 从配置构造 Runner。
 func NewRunner(cfg RunnerConfig) *Runner {
 	return &Runner{
-		baseTools:          cfg.BaseTools,
-		sharedHooks:        cfg.SharedHooks,
-		settingsPath:       cfg.SettingsPath,
-		skillsIndex:        cfg.SkillsIndex,
-		workDir:            cfg.WorkDir,
-		defaultMaxTurns:    cfg.DefaultMaxTurns,
-		toolTimeout:        cfg.ToolTimeout,
-		maxConcurrentTools: cfg.MaxConcurrentTools,
-		providerFor:        cfg.ProviderFor,
-		compactorFor:       cfg.CompactorFor,
-		baseCtx:            cfg.BaseCtx,
-		sandboxMgr:         cfg.SandboxMgr,
+		baseTools:             cfg.BaseTools,
+		sharedHooks:           cfg.SharedHooks,
+		settingsPath:          cfg.SettingsPath,
+		skillsIndex:           cfg.SkillsIndex,
+		workDir:               cfg.WorkDir,
+		defaultMaxTurns:       cfg.DefaultMaxTurns,
+		toolTimeout:           cfg.ToolTimeout,
+		maxConcurrentTools:    cfg.MaxConcurrentTools,
+		providerFor:           cfg.ProviderFor,
+		compactorFor:          cfg.CompactorFor,
+		baseCtx:               cfg.BaseCtx,
+		sandboxMgr:            cfg.SandboxMgr,
+		sandboxDegradedReason: cfg.SandboxDegradedReason,
 	}
 }
 

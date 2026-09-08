@@ -12,6 +12,7 @@ import (
 
 	"github.com/harness9/internal/engine"
 	mcppkg "github.com/harness9/internal/mcp"
+	"github.com/harness9/internal/sandbox"
 	"github.com/harness9/internal/schema"
 	"github.com/harness9/internal/subagent"
 )
@@ -1303,5 +1304,20 @@ func TestMCPPanelOverhead_LayoutConsistency(t *testing.T) {
 	if totalRows != m.height {
 		t.Errorf("面板总行数 = %d，期望 m.height = %d（mcpPanelOverhead=%d）",
 			totalRows, m.height, mcpPanelOverhead)
+	}
+}
+
+// TestRenderSandboxBar_Degraded 验证 Sandbox 降级（启动失败）时状态栏显示降级提示，
+// 而非因无活跃容器直接隐藏——静默降级会让用户误以为沙箱在正常工作。
+func TestRenderSandboxBar_Degraded(t *testing.T) {
+	m := newTUIModel(nil, nil, nil, nil, nil, nil, nil, nil, context.Background(), "/tmp/test", "test-model", nil, nil)
+	m.sandboxes = []sandbox.SandboxInfo{{State: sandbox.StateFailed, Image: "ubuntu:22.04"}}
+
+	bar := m.renderSandboxBar()
+	if bar == "" {
+		t.Fatal("Sandbox 降级时状态栏不应为空")
+	}
+	if !strings.Contains(bar, "本地") {
+		t.Errorf("降级状态栏应提示本地执行，得到: %q", bar)
 	}
 }

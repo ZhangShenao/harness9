@@ -35,7 +35,7 @@ func WithPlanWriter(pw planning.PlanWriter) PlanWriteOption {
 
 // PlanWriteTool 实现 BaseTool 接口，允许 LLM 维护当前任务的执行计划。
 // 内部通过 *planning.PlanStore 存取计划状态，PlanStore 本身是线程安全的。
-// 传入 steps 数组时全量替换并执行防作弊校验；省略 steps 时仅读取当前计划。
+// 传入 steps 数组时经防作弊校验与完成条目合并后写入；省略 steps 时仅读取当前计划。
 type PlanWriteTool struct {
 	// store 是会话内共享的计划存储，由 main.go 创建后注入引擎和此工具。
 	store      *planning.PlanStore
@@ -61,15 +61,17 @@ func (t *PlanWriteTool) Definition() schema.ToolDefinition {
 	return schema.ToolDefinition{
 		Name: "plan_write",
 		Description: "创建或更新当前任务的执行计划（权威状态）。" +
-			"提供 steps 数组时全量替换（atomic replace）；省略 steps 时读取当前计划。\n" +
+			"提供 steps 数组时更新计划；省略 steps 时读取当前计划。\n" +
 			"面对复杂多步任务时，先制定计划再逐步执行：开始某条目前将其标记为 in_progress，" +
-			"完成后立即标记为 completed。计划在上下文压缩后依然可见，以计划为准继续执行。",
+			"完成后立即标记为 completed。计划在上下文压缩后依然可见，以计划为准继续执行。\n" +
+			"更新时可只提交仍在执行或新增的条目：已开始（in_progress/completed）的条目会自动保留（含原有顺序），无需重复发送；" +
+			"若要放弃某个条目，请将其显式标记为 cancelled——省略仅表示裁剪尚未开始的条目。",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"steps": map[string]interface{}{
 					"type":        "array",
-					"description": "完整的计划条目列表（全量替换）。省略此字段则仅读取当前计划。",
+					"description": "计划条目列表（支持部分更新，已完成的条目自动保留）。省略此字段则仅读取当前计划。",
 					"items": map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{
@@ -96,7 +98,7 @@ type planWriteArgs struct {
 }
 
 // Execute 处理 plan_write 工具调用：
-//   - 写操作（steps 非空）：执行防作弊校验后全量替换 PlanStore，返回写入后的计划 JSON。
+//   - 写操作（steps 非空）：执行防作弊校验后，将新条目与既有已完成条目合并写入 PlanStore，返回合并后的计划 JSON。
 //   - 读操作（steps 为空/省略）：直接返回当前 PlanStore 的计划 JSON，不修改状态。
 //
 // 防作弊校验逻辑：
@@ -104,6 +106,11 @@ type planWriteArgs struct {
 //  2. cancelled → completed：始终拒绝（不受"单个允许"规则豁免）；
 //  3. pending/新建 → completed：计为 directCompletions，超过 1 个则拒绝整批写入；
 //  4. in_progress → completed / completed → completed：合法路径，不计入 directCompletions。
+//
+// 完成条目保留（started items preservation）：
+// LLM 增量更新时常只提交仍需执行的条目，若按纯全量替换处理，已开始的条目会从
+// 权威状态中丢失（已完成条目丢历史、in_progress 条目丢正在进行的任务，进度计数缩水）。
+// 合并规则见 mergeWithPreservedCompleted。
 //
 // 返回的 JSON 始终是数组格式（空列表时为 "[]" 而非 "null"）。
 func (t *PlanWriteTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
@@ -153,7 +160,7 @@ func (t *PlanWriteTool) Execute(_ context.Context, args json.RawMessage) (string
 					"请逐一处理：每次仅完成一项实际工作后更新该条目状态。",
 				directCompletions)
 		}
-		current = t.store.Write(input.Steps)
+		current = t.store.Write(mergeWithPreservedCompleted(prev, input.Steps))
 		if t.planWriter != nil {
 			if err := t.planWriter.Write(current); err != nil {
 				log.Print(logfmt.FormatMsg("plan_write", fmt.Sprintf("写入计划文件失败: %v", err)))
@@ -175,4 +182,45 @@ func (t *PlanWriteTool) Execute(_ context.Context, args json.RawMessage) (string
 		return "", fmt.Errorf("序列化计划列表失败：%w", err)
 	}
 	return string(b), nil
+}
+
+// mergeWithPreservedCompleted 将 LLM 提交的条目列表与写入前的计划快照合并：
+//
+//  1. 按快照原有顺序遍历：条目在新列表中出现 → 采用新版本（状态/内容更新）；
+//     未出现但状态为 in_progress/completed → 原样保留（已经开始的工作是既成事实，
+//     不允许因省略而悄悄消失——丢已完成丢的是历史，丢 in_progress 丢的是正在进行的任务）；
+//     未出现且为 pending/cancelled → 丢弃（尚未开始的条目可被 LLM 有意裁剪；
+//     放弃某条目的正规途径是显式标记 cancelled）。
+//  2. 追加新列表中快照没有的条目（新增条目）在末尾，保持 LLM 提交顺序。
+//
+// 顺序稳定性：既有条目始终按首次创建顺序排列，TUI 编号跨更新不跳变，
+// 也与 LLM 自行分配的条目 ID 保持一致。合并只增不改语义——防作弊校验仍
+// 仅针对 LLM 本次提交的条目，保留的历史条目不会绕过校验。
+func mergeWithPreservedCompleted(prev, next []planning.PlanItem) []planning.PlanItem {
+	nextByID := make(map[string]planning.PlanItem, len(next))
+	for _, item := range next {
+		if _, exists := nextByID[item.ID]; !exists {
+			nextByID[item.ID] = item
+		}
+	}
+
+	merged := make([]planning.PlanItem, 0, len(prev)+len(next))
+	seen := make(map[string]bool, len(prev)+len(next))
+	for _, item := range prev {
+		if updated, exists := nextByID[item.ID]; exists {
+			merged = append(merged, updated)
+			seen[item.ID] = true
+			continue
+		}
+		if item.Status == planning.PlanCompleted || item.Status == planning.PlanInProgress {
+			merged = append(merged, item)
+		}
+	}
+	for _, item := range next {
+		if !seen[item.ID] {
+			merged = append(merged, item)
+			seen[item.ID] = true
+		}
+	}
+	return merged
 }

@@ -91,7 +91,7 @@ Core API:
 
 plan_write is the only plan-management surface exposed to the LLM, with two call modes:
 
-- **Write mode** (a `steps` array is present): replaces the plan wholesale after anti-cheat validation
+- **Write mode** (a `steps` array is present): after anti-cheat validation, merged with the existing items before being written to the PlanStore (partial updates supported — see "Started-Item Preservation" below)
 - **Read mode** (`steps` omitted): returns the current plan as JSON without mutating state
 
 ```json
@@ -110,6 +110,16 @@ LLMs exhibit a "progress forgery" failure mode — marking many items completed 
 1. **Bulk shortcut rejection**: at most one pending/new item may jump straight to completed per call (`directCompletions ≤ 1`); exceeding the limit rejects the entire batch and feeds the error back to the LLM for self-healing
 2. **cancelled → completed is always rejected**: a cancelled item signals abandonment; it must first return to pending/in_progress
 3. **Threshold of 1, not 0**: preserves the legitimate "finished the work, recording it now" flow while blocking bulk forgery
+
+### Started-Item Preservation (Partial-Update Merge)
+
+When updating a plan incrementally, LLMs tend to submit only the items still being executed plus new ones. Treated as a pure full replacement, any started item would silently vanish from the authoritative state — losing completed items destroys history (progress counters shrink, the plan file keeps only the tail), and losing in_progress items drops work currently underway (starving the autoExecuting continuation). plan_write therefore merges before writing (`mergeWithPreservedCompleted`):
+
+1. **Walk the prior snapshot in its original order**: an item present in the new list takes the new version; an absent item that is in_progress/completed is kept as-is; an absent item that is pending/cancelled is dropped (items never started may be pruned; the sanctioned way to abandon an item is an explicit `cancelled` mark)
+2. **Append brand-new items** at the end, preserving the submitted order
+3. **Stable ordering**: existing items always keep their creation order, so TUI numbering never jumps across updates
+
+Anti-cheat validation still applies only to the items submitted in the current call — preserved historical items cannot bypass it.
 
 ### Markdown Plan File (PlanWriter)
 

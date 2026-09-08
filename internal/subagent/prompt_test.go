@@ -75,3 +75,24 @@ func TestPromptBuilderSandboxContextChaining(t *testing.T) {
 		t.Error("WithSandboxContext 应支持链式调用")
 	}
 }
+
+// TestPromptBuilderWithSandboxDegraded 验证子代理 prompt 的降级说明注入：
+// 主会话 Sandbox 降级时，子代理同样运行在宿主机本地，必须如实告知。
+func TestPromptBuilderWithSandboxDegraded(t *testing.T) {
+	pb := newPromptBuilder("你是助手。", "/work", nil, nil).
+		WithSandboxDegraded("daemon 不可用")
+	got := pb.Build()
+
+	if !strings.Contains(got, "执行环境（Sandbox 已降级") {
+		t.Error("降级时子代理 prompt 应包含降级说明 Section")
+	}
+	if !strings.Contains(got, "daemon 不可用") {
+		t.Error("降级说明应包含原因")
+	}
+	if !strings.Contains(got, "宿主机本地") {
+		t.Error("降级说明应说明本地执行")
+	}
+	if strings.Contains(got, "Docker 容器（Ubuntu 22.04）") {
+		t.Error("降级时不应注入容器环境说明")
+	}
+}
