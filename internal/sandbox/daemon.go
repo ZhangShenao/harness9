@@ -53,7 +53,7 @@ func ensureDaemonReady(ctx context.Context, run cmdRunner) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("等待 docker daemon 就绪时被取消: %w", ctx.Err())
+			return fmt.Errorf("等待 docker daemon 就绪时被取消：%w", ctx.Err())
 		case <-time.After(daemonProbeInterval):
 		}
 		if probe() == nil {

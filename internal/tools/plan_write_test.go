@@ -348,7 +348,7 @@ func TestPlanWriteTool_PartialUpdatePreservesCompleted(t *testing.T) {
 
 	stored := store.Read()
 	if len(stored) != 8 {
-		t.Fatalf("部分更新后应保留全部 8 条（含已完成历史），实际 %d 条: %+v", len(stored), stored)
+		t.Fatalf("部分更新后应保留全部 8 条（含已完成历史），实际 %d 条：%+v", len(stored), stored)
 	}
 	// 顺序必须稳定：1-8 保持首次创建顺序，TUI 编号不跳变
 	for i, want := range []string{"1", "2", "3", "4", "5", "6", "7", "8"} {
@@ -406,13 +406,13 @@ func TestPlanWriteTool_PartialUpdateAppendsNewItems(t *testing.T) {
 		t.Fatalf("want 3 items, got %d: %+v", len(stored), stored)
 	}
 	if stored[0].ID != "1" || stored[0].Status != planning.PlanCompleted {
-		t.Errorf("已完成条目应被保留且在前: %+v", stored[0])
+		t.Errorf("已完成条目应被保留且在前：%+v", stored[0])
 	}
 	if stored[1].ID != "2" || stored[1].Status != planning.PlanInProgress {
-		t.Errorf("活跃条目应更新为新版本: %+v", stored[1])
+		t.Errorf("活跃条目应更新为新版本：%+v", stored[1])
 	}
 	if stored[2].ID != "3" || stored[2].Content != "new step" {
-		t.Errorf("新增条目应追加在末尾: %+v", stored[2])
+		t.Errorf("新增条目应追加在末尾：%+v", stored[2])
 	}
 }
 
@@ -450,13 +450,13 @@ func TestPlanWriteTool_OmittedNonCompletedDropped(t *testing.T) {
 		t.Fatalf("want 3 items (保留 2/3 + 新增 5), got %d: %+v", len(stored), stored)
 	}
 	if stored[0].ID != "2" || stored[0].Status != planning.PlanInProgress {
-		t.Errorf("被省略的 in_progress 条目应保留: %+v", stored[0])
+		t.Errorf("被省略的 in_progress 条目应保留：%+v", stored[0])
 	}
 	if stored[1].ID != "3" || stored[1].Status != planning.PlanCompleted {
-		t.Errorf("被省略的 completed 条目应保留: %+v", stored[1])
+		t.Errorf("被省略的 completed 条目应保留：%+v", stored[1])
 	}
 	if stored[2].ID != "5" {
-		t.Errorf("新增条目应追加在末尾: %+v", stored[2])
+		t.Errorf("新增条目应追加在末尾：%+v", stored[2])
 	}
 }
 
@@ -490,10 +490,10 @@ func TestPlanWriteTool_PlanWriterReceivesMergedList(t *testing.T) {
 		t.Fatalf("PlanWriter.Write should be called twice, called %d times", pw.calls)
 	}
 	if len(pw.last) != 2 {
-		t.Errorf("PlanWriter 应收到合并后的 2 条，实际 %d 条: %+v", len(pw.last), pw.last)
+		t.Errorf("PlanWriter 应收到合并后的 2 条，实际 %d 条：%+v", len(pw.last), pw.last)
 	}
 	if pw.last[0].ID != "1" || pw.last[0].Status != planning.PlanCompleted {
-		t.Errorf("PlanWriter 收到的列表应保留已完成条目: %+v", pw.last[0])
+		t.Errorf("PlanWriter 收到的列表应保留已完成条目：%+v", pw.last[0])
 	}
 }
 
