@@ -578,6 +578,13 @@ func (m tuiModel) renderSandboxBar() string {
 	parts = append(parts, sandboxBarBgStyle.Render("[Sandbox]"))
 
 	for i, info := range m.sandboxes {
+		// 降级快照（启动失败，无真实容器）：显示醒目的本地执行提示而非空 ID 的失败条目。
+		// 静默降级会让用户误以为沙箱在正常工作（线上事故：会话实际全程本地执行，用户无从知晓）。
+		if info.State == sandbox.StateFailed {
+			parts = append(parts, sandboxFailedStyle.Render("已降级：本地进程执行"))
+			continue
+		}
+
 		label := "main"
 		if i > 0 {
 			label = fmt.Sprintf("sub-%d", i)

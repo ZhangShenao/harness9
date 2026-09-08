@@ -152,6 +152,12 @@ func (c *Container) Start(ctx context.Context) error {
 		select {
 		case <-startCtx.Done():
 			c.setState(StateFailed, fmt.Errorf("等待容器就绪超时（%v）", c.cfg.StartTimeout))
+			// docker run 已成功，容器此刻真实存在——不清理会以 Running 状态泄漏到下次
+			// 会话才被 ReapOrphans 回收，期间持有 bind mount 拖慢 macOS Docker Desktop。
+			// startCtx 已过期，须用独立短超时执行清理（fail-soft：失败不影响错误返回）。
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cleanupCancel()
+			_, _ = c.run(cleanupCtx, "rm", "-f", dockerID)
 			return c.err
 		case <-time.After(200 * time.Millisecond):
 		}
