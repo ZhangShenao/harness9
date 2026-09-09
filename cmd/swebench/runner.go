@@ -43,6 +43,23 @@ const verifyGateText = "你似乎尚未运行过任何测试就准备结束。�
 	"（必要时用 `python -m ensurepip --upgrade && python -m pip install -e . pytest` 安装依赖、用 timeout_secs 放宽超时）。" +
 	"验证通过、或确认环境确实无法运行测试并说明原因后，再结束。"
 
+// streamStats 汇总一次流式运行的轮内观测指标（单次 streamOnce 的产出）。
+type streamStats struct {
+	ranTest    bool // 是否出现过疑似测试运行的 bash 调用（looksLikeTestRun 判定）
+	planWrites int  // plan_write 工具调用次数（Planning 实际采用信号）
+	maxTurn    int  // 本次运行到达的最大 Turn 序号
+}
+
+// mergeStats 合并多次续跑的统计：ranTest 取或、planWrites 求和、maxTurn 取大。
+// 验证关卡续跑复用同一引擎与会话，各指标必须跨续跑累计才反映全轨迹。
+func mergeStats(a, b streamStats) streamStats {
+	return streamStats{
+		ranTest:    a.ranTest || b.ranTest,
+		planWrites: a.planWrites + b.planWrites,
+		maxTurn:    max(a.maxTurn, b.maxTurn),
+	}
+}
+
 // testRunnerTokens 是判定一条 bash 命令"是否在运行测试"的子串特征（小写匹配）。
 var testRunnerTokens = []string{
 	"pytest", "py.test", "-m unittest", "unittest discover",
@@ -213,6 +230,8 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	if err != nil {
 		return RunResult{Instance: inst, Error: fmt.Errorf("创建 LLM provider 失败：%w", err), Duration: time.Since(start)}
 	}
+	// 用量计数装饰器：累计本实例的真实账单 token 与调用次数（含重试）。
+	counter := newCountingProvider(llm)
 	// 上下文窗口与压缩器：此前 benchmark 未配置 compactor，长轨迹上下文无界增长，
 	// 触及模型窗口后 API 返回 400（prompt too long），在无重试时直接杀实例。
 	// 这里用无需 LLM、无需 session 的 TokenBudgetCompactor 做字符级裁剪；
@@ -244,7 +263,7 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 		// （此前沿用引擎默认 500，配合每实例超时会在卡死实例上烧掉大量 token）。
 		engOpts = append(engOpts, engine.WithMaxTurns(benchmarkMaxTurns))
 	}
-	eng := engine.NewAgentEngine(llm, hookReg, tmpDir, engOpts...)
+	eng := engine.NewAgentEngine(counter, hookReg, tmpDir, engOpts...)
 
 	// 6. 执行 agent loop（带 per-instance 超时），同时将完整 trajectory 写入日志
 	instanceCtx, instanceCancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMins)*time.Minute)
@@ -253,7 +272,7 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	// logs/<RunID>/ 目录由 main.go 在进入并发循环前统一创建（os.MkdirAll），此处无需再建。
 	// 按 RunID 命名空间隔离，避免不同运行的同名日志互相覆盖、污染分析。
 	logPath := filepath.Join(cfg.OutputDir, "logs", cfg.RunID, inst.InstanceID+".log")
-	runErr := runWithVerificationGate(instanceCtx, eng, "请修复上述 Issue。", logPath, inst)
+	stats, gateTriggered, runErr := runWithVerificationGate(instanceCtx, eng, "请修复上述 Issue。", logPath, inst)
 
 	// 7. 收集 patch（无论 runErr 如何，MaxTurns 触发时也可能有部分 patch）
 	// 先 `git add -A -N`（intent-to-add）登记新建文件：纯 `git diff` 只输出已跟踪文件的改动，
@@ -265,17 +284,28 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	patchOut, _ := exec.CommandContext(diffCtx, "git", "-C", tmpDir, "diff").CombinedOutput()
 	patch := strings.TrimSpace(string(patchOut))
 
-	if runErr != nil && patch == "" {
-		return RunResult{Instance: inst, Error: runErr, Duration: time.Since(start)}
+	buildResult := func(patch string, runErr error) RunResult {
+		in, out, calls := counter.snapshot()
+		return RunResult{
+			Instance: inst, Patch: patch, Error: runErr, Duration: time.Since(start),
+			InputTokens: in, OutputTokens: out, LLMCalls: calls,
+			Turns: stats.maxTurn, PlanWrites: stats.planWrites,
+			VerifyGateActive: gateTriggered, RanTest: stats.ranTest,
+		}
 	}
-	return RunResult{Instance: inst, Patch: patch, Duration: time.Since(start)}
+
+	if runErr != nil && patch == "" {
+		return buildResult("", runErr)
+	}
+	return buildResult(patch, nil)
 }
 
 // runWithVerificationGate 执行 agent loop 并将完整 trajectory 写入 logPath，
 // 在 Agent 自然结束却"全程未运行过任何测试"时，注入一次续跑提示要求真实验证（验证关卡，
 // 轨迹分析 R2）。续跑复用同一引擎 + 内存会话（历史完整延续），且至多一次，由 per-instance
 // 超时与 turn 上限共同兜底，避免在不可运行环境里 livelock。日志文件创建失败时 fail-open。
-func runWithVerificationGate(ctx context.Context, eng *engine.AgentEngine, userPrompt, logPath string, inst Instance) error {
+// 返回值 gateTriggered 表示验证关卡是否注入过（观测指标，不影响控制流）。
+func runWithVerificationGate(ctx context.Context, eng *engine.AgentEngine, userPrompt, logPath string, inst Instance) (stats streamStats, gateTriggered bool, runErr error) {
 	// 创建日志文件（fail-open：失败时写入 Discard，agent 继续运行）
 	var w io.Writer = io.Discard
 	if lf, err := os.Create(logPath); err == nil {
@@ -290,31 +320,38 @@ func runWithVerificationGate(ctx context.Context, eng *engine.AgentEngine, userP
 	fmt.Fprintf(w, "BaseCommit:  %s\n", inst.BaseCommit)
 	fmt.Fprintf(w, "StartTime:   %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
 
-	ranTest, runErr := streamOnce(ctx, eng, w, userPrompt)
+	first, runErr := streamOnce(ctx, eng, w, userPrompt)
+	stats = first
 
 	// 验证关卡：Agent 已自然结束（ctx 未取消）但全程未运行任何测试 → 注入一次续跑提示。
-	if !ranTest && ctx.Err() == nil {
+	if !first.ranTest && ctx.Err() == nil {
+		gateTriggered = true
 		fmt.Fprint(w, "\n\n=== 验证关卡：未检测到任何测试运行，注入续跑提示要求真实验证 ===\n")
-		ranTest2, err2 := streamOnce(ctx, eng, w, verifyGateText)
+		second, err2 := streamOnce(ctx, eng, w, verifyGateText)
+		stats = mergeStats(stats, second)
 		runErr = errors.Join(runErr, err2)
-		if !ranTest2 {
+		if !second.ranTest {
 			fmt.Fprint(w, "\n\n=== 验证关卡：续跑后仍未运行测试（可能环境无法运行或 Agent 坚持静态分析）===\n")
 		}
 	}
 
-	return runErr
+	return stats, gateTriggered, runErr
 }
 
-// streamOnce 驱动一次 RunStream，把所有事件以可读格式写入 w，并返回本次是否运行过测试。
-// ranTest 通过对 bash 工具调用的 command 应用 looksLikeTestRun 启发式判定。
-func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userPrompt string) (ranTest bool, runErr error) {
+// streamOnce 驱动一次 RunStream，把所有事件以可读格式写入 w，并返回本次运行的观测统计。
+// ranTest 通过对 bash 工具调用的 command 应用 looksLikeTestRun 启发式判定；
+// planWrites 统计 plan_write 工具调用次数（Planning 实际采用信号）。
+func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userPrompt string) (stats streamStats, runErr error) {
 	stream, err := eng.RunStream(ctx, userPrompt)
 	if err != nil {
-		return false, err
+		return stats, err
 	}
 
 	currentTurn := 0
 	for evt := range stream {
+		if evt.Turn > stats.maxTurn {
+			stats.maxTurn = evt.Turn
+		}
 		// 新 Turn 时打印分隔符
 		if evt.Turn > 0 && evt.Turn != currentTurn {
 			currentTurn = evt.Turn
@@ -331,6 +368,10 @@ func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userP
 		case engine.EventToolStart:
 			tc := evt.Data.(schema.ToolCall)
 			fmt.Fprintf(w, "\n\n[Tool Call: %s]\n%s\n", tc.Name, string(tc.Arguments))
+			// Planning 采用信号：统计 plan_write 调用次数。
+			if tc.Name == "plan_write" {
+				stats.planWrites++
+			}
 			// 验证关卡信号：检测 bash 是否在运行测试（解析 command 字段后判定，避免误把
 			// `grep pytest` 当成测试运行）。
 			if tc.Name == "bash" {
@@ -338,7 +379,7 @@ func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userP
 					Command string `json:"command"`
 				}
 				if json.Unmarshal(tc.Arguments, &a) == nil && looksLikeTestRun(a.Command) {
-					ranTest = true
+					stats.ranTest = true
 				}
 			}
 
@@ -373,5 +414,5 @@ func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userP
 		}
 	}
 
-	return ranTest, runErr
+	return stats, runErr
 }

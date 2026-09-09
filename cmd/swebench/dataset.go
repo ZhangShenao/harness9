@@ -65,6 +65,18 @@ type RunResult struct {
 	Patch    string
 	Error    error
 	Duration time.Duration
+
+	// 轮内观测指标（v4 新增）：效率分析、Planning 采用观察与验证关卡统计的数据源。
+	// InputTokens/OutputTokens/LLMCalls 来自 countingProvider（真实账单口径，含重试）；
+	// Turns 为到达的最大 Turn 序号；PlanWrites 为 plan_write 调用次数；
+	// VerifyGateActive 表示验证关卡是否注入过；RanTest 表示全程是否疑似运行过测试。
+	InputTokens      int64
+	OutputTokens     int64
+	LLMCalls         int64
+	Turns            int
+	PlanWrites       int
+	VerifyGateActive bool
+	RanTest          bool
 }
 
 // loadDataset 从 JSONL 文件加载所有 instance。

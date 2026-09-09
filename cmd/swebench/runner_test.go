@@ -43,3 +43,40 @@ func TestLooksLikeTestRun(t *testing.T) {
 		}
 	}
 }
+
+// TestMergeStats 验证两次续跑统计的合并语义：ranTest 取或、planWrites 求和、maxTurn 取大。
+// 验证关卡续跑复用同一引擎/会话，合并口径必须覆盖"续跑后才出现测试运行"等场景。
+func TestMergeStats(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b streamStats
+		want streamStats
+	}{
+		{
+			name: "续跑后出现测试运行",
+			a:    streamStats{ranTest: false, planWrites: 1, maxTurn: 12},
+			b:    streamStats{ranTest: true, planWrites: 0, maxTurn: 5},
+			want: streamStats{ranTest: true, planWrites: 1, maxTurn: 12},
+		},
+		{
+			name: "两次均无测试运行",
+			a:    streamStats{ranTest: false, planWrites: 2, maxTurn: 3},
+			b:    streamStats{ranTest: false, planWrites: 1, maxTurn: 9},
+			want: streamStats{ranTest: false, planWrites: 3, maxTurn: 9},
+		},
+		{
+			name: "零值合并",
+			a:    streamStats{},
+			b:    streamStats{},
+			want: streamStats{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := mergeStats(c.a, c.b)
+			if got != c.want {
+				t.Fatalf("mergeStats(%+v, %+v) = %+v, want %+v", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
