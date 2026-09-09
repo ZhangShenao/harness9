@@ -1,0 +1,87 @@
+// Package main — usage：SWE-bench runner 的实际 token 用量采集与落盘。
+// countingProvider 以装饰器模式包装 LLMProvider，按实例累计真实账单口径的
+// input/output token 与调用次数（含重试）；UsageRecord 落盘 usage.jsonl，
+// 供效率分析（tokens/turns/时长）与 Planning 采用观察使用。
+package main
+
+import (
+	"context"
+	"sync"
+
+	"github.com/harness9/internal/provider"
+	"github.com/harness9/internal/schema"
+)
+
+// countingProvider 包装内层 LLMProvider，按实例累计实际 token 用量与调用次数。
+// 计数口径为真实账单：每次请求发起即计一次调用（含重试与建流失败）；
+// token 仅在响应携带 usage 时累计，usage 缺失时静默跳过（不影响主流程）。
+type countingProvider struct {
+	inner provider.LLMProvider
+
+	mu           sync.Mutex
+	inputTokens  int64
+	outputTokens int64
+	llmCalls     int64
+}
+
+// newCountingProvider 构造用量计数装饰器。
+func newCountingProvider(inner provider.LLMProvider) *countingProvider {
+	return &countingProvider{inner: inner}
+}
+
+// snapshot 返回当前累计值的副本（结果落盘用）。
+func (c *countingProvider) snapshot() (input, output, calls int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.inputTokens, c.outputTokens, c.llmCalls
+}
+
+// addTokens 在锁内累计 token。
+func (c *countingProvider) addTokens(in, out int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.inputTokens += in
+	c.outputTokens += out
+}
+
+// bumpCalls 在锁内累计调用次数。
+func (c *countingProvider) bumpCalls() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.llmCalls++
+}
+
+// Generate 透传阻塞式调用并累计 usage。
+func (c *countingProvider) Generate(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (*schema.Message, *schema.Usage, error) {
+	c.bumpCalls()
+	msg, usage, err := c.inner.Generate(ctx, messages, availableTools)
+	if usage != nil {
+		c.addTokens(int64(usage.InputTokens), int64(usage.OutputTokens))
+	}
+	return msg, usage, err
+}
+
+// GenerateStream 透交流式调用，转发 chunk 的同时拦截 StreamChunkDone 的 usage。
+// 转发 goroutine 感知 ctx 取消：引擎停止消费（超时/中断）时退出，不阻塞泄漏。
+func (c *countingProvider) GenerateStream(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (<-chan schema.StreamChunk, error) {
+	c.bumpCalls()
+	innerCh, err := c.inner.GenerateStream(ctx, messages, availableTools)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan schema.StreamChunk, 16)
+	go func() {
+		defer close(out)
+		for chunk := range innerCh {
+			if chunk.Type == schema.StreamChunkDone && chunk.Usage != nil {
+				c.addTokens(int64(chunk.Usage.InputTokens), int64(chunk.Usage.OutputTokens))
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case out <- chunk:
+			}
+		}
+	}()
+	return out, nil
+}
