@@ -120,3 +120,45 @@ func sampleByRepo(instances []Instance, n int, seed int64) []Instance {
 	rng.Shuffle(len(sampled), func(i, j int) { sampled[i], sampled[j] = sampled[j], sampled[i] })
 	return sampled
 }
+
+// loadInstanceFilter 读取实例清单文件（每行一个 instance_id，# 注释与空行忽略，
+// 首尾空白裁剪），返回 id 集合。文件不可读时返回错误。
+func loadInstanceFilter(path string) (map[string]bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("打开实例清单失败：%w", err)
+	}
+	defer f.Close()
+	ids := make(map[string]bool)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		ids[line] = true
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("读取实例清单失败：%w", err)
+	}
+	return ids, nil
+}
+
+// filterInstances 返回 instances 中命中 filter 的子集（保持原顺序），
+// 并统计清单中数据集不存在的 id 数（调用方据此记警告——交集语义，不阻断）。
+func filterInstances(instances []Instance, filter map[string]bool) (filtered []Instance, missingCount int) {
+	present := make(map[string]bool, len(instances))
+	filtered = make([]Instance, 0, len(filter))
+	for _, inst := range instances {
+		present[inst.InstanceID] = true
+		if filter[inst.InstanceID] {
+			filtered = append(filtered, inst)
+		}
+	}
+	for id := range filter {
+		if !present[id] {
+			missingCount++
+		}
+	}
+	return filtered, missingCount
+}

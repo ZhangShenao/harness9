@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,5 +120,78 @@ func TestParseTestIDs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLoadInstanceFilter 验证清单解析：每行一个 id，# 注释与空行忽略，首尾空白裁剪。
+func TestLoadInstanceFilter(t *testing.T) {
+	content := "# 冒烟清单：v3 run1 子集\n\ndjango__django-12908\n  astropy__astropy-7746  \n# 下一行是注释\npsf__requests-1963\n"
+	tmp := filepath.Join(t.TempDir(), "instances.txt")
+	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	filter, err := loadInstanceFilter(tmp)
+	if err != nil {
+		t.Fatalf("loadInstanceFilter error: %v", err)
+	}
+	if len(filter) != 3 {
+		t.Fatalf("want 3 ids, got %d: %v", len(filter), filter)
+	}
+	for _, id := range []string{"django__django-12908", "astropy__astropy-7746", "psf__requests-1963"} {
+		if !filter[id] {
+			t.Errorf("filter 应包含 %s", id)
+		}
+	}
+}
+
+// TestLoadInstanceFilterFileNotFound 验证清单文件缺失时报错（与 dataset 缺失同级别处理）。
+func TestLoadInstanceFilterFileNotFound(t *testing.T) {
+	_, err := loadInstanceFilter("/nonexistent/instances.txt")
+	if err == nil {
+		t.Fatal("want error for missing file, got nil")
+	}
+}
+
+// TestFilterInstances 验证交集过滤：保持原顺序，missing 统计清单中数据集没有的 id。
+func TestFilterInstances(t *testing.T) {
+	instances := []Instance{
+		{InstanceID: "django-1", Repo: "django/django"},
+		{InstanceID: "django-2", Repo: "django/django"},
+		{InstanceID: "flask-1", Repo: "pallets/flask"},
+	}
+	filter := map[string]bool{"django-2": true, "flask-1": true, "ghost-9": true}
+	filtered, missing := filterInstances(instances, filter)
+	if len(filtered) != 2 {
+		t.Fatalf("want 2 filtered, got %d", len(filtered))
+	}
+	if filtered[0].InstanceID != "django-2" || filtered[1].InstanceID != "flask-1" {
+		t.Fatalf("过滤结果应保持原顺序，got %v", filtered)
+	}
+	if missing != 1 {
+		t.Fatalf("want 1 missing, got %d", missing)
+	}
+}
+
+// TestSampleByRepo_SupersetProperty 验证采样超集性质：同 seed 下小 n 的实例集
+// 是大 n 的子集（dataset.go 的 rng 只播种一次，per-repo shuffle 序列与 n 无关）。
+// 这是 v4 复用 v3 的 47 条做参考对照的数学基础。
+func TestSampleByRepo_SupersetProperty(t *testing.T) {
+	instances := make([]Instance, 0, 20)
+	for i := 1; i <= 10; i++ {
+		instances = append(instances,
+			Instance{InstanceID: fmt.Sprintf("django-%d", i), Repo: "django/django"},
+			Instance{InstanceID: fmt.Sprintf("flask-%d", i), Repo: "pallets/flask"},
+		)
+	}
+	small := sampleByRepo(instances, 2, 1)
+	large := sampleByRepo(instances, 4, 1)
+	inLarge := make(map[string]bool, len(large))
+	for _, inst := range large {
+		inLarge[inst.InstanceID] = true
+	}
+	for _, inst := range small {
+		if !inLarge[inst.InstanceID] {
+			t.Fatalf("同 seed 下 n=2 的实例 %s 应包含于 n=4 的采样结果（超集性质被破坏）", inst.InstanceID)
+		}
 	}
 }

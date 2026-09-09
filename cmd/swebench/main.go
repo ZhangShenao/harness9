@@ -56,6 +56,7 @@ func main() {
 	flag.IntVar(&cfg.TimeoutMins, "timeout", 30, "单个 instance 超时（分钟）")
 	flag.StringVar(&cfg.Model, "model", "", "LLM 模型名称（默认使用 LLM_MODEL 环境变量）")
 	flag.Int64Var(&cfg.Seed, "seed", 1, "按 repo 采样的随机种子（固定默认值保证可复现；同 seed → 同实例集）")
+	flag.StringVar(&cfg.InstancesPath, "instances", "", "实例清单文件（每行一个 instance_id，# 注释）；先过滤后采样，--sample 上限仍生效")
 	flag.Parse()
 
 	if cfg.DatasetPath == "" {
@@ -93,6 +94,24 @@ func main() {
 	// 解析实际使用的模型名（用于填写 predictions.jsonl 的 model_name_or_path 字段）
 	modelName := resolveModelName(cfg.Model)
 	fmt.Fprintf(os.Stderr, "使用模型: %s\n", modelName)
+
+	// 实例清单过滤（--instances）：先缩小全集，再交给 sampleByRepo 做 per-repo 上限。
+	// 清单中数据集缺失的 id 记警告不阻断（交集语义）；过滤结果为空才 fail-fast。
+	if cfg.InstancesPath != "" {
+		filter, err := loadInstanceFilter(cfg.InstancesPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "加载实例清单失败: %v\n", err)
+			os.Exit(1)
+		}
+		filtered, missing := filterInstances(allInstances, filter)
+		if len(filtered) == 0 {
+			fmt.Fprintf(os.Stderr, "实例清单过滤后为空（清单 %d 条 id 均不在数据集中）\n", len(filter))
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "实例清单过滤：%d → %d 条（清单 %d 条，数据集缺失 %d 条）\n",
+			len(allInstances), len(filtered), len(filter), missing)
+		allInstances = filtered
+	}
 
 	// 按 repo 采样（固定 seed → 可复现；--resume 时同 seed 自然复现同一实例集）
 	instances := sampleByRepo(allInstances, cfg.SampleN, cfg.Seed)

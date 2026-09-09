@@ -102,6 +102,9 @@ type Config struct {
 	// Seed 是按 repo 采样的随机种子。固定默认值保证基准可复现（同 seed → 同实例集），
 	// 修复了此前用 time.Now().UnixNano() 导致每次运行抽样不同、无法对比迭代效果的问题。
 	Seed int64
+	// InstancesPath 是可选的实例清单文件路径（每行一个 instance_id，# 注释）。
+	// 先过滤后采样：清单缩小实例全集后 --sample 的 per-repo 上限照常生效。
+	InstancesPath string
 	// RunID 标识本次运行，用于将 trajectory 日志写入 logs/<RunID>/，避免多次运行互相覆盖/污染。
 	RunID string
 }
