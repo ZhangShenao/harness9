@@ -6,6 +6,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
 	"sync"
 
 	"github.com/harness9/internal/provider"
@@ -84,4 +87,36 @@ func (c *countingProvider) GenerateStream(ctx context.Context, messages []schema
 		}
 	}()
 	return out, nil
+}
+
+// UsageRecord 是 usage.jsonl 的一行：单实例的轮内观测指标，与 predictions.jsonl
+// 逐条对应。JSON tag 为 snake_case 契约，compare.py 按字段名消费。
+type UsageRecord struct {
+	InstanceID   string  `json:"instance_id"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	LLMCalls     int64   `json:"llm_calls"`
+	Turns        int     `json:"turns"`
+	PlanWrites   int     `json:"plan_writes"`
+	VerifyGate   bool    `json:"verify_gate"`
+	RanTest      bool    `json:"ran_test"`
+	DurationSec  float64 `json:"duration_sec"`
+}
+
+// appendUsage 将单条 UsageRecord 追加写入 usage.jsonl（立即落盘，
+// 与 predictions.jsonl 同节奏——崩溃时最多丢当前实例，不丢已完成实例）。
+func appendUsage(path string, r UsageRecord) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("打开 usage 文件失败：%w", err)
+	}
+	defer f.Close()
+	data, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("序列化 usage 记录失败：%w", err)
+	}
+	if _, err := fmt.Fprintf(f, "%s\n", data); err != nil {
+		return fmt.Errorf("写入 usage 记录失败：%w", err)
+	}
+	return nil
 }

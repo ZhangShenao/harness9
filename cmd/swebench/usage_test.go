@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -135,5 +139,50 @@ func TestCountingProviderConcurrent(t *testing.T) {
 	in, out, calls := cp.snapshot()
 	if in != 200 || out != 20 || calls != 20 {
 		t.Fatalf("want (200, 20, 20), got (%d, %d, %d)", in, out, calls)
+	}
+}
+
+// TestAppendUsage 验证 usage.jsonl 的追加写与 JSON 字段完整性：两次写入后应有两行，
+// 字段名与 spec §5.2 的 snake_case 契约一致。
+func TestAppendUsage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	rec := UsageRecord{
+		InstanceID:   "django__django-12908",
+		InputTokens:  123456,
+		OutputTokens: 7890,
+		LLMCalls:     23,
+		Turns:        12,
+		PlanWrites:   1,
+		VerifyGate:   false,
+		RanTest:      true,
+		DurationSec:  487,
+	}
+	if err := appendUsage(path, rec); err != nil {
+		t.Fatalf("appendUsage error: %v", err)
+	}
+	if err := appendUsage(path, UsageRecord{InstanceID: "flask__flask-4992", Turns: 3, DurationSec: 61.4}); err != nil {
+		t.Fatalf("appendUsage 第二次写入 error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取 usage.jsonl 失败: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines, got %d", len(lines))
+	}
+	var got UsageRecord
+	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
+		t.Fatalf("第一行非法 JSON: %v", err)
+	}
+	if got != rec {
+		t.Fatalf("roundtrip 不一致:\n got %+v\nwant %+v", got, rec)
+	}
+	// 字段名契约：锁定 snake_case JSON tag（compare.py 依赖）
+	for _, key := range []string{"instance_id", "input_tokens", "output_tokens", "llm_calls", "turns", "plan_writes", "verify_gate", "ran_test", "duration_sec"} {
+		if !strings.Contains(lines[0], `"`+key+`"`) {
+			t.Errorf("usage.jsonl 缺少字段 %s", key)
+		}
 	}
 }

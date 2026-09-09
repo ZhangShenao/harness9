@@ -119,6 +119,7 @@ func main() {
 
 	// 加载已有结果（--resume 模式）
 	predictionsPath := filepath.Join(cfg.OutputDir, "predictions.jsonl")
+	usagePath := filepath.Join(cfg.OutputDir, "usage.jsonl")
 	skipIDs := make(map[string]bool)
 	if cfg.Resume {
 		skipIDs, err = loadExistingIDs(predictionsPath)
@@ -185,6 +186,19 @@ func main() {
 				ModelNameOrPath: modelName,
 			}); appendErr != nil {
 				fmt.Fprintf(os.Stderr, "[error] 写入 predictions 失败 (%s): %v\n", inst.InstanceID, appendErr)
+			}
+			if usageErr := appendUsage(usagePath, UsageRecord{
+				InstanceID:   inst.InstanceID,
+				InputTokens:  result.InputTokens,
+				OutputTokens: result.OutputTokens,
+				LLMCalls:     result.LLMCalls,
+				Turns:        result.Turns,
+				PlanWrites:   result.PlanWrites,
+				VerifyGate:   result.VerifyGateActive,
+				RanTest:      result.RanTest,
+				DurationSec:  result.Duration.Round(time.Second).Seconds(),
+			}); usageErr != nil {
+				fmt.Fprintf(os.Stderr, "[error] 写入 usage 失败 (%s): %v\n", inst.InstanceID, usageErr)
 			}
 			mu.Unlock()
 
