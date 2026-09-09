@@ -26,15 +26,14 @@
 
 ## 2. 评分结果
 
-### 2.1 最终评分（待镜像拉取完成后更新）
+### 2.1 最终评分（待网络修复后自动完成）
 
-> ⚠️ 本节为**占位**：官方 harness 需 77 个 `swebench/sweb.eval.x86_64.*` 每实例镜像（约 110GB），首轮评分因 registry 对大 blob 传输的限速全部 404/挂起。镜像已在后台持续补拉，完成后以下命令出最终数字并更新本节：
+> ⚠️ 本节为**占位**：官方 harness 需 77 个 `swebench/sweb.eval.x86_64.*` 每实例镜像（约 110GB）。拉取受阻的根因已定位为**主机网络 MTU 黑洞**（会话中途出现：≤1100 字节 DF 包 100% 通过、≥1300 字节 100% 丢失——小 API 请求正常、大 blob 传输 0 字节挂起；`DOCKER_DEFAULT_PLATFORM` 对 swebench 无效因其走 docker-py；registry-mirrors 已配置但同样被 MTU 卡死）。
+>
+> **一键修复（需要 sudo）**：`sudo ifconfig en0 mtu 1200`，修复后无需任何手工操作——自愈链已挂好：`/tmp/mtu-watchdog.sh`（探测恢复 → 重启 `/tmp/prepull_v4.sh` 12 路预拉）→ 镜像满 77 → `/tmp/autoscore_v4.sh` 自动以 run_id `harness9-lite-v5` 评分 → 报告 `moonshotai__kimi-k3.harness9-lite-v5.json`。届时以下命令出最终数字并回填本节：
 >
 > ```bash
-> python3 -m swebench.harness.run_evaluation --dataset_name princeton-nlp/SWE-bench_Lite \
->     --predictions_path ./benchmarks/swebench/v4-expansion/predictions.jsonl \
->     --max_workers 4 --run_id harness9-lite-v4
-> python3 benchmarks/swebench/compare.py --report moonshotai__kimi-k3.harness9-lite-v4.json \
+> python3 benchmarks/swebench/compare.py --report moonshotai__kimi-k3.harness9-lite-v5.json \
 >     --usage benchmarks/swebench/v4-expansion/usage.jsonl \
 >     --reference-report benchmarks/swebench/v3-compare/anthropic__claude-sonnet-4.6.harness9-lite-v3.json
 > ```
