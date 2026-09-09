@@ -16,6 +16,7 @@ import (
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/memory"
+	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/provider"
 	"github.com/harness9/internal/sandbox"
 	"github.com/harness9/internal/schema"
@@ -210,12 +211,18 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 
 	// 4. 注册工具
 	registry := tools.NewRegistry()
+	// 原生规划能力（与 main.go 同款装配，但不接 FilePlanWriter）：plan_write 只写 PlanStore
+	// （Session 检查点走内存会话），不落 markdown 文件——FilePlanWriter 会把计划写进
+	// workDir/.harness9/plans/，污染 git diff 即 model_patch，benchmark 场景必须排除。
+	// PlanWrites 观测指标依赖此注册（Planning 采用率是本任务的核心观测目标）。
+	planStore := planning.NewPlanStore()
 	toolList := []tools.BaseTool{
 		// 放宽 bash 超时（默认 120s → 300s），让真实测试套件 / 依赖安装得以完成。
 		tools.NewBashTool(tmpDir, tools.WithEnvironment(env), tools.WithBashTimeout(benchmarkBashTimeout)),
 		tools.NewReadFileTool(tmpDir, tools.ReadFileWithEnvironment(env)),
 		tools.NewWriteFileTool(tmpDir, tools.WriteFileWithEnvironment(env)),
 		tools.NewEditFileTool(tmpDir, tools.EditFileWithEnvironment(env)),
+		tools.NewPlanWriteTool(planStore),
 	}
 	for _, t := range toolList {
 		if err := registry.Register(t); err != nil {
@@ -249,6 +256,9 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 		engine.WithContextWindow(lim.ContextTokens),
 		engine.WithCompactor(compactor),
 		engine.WithSession(sess),
+		// 原生规划：引擎每轮把活跃 Plan 原样注入发送视图（压缩免疫），
+		// plan_write 成功轮经 Session 检查点落盘（MemorySession 支撑）。
+		engine.WithPlanStore(planStore),
 		// 无人值守：显式短路审批，零延迟（不依赖是否注册了 hook）。
 		engine.WithPermissionMode(engine.PermissionModeBypassAll),
 		// 瞬时 LLM/流式错误的应用层重试：把"一次抖动杀实例"变为可恢复事件。

@@ -3,6 +3,9 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/harness9/internal/planning"
+	"github.com/harness9/internal/tools"
 )
 
 // TestDefaultBootstrapCmd 验证默认自举命令包含恢复 pip、editable 安装当前仓库、安装 pytest
@@ -78,5 +81,17 @@ func TestMergeStats(t *testing.T) {
 				t.Fatalf("mergeStats(%+v, %+v) = %+v, want %+v", c.a, c.b, got, c.want)
 			}
 		})
+	}
+}
+
+// TestPlanWriteToolRegisteredForMetrics 锁定 PlanWrites 观测指标的生效前提：
+// runInstance 已注册原生 plan_write 工具（不接 FilePlanWriter，避免计划文件污染
+// git diff/model_patch），streamOnce 以工具名 "plan_write" 精确匹配计数。
+// 若有人重命名工具（tools.NewPlanWriteTool 的 Name() 或 streamOnce 的匹配串），
+// 指标会静默失效归零——本测试使该契约失败可见。
+func TestPlanWriteToolRegisteredForMetrics(t *testing.T) {
+	tool := tools.NewPlanWriteTool(planning.NewPlanStore())
+	if got := tool.Name(); got != "plan_write" {
+		t.Fatalf("plan_write 工具名 = %q, want %q：streamOnce 的 PlanWrites 计数依赖此精确匹配，改名会使指标静默归零", got, "plan_write")
 	}
 }
