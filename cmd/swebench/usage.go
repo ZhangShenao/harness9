@@ -65,7 +65,7 @@ func (c *countingProvider) Generate(ctx context.Context, messages []schema.Messa
 }
 
 // GenerateStream 透交流式调用，转发 chunk 的同时拦截 StreamChunkDone 的 usage。
-// 转发 goroutine 感知 ctx 取消：引擎停止消费（超时/中断）时退出，不阻塞泄漏。
+// 转发 select 感知 ctx 取消：引擎停止消费（超时/中断）时不再阻塞；若内层流停滞且不关闭 channel，则依赖 provider 的 ctx 取消关流契约兜底。
 func (c *countingProvider) GenerateStream(ctx context.Context, messages []schema.Message, availableTools []schema.ToolDefinition) (<-chan schema.StreamChunk, error) {
 	c.bumpCalls()
 	innerCh, err := c.inner.GenerateStream(ctx, messages, availableTools)
