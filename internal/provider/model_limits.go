@@ -45,6 +45,9 @@ var knownModels = map[string]ModelLimits{
 	// Gemini
 	"gemini-2.0-flash": {ContextTokens: 1_048_576, OutputTokens: 8_192},
 	"gemini-2.5-pro":   {ContextTokens: 1_048_576, OutputTokens: 65_536},
+	// Moonshot Kimi（OpenRouter 元数据，2026-09 实测：context 1M / max_completion 943K，
+	// OutputTokens 取保守值 64K——单次响应远用不到 OpenRouter 上限）
+	"kimi-k3": {ContextTokens: 1_048_576, OutputTokens: 65_536},
 }
 
 // defaultLimits 用于 knownModels 中未找到的模型，256K 是保守回退值（与 HermesAgent 策略一致）。
