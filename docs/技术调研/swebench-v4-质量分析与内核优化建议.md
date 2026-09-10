@@ -9,6 +9,8 @@
 ## 0. 一句话结论
 
 > **验证闭环彻底恢复**（76/78 实例真实运行了测试，v1 时代为 0/24），runner 的环境自举 + 验证关卡 + 停滞提示三件套在 Kimi-K3 上端到端成立；**最终 resolve 率 67/78（85.9%）**（排除弃拉镜像口径 67/77=87.0%，剔除 runner 截断缺陷影响后潜在 69/77=89.6%）。最大的新发现不是失败模式，而是**评测完整性威胁**：沙箱可直连 GitHub，17% 实例抓取了上游 issue/patch 内容，必须用网络白名单封死。第二大新发现是 **runner 截断补丁缺陷**（§5.2）：`git diff` 超时被静默吞掉，2 例高质量修复被按 0 分计。Agent 能力侧的最大杠杆是 **Planning 采用率过低（2/78）**——原生规划能力已接通但 LLM 几乎不自发使用。
+>
+> **硬化终局（2026-09-10，47 实例验证轮）**：P0-1/P0-2/P0-3/P1-4 全部落地并经端到端验证——**41/47 = 87.2%，error 清零**，runner 输出管线缺陷归零（两轮共 5 例管线事故：主轮截断 2 + 验证轮换行 3 → 0），网络污染向量实弹封死（git fetch 上游 0ms 即拒），验证闭环 47/47 满格；过程中额外揪出并修复第四缺陷（TrimSpace 剥终止换行，见 §9）。flip 对照主轮 +3/-2 净持平，硬化无损伤。
 
 ---
 
@@ -176,17 +178,17 @@ astropy-14182/14365 官方评分报 Patch Apply Failed，复盘发现**不是模
 
 按杠杆排序；P0 直接影响下一轮评测分数的可信度，P1 影响 Agent 能力，P2 是工程效率。
 
-### P0-1 SWE-bench 沙箱网络白名单（消除评分污染）
+### P0-1 ✅ 已落地 — SWE-bench 沙箱网络白名单（消除评分污染）
 
 `internal/sandbox` 已有 Environment 抽象，docker environment 建容器时加网络策略：runner 传入 `--network` 约束或 iptables 规则——放行 `pypi.org`/`files.pythonhosted.org`（自举与装依赖必需），封禁 `github.com`/`raw.githubusercontent.com`/`api.github.com`/`codeload.github.com`。实现为 `SandboxConfig.NetworkAllowlist []string`，SWE-bench runner 设置之，TUI/主程序不受影响（默认全通）。**预估消除 ~17% 实例的污染向量**，否则任何 resolve 率都混杂"搜索能力"。
 
-### P0-2 评分基础设施脚本化（镜像预拉取 + 缓存管理）
+### P0-2 ✅ 已落地 — 评分基础设施脚本化（镜像预拉取 + 缓存管理）
 
 本轮暴露：77 个 x86_64 镜像 110GB 的拉取无脚本、无断点、受 registry 限速阻塞评分一天。补 `benchmarks/swebench/pull-images.sh`（清单由 predictions.jsonl + swebench spec 生成，`docker pull --platform linux/amd64`，带重试与跳过已有），并把"镜像就绪检查"做成评分前置步骤。顺带 `docker builder prune` 纳入常规清理（本地已积累 21.98GB build cache）。
 
 本轮实测补强两条工程参数：① Apple Silicon 上 Docker Desktop 拉取并发上限实测 **9 路安全**（12 路触发 daemon 500 错误风暴并回滚已拉镜像，损失约 1 小时）；② 大镜像（matplotlib 系）单张可达 4GB+ 且易遇下载连接僵死，需要"杀进程换新连接重试"的兜底，单纯退避等待无法恢复。另注意：swebench 拉镜像走 docker-py，**不读 `DOCKER_DEFAULT_PLATFORM`**，环境变量方案无效，必须 CLI `--platform linux/amd64` 预拉。
 
-### P0-3 runner patch 提取加固（本轮直接丢 2 分的缺陷）
+### P0-3 ✅ 已落地 — runner patch 提取加固（本轮直接丢 2 分的缺陷）
 
 runner.go:289-292 三处叠加缺陷（详见 §5.2）：
 
@@ -211,7 +213,7 @@ runner.go:289-292 三处叠加缺陷（详见 §5.2）：
 
 另据 §4.5 横向模式 1（7/7 实例均为"无回归式"验证），续跑提示的措辞应要求**正向断言**——"运行 Issue 的复现脚本并展示其从失败转为通过，点名跑你改动文件的测试"——而非泛泛的"跑一下测试"。无回归式验证（`git stash` 前后失败集合对比）在本轮 7 例 unresolved 中无一例外地给出了虚假信心。
 
-### P1-4 收尾验证预算：杜绝"最后一改未验证"交卷
+### P1-4 ✅ 已落地（观测口径 + 收尾门槛）— 杜绝"最后一改未验证"交卷
 
 pylint-7114 在第 80 轮（turn 上限）刚做完 edit 即被截断，终版 patch 零验证；seaborn-3407 在 1989s 被时间预算掐死在"降级 pandas 准备重跑官方测试"的验证半途。当前验证关卡只在"自然结束且从未跑过测试"时触发，对"预算耗尽前的最后改动"完全没有保护。建议：runner 感知预算余量，turns 或时长低于阈值（如剩余 10% / 5 turns）且存在未验证的改动时，注入一次"立即收尾：运行相关测试验证当前改动并总结"提示；若预算已不足以注入，在 usage.jsonl 标记 `final_edit_unverified=true` 供报告打折解读。
 
@@ -234,7 +236,9 @@ astropy/sklearn 的 55-59 中位 turns 里相当部分耗在依赖/编译反复�
 - [x] runner 增强 9 提交在 `opt/eval`（countingProvider / usage.jsonl / --instances / plan_write 注册 / compare.py / kimi-k3 注册，最终 review Approved）
 - [x] 官方 harness 最终评分（run_id `harness9-lite-v5`，2026-09-10 08:28，67/78=85.9%）+ compare-report.md（已按排除 23562 口径重生成：67/77=87.0%）
 - [x] 本质量分析与内核优化建议报告（含 2026-09-10 复盘增补：§4.5 失败归因、§5.2 runner 截断、§7 P0-3/P1-4）
-- [ ] P0-1/P0-2/P0-3 落地后用 astropy-14182/14365 + 47 实例冒烟集做验证轮
+- [x] P0-1/P0-2/P0-3/P1-4 全部落地（opt/eval，23 包测试全绿）并以 47 实例验证轮端到端确认（§9：41/47=87.2%，error 清零）
+- [x] 冒烟 24 实例产物入库（swebench-smoke/，提交 88b937f）
+- [ ] PR #116（opt/eval → master）审阅合并；下一杠杆：P1-1 Planning 激活机制
 
 ## 9. 硬化验证轮（2026-09-10，47 实例 = v3 全集）
 
@@ -251,4 +255,4 @@ P0-1/P0-3/P1-4 落地后以 `--sample 4 --seed 1` 复现 v3 全集做端到端�
 
 **flip 对照（同 47 实例，vs 主轮 v5）**：+3 转好（astropy-14365=P0-3 兑现、matplotlib-23562=镜像补齐、seaborn-3407=模型随机）、-2 波动（flask-4045、requests-2148），净效应持平（87.2% vs 主轮同子集 ~87%），硬化未损伤正常通过率，n=47 下 ±10pp 置信区间内一切翻转属模型随机性。
 
-**结论**：runner 输出管线缺陷清零（主轮 5 例评分事故 → 本轮 0），网络污染向量封死，验证闭环满格——硬化目标全部达成。
+**结论**：runner 输出管线缺陷清零（两轮共 5 例管线事故：主轮截断 2 + 验证轮换行 3 → 0），网络污染向量封死，验证闭环满格——硬化目标全部达成。
