@@ -33,6 +33,13 @@ type SandboxConfig struct {
 	BootstrapCmd string
 	// BootstrapTimeout 是 BootstrapCmd 的超时（默认 600s）。
 	BootstrapTimeout time.Duration
+	// NetworkBlockedHosts 是需要在容器内屏蔽的域名列表（docker --add-host <host>:0.0.0.0，
+	// 容器内 DNS 解析即失败）。用于 SWE-bench 场景封禁 github.com 等上游答案源、消除
+	// "Agent 抓上游 patch 污染评分"的向量（P0-1），同时不影响 pypi 等依赖自举通道。
+	// 定位是行为护栏而非安全边界：硬编码 IP + SNI 的访问可绕过（非对抗性威胁模型下足够）。
+	// 空列表表示不屏蔽，行为与引入前完全一致（向后兼容）。环境变量 SANDBOX_BLOCKED_HOSTS
+	// （逗号分隔）可设置。
+	NetworkBlockedHosts []string
 }
 
 // DefaultConfig 从环境变量读取配置，未设置时使用内置安全默认值。
@@ -45,11 +52,26 @@ func DefaultConfig() SandboxConfig {
 		PidsLimit: 256,
 		// StartTimeout 默认 60s：macOS Docker Desktop 冷启动/镜像首次挂载（VirtioFS）较慢，
 		// 30s 偶发超时导致会话启动即降级；配合 Manager.CreateWithRetry 的重试兜底。
-		StartTimeout:     60 * time.Second,
-		StopTimeout:      10 * time.Second,
-		BootstrapCmd:     os.Getenv("SANDBOX_BOOTSTRAP_CMD"),
-		BootstrapTimeout: time.Duration(getenvIntOr("SANDBOX_BOOTSTRAP_TIMEOUT_SECS", 600)) * time.Second,
+		StartTimeout:        60 * time.Second,
+		StopTimeout:         10 * time.Second,
+		BootstrapCmd:        os.Getenv("SANDBOX_BOOTSTRAP_CMD"),
+		BootstrapTimeout:    time.Duration(getenvIntOr("SANDBOX_BOOTSTRAP_TIMEOUT_SECS", 600)) * time.Second,
+		NetworkBlockedHosts: splitCSV(os.Getenv("SANDBOX_BLOCKED_HOSTS")),
 	}
+}
+
+// splitCSV 把逗号分隔的字符串切分为去空白、去空项的切片；空串返回 nil。
+func splitCSV(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // getenvOr 从环境变量读取 key，未设置或为空时返回 fallback。

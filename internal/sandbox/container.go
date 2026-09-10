@@ -116,9 +116,11 @@ func (c *Container) Start(ctx context.Context) error {
 	startCtx, cancel := context.WithTimeout(ctx, c.cfg.StartTimeout)
 	defer cancel()
 
-	dockerID, err := c.run(startCtx,
+	// 网络封禁（P0-1）：--add-host 把被屏蔽域名解析钉到 0.0.0.0，容器内访问即刻
+	// 连接失败。仍归"选项区"，置于 bind mount 之前。
+	args := []string{
 		"run", "-d",
-		"--name", "harness9-"+c.id,
+		"--name", "harness9-" + c.id,
 		"--label", "harness9=1",
 		"--cap-drop", "all",
 		"--cap-add", "DAC_OVERRIDE",
@@ -129,11 +131,17 @@ func (c *Container) Start(ctx context.Context) error {
 		"--cpus", c.cfg.CPUs,
 		"--memory", c.cfg.Memory,
 		"--tmpfs", "/tmp:size=256m,nosuid,noexec,nodev",
+	}
+	for _, host := range c.cfg.NetworkBlockedHosts {
+		args = append(args, "--add-host", fmt.Sprintf("%s:0.0.0.0", host))
+	}
+	args = append(args,
 		// -v 语法不依赖逗号分隔，对含逗号的路径安全；等价于 --mount type=bind。
 		"-v", fmt.Sprintf("%s:%s", c.workDir, c.workDir),
 		c.cfg.Image,
 		"sleep", "infinity",
 	)
+	dockerID, err := c.run(startCtx, args...)
 	if err != nil {
 		// dockerID 此处实际为 CombinedOutput，包含 docker 的错误信息
 		c.setState(StateFailed, fmt.Errorf("docker run 失败: %w，输出: %s", err, dockerID))

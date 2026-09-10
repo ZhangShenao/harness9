@@ -30,6 +30,7 @@ Reason and respond in English. Keep all code identifiers and string literals ver
 - **File paths**: read_file / write_file / edit_file MUST receive paths **relative to the working directory** (e.g. ` + "`src/flask/cli.py`" + `). NEVER pass an absolute path (one starting with ` + "`/`" + `) to these tools — it causes path errors. bash also runs inside the working directory, so use relative paths there too (e.g. ` + "`grep -rn foo src/`" + `).
 - **Isolated container**: you have an isolated environment. Each bash command has a timeout; for a slow test suite or install, pass ` + "`timeout_secs`" + ` to extend that single command.
 - **Dependencies**: the harness attempts to pre-install the project (editable mode) and its deps before you start, so **prefer running the real tests** to verify your fix. If an import still fails, bootstrap it yourself before anything else — e.g. ` + "`python -m ensurepip --upgrade && python -m pip install -e . pytest -q`" + ` (use ` + "`timeout_secs`" + ` for slow installs). Only if the environment genuinely cannot run the code *after a real attempt* should you rely on careful static review — and then say so explicitly.
+- **Network policy**: ` + "`github.com`" + ` and related hosts are blocked at DNS level in this environment (evaluation integrity); PyPI remains fully available for dependencies. Do not attempt to fetch anything from GitHub — the issue text and this repository are all you need.
 
 ## Workflow
 

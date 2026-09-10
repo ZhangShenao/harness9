@@ -213,3 +213,49 @@ func TestContainerStart_InspectTimeoutCleansUp(t *testing.T) {
 		t.Errorf("Start 超时后应对已创建容器执行 docker rm -f，实际最后调用: %v", last)
 	}
 }
+
+// TestContainerDockerRunBlockedHosts 验证：配置 NetworkBlockedHosts 后，docker run
+// 以 --add-host <host>:0.0.0.0 屏蔽对应域名（DNS 层断网，容器内解析即失败；
+// pypi 等未列域名不受影响）。这是 SWE-bench 防上游答案污染的落地机制（P0-1）。
+func TestContainerDockerRunBlockedHosts(t *testing.T) {
+	mock := newMock(
+		"abc123", errNil(),
+		"true", errNil(),
+	)
+	cfg := testCfg()
+	cfg.NetworkBlockedHosts = []string{"github.com", "raw.githubusercontent.com"}
+	c := newContainer("my-uuid", t.TempDir(), cfg, mock.run)
+	_ = c.Start(context.Background())
+
+	runArgs := mock.Calls[0]
+	for _, host := range cfg.NetworkBlockedHosts {
+		want := host + ":0.0.0.0"
+		found := false
+		for i, arg := range runArgs {
+			if arg == "--add-host" && i+1 < len(runArgs) && runArgs[i+1] == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("docker run 参数缺少 --add-host %q，完整参数: %v", want, runArgs)
+		}
+	}
+}
+
+// TestContainerDockerRunNoAddHostByDefault 验证：默认配置（未设置 NetworkBlockedHosts）
+// 的 docker run 不携带任何 --add-host，行为与引入前完全一致（向后兼容）。
+func TestContainerDockerRunNoAddHostByDefault(t *testing.T) {
+	mock := newMock(
+		"abc123", errNil(),
+		"true", errNil(),
+	)
+	c := newContainer("my-uuid", t.TempDir(), testCfg(), mock.run)
+	_ = c.Start(context.Background())
+
+	for _, arg := range mock.Calls[0] {
+		if arg == "--add-host" {
+			t.Fatalf("默认配置不应出现 --add-host，完整参数: %v", mock.Calls[0])
+		}
+	}
+}

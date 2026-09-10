@@ -44,6 +44,26 @@ const verifyGateText = "你似乎尚未运行过任何测试就准备结束。�
 	"（必要时用 `python -m ensurepip --upgrade && python -m pip install -e . pytest` 安装依赖、用 timeout_secs 放宽超时）。" +
 	"验证通过、或确认环境确实无法运行测试并说明原因后，再结束。"
 
+// closingGateThreshold/closingGateText 是收尾门槛（P1-4）：剩余 Turn 低于阈值时注入一次，
+// 要求 Agent 立即收尾验证——v4 轨迹复盘中 pylint-7114 在第 80 轮（上限）刚 edit 即被截断、
+// seaborn-3407 死在重验半途，终版 patch 均处于未验证状态。
+const closingGateThreshold = 5
+
+const closingGateText = "你已接近 Turn 预算上限。请立即收尾：不要开启新的探索，" +
+	"对当前改动运行相关测试验证（若尚未验证），然后总结修复内容与验证结果后结束。"
+
+// swebenchBlockedHosts 是 SWE-bench 场景的沙箱网络封禁清单（P0-1）：v4 评测中 17% 实例
+// 的轨迹出现 GitHub 访问（matplotlib-22711 命中 .patch 内容 14 次），直接污染 resolve 率。
+// DNS 层封禁后依赖自举仍走 pypi，不受影响。定位是行为护栏，非安全边界。
+var swebenchBlockedHosts = []string{
+	"github.com",
+	"raw.githubusercontent.com",
+	"api.github.com",
+	"codeload.github.com",
+	"objects.githubusercontent.com",
+	"gist.github.com",
+}
+
 // streamStats 汇总一次流式运行的轮内观测指标（单次 streamOnce 的产出）。
 type streamStats struct {
 	ranTest      bool // 是否出现过疑似测试运行的 bash 调用（looksLikeTestRun 判定）
@@ -206,6 +226,9 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	// macOS Docker Desktop 用 VirtioFS 处理 bind mount，大型 git repo 的 volume
 	// 注册比 Linux 慢，30s（默认值）容易触发超时；扩大到 90s 留足缓冲。
 	sandboxCfg.StartTimeout = 90 * time.Second
+	// 网络封禁（P0-1）：屏蔽 GitHub 系域名，消除"Agent 抓上游 issue/patch 污染评分"
+	// 的向量；pypi 自举通道不受影响。
+	sandboxCfg.NetworkBlockedHosts = swebenchBlockedHosts
 	mgr := sandbox.NewManager(sandboxCfg)
 	// sandboxCtx 必须 > StartTimeout（90s），否则外层超时先触发，
 	// 使内部 StartTimeout 的 90s 缓冲完全无效。设为 120s 留有余量。
@@ -277,6 +300,9 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 		engine.WithGenerateRetry(4, 2*time.Second),
 		// 停滞提示：连续多轮无改动/无测试运行时注入一次提示，打断盲目空转（轨迹分析 R6）。
 		engine.WithStallNudge(stallNudgeWindow, stallNudgeText),
+		// 收尾门槛（P1-4）：剩余 Turn 低于阈值时注入一次收尾提示，要求立即验证并总结，
+		// 杜绝"最后一改未验证"即被截断的交卷（pylint-7114、seaborn-3407 形态）。
+		engine.WithClosingGate(closingGateThreshold, closingGateText),
 	}
 	if cfg.MaxTurns > 0 {
 		engOpts = append(engOpts, engine.WithMaxTurns(cfg.MaxTurns))
