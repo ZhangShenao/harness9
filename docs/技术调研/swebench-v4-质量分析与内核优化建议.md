@@ -26,17 +26,18 @@
 
 ## 2. 评分结果
 
-### 2.1 最终评分（待网络修复后自动完成）
+### 2.1 最终评分（harness9-lite-v5，已回填）
 
-> ⚠️ 本节为**占位**：官方 harness 需 77 个 `swebench/sweb.eval.x86_64.*` 每实例镜像（约 110GB）。拉取受阻的根因已定位为**主机网络 MTU 黑洞**（会话中途出现：≤1100 字节 DF 包 100% 通过、≥1300 字节 100% 丢失——小 API 请求正常、大 blob 传输 0 字节挂起；`DOCKER_DEFAULT_PLATFORM` 对 swebench 无效因其走 docker-py；registry-mirrors 已配置但同样被 MTU 卡死）。
->
-> **一键修复（需要 sudo）**：`sudo ifconfig en0 mtu 1200`，修复后无需任何手工操作——自愈链已挂好：`/tmp/mtu-watchdog.sh`（探测恢复 → 重启 `/tmp/prepull_v4.sh` 12 路预拉）→ 镜像满 77 → `/tmp/autoscore_v4.sh` 自动以 run_id `harness9-lite-v5` 评分 → 报告 `moonshotai__kimi-k3.harness9-lite-v5.json`。届时以下命令出最终数字并回填本节：
->
-> ```bash
-> python3 benchmarks/swebench/compare.py --report moonshotai__kimi-k3.harness9-lite-v5.json \
->     --usage benchmarks/swebench/v4-expansion/usage.jsonl \
->     --reference-report benchmarks/swebench/v3-compare/anthropic__claude-sonnet-4.6.harness9-lite-v3.json
-> ```
+| 指标 | 值 |
+|------|-----|
+| 提交实例 | 78 |
+| **Resolved** | **67/78（85.9%）** |
+| 95% Wilson CI | [76.5%, 91.9%] |
+| Unresolved | 7 |
+| Empty patch | 1 |
+| Error | 3 |
+
+对比报告（含效率指标、plan_write 采用交叉表、v3 参考对照）：`benchmarks/swebench/v4-expansion/compare-report.md`。
 
 ### 2.2 先行子集（12 实例，镜像就绪即评分，非随机样本，仅作方向参考）
 
