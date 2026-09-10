@@ -13,10 +13,12 @@
 #   - 官方每实例 eval 镜像依赖 predictions 清单才知道要拉哪些，故在 runner 产出后预拉。
 #
 # 用法：
-#   ./run-official-lite.sh [--sample N] [--dataset PATH] [--output DIR] [--parallel N] [--dry-run]
+#   ./run-official-lite.sh [--sample N] [--dataset PATH] [--output DIR] [--parallel N] [--instances PATH] [--dry-run]
 #
 #   --sample N    每 repo 抽样上限（默认 100，覆盖 SWE-bench Lite 全部 300 条）；
 #                 官方打榜要求全量 300 条 pass@1，校准阶段可用 --sample 5（约 50 例）
+#   --instances P 实例清单文件（每行一个 instance_id，透传 runner）；与 --sample 叠加，
+#                 用于单实例冒烟：先过滤后采样。校准/正赛不要传
 #   --dry-run     只打印将执行的步骤，不实际执行
 set -euo pipefail
 
@@ -27,9 +29,10 @@ SAMPLE=100
 DATASET="$REPO_ROOT/swe-bench-lite.jsonl"
 OUTPUT=""
 PARALLEL="${SWEBENCH_PARALLEL:-1}"
+INSTANCES=""
 DRY_RUN=0
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -37,6 +40,7 @@ while [ $# -gt 0 ]; do
     --dataset) DATASET="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
     --parallel) PARALLEL="$2"; shift 2 ;;
+    --instances) INSTANCES="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "未知参数: $1（--help 查看用法）" >&2; exit 1 ;;
@@ -46,6 +50,15 @@ done
 RUN_ID="official-lite-$(date +%Y%m%d-%H%M%S)"
 OUTPUT="${OUTPUT:-$REPO_ROOT/swebench-official/$RUN_ID}"
 SANDBOX_IMAGE="${SANDBOX_IMAGE:-python:3.11}"
+
+# runner 要求输出目录的父路径已存在（自身只建叶子目录）；dry-run 也无害。
+mkdir -p "$(dirname "$OUTPUT")"
+
+# 传给 runner 的可选参数（--instances 用于冒烟子集）。
+INSTANCES_ARGS=""
+if [ -n "$INSTANCES" ]; then
+  INSTANCES_ARGS="--instances '$INSTANCES'"
+fi
 
 # run_sh 回显并执行一条命令；--dry-run 模式只打印不执行。
 run_sh() {
@@ -109,11 +122,41 @@ if command -v python3 >/dev/null 2>&1 && ! python3 -c "import swebench" >/dev/nu
   echo "  [提示] python swebench 包未安装，评分阶段需要：pip install swebench"
 fi
 
-# ---- 步骤 2：runner 基础镜像预拉 ----
-run_sh "docker pull --platform linux/amd64 '$SANDBOX_IMAGE'"
+# ---- 步骤 2：runner 基础镜像保障（原生架构，按需拉取）----
+# 禁止 --platform linux/amd64：那会把多架构标签翻转到 amd64，sandbox 容器落入
+# 模拟层（2026-09-10 实测 57/57 就绪超时的根因）。仅当本地缺失时按原生架构拉取。
+if ! docker image inspect "$SANDBOX_IMAGE" >/dev/null 2>&1; then
+  run_sh "docker pull '$SANDBOX_IMAGE'"
+else
+  echo "==> [2/7] 基础镜像 $SANDBOX_IMAGE 已存在，跳过拉取"
+fi
+# 架构冒烟：容器必须能原生跑起来（顺便预热镜像）。amd64 模拟下此步会显著变慢，
+# 变慢即预兆 sandbox 就绪超时，提前拦截好过烧掉整轮评测。
+run_sh "docker run --rm '$SANDBOX_IMAGE' true"
 
 # ---- 步骤 3：runner 跑分（固定 seed + 模型快照存证）----
-run_sh "cd '$REPO_ROOT' && go run ./cmd/swebench --dataset '$DATASET' --sample $SAMPLE --seed 1 --parallel $PARALLEL --output '$OUTPUT'"
+run_sh "cd '$REPO_ROOT' && go run ./cmd/swebench --dataset '$DATASET' --sample $SAMPLE --seed 1 --parallel $PARALLEL $INSTANCES_ARGS --output '$OUTPUT'"
+
+# ---- 步骤 3.5：空 patch 守卫（dry-run 无产物，跳过）----
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo ""
+  echo "==> [3.5/7] [dry-run] 跳过空 patch 守卫"
+else
+# 全部实例空 patch 说明基础设施失败（如 sandbox 就绪超时），继续只会在评分与
+# 镜像预拉上白白烧时间，立即终止并指路。
+NON_EMPTY=$(python3 - "$OUTPUT/predictions.jsonl" <<'EOF'
+import json, sys
+print(sum(1 for line in open(sys.argv[1]) if json.loads(line).get("model_patch")))
+EOF
+)
+echo ""
+echo "==> [3.5/7] 非 patch 实例数：$NON_EMPTY"
+if [ "$NON_EMPTY" -eq 0 ]; then
+  echo "错误：predictions.jsonl 中没有任何非空 patch——评测基础设施失败（常见原因：docker daemon 不稳、sandbox 镜像架构不匹配）。" >&2
+  echo "排查：docker info 是否可用；docker run --rm $SANDBOX_IMAGE uname -m 应无模拟告警；恢复后重跑（已有结果可用 runner --resume 续跑）。" >&2
+  exit 1
+fi
+fi
 
 # ---- 步骤 4：官方每实例 eval 镜像预拉（复用 pull-images.sh，依赖 predictions 清单）----
 run_sh "bash '$REPO_ROOT/benchmarks/swebench/pull-images.sh' '$OUTPUT/predictions.jsonl' 9 || echo '警告: 部分镜像预拉失败，评分阶段将按需拉取'"
