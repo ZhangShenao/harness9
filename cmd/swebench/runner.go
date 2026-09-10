@@ -16,6 +16,7 @@ import (
 	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/hooks"
 	"github.com/harness9/internal/memory"
+	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/provider"
 	"github.com/harness9/internal/sandbox"
 	"github.com/harness9/internal/schema"
@@ -42,6 +43,64 @@ const stallNudgeText = "你已连续多轮只在静态读代码 / grep，却没�
 const verifyGateText = "你似乎尚未运行过任何测试就准备结束。请先在沙箱里复现该 Issue，并运行与你改动相关的现有测试来验证修复是否真的生效" +
 	"（必要时用 `python -m ensurepip --upgrade && python -m pip install -e . pytest` 安装依赖、用 timeout_secs 放宽超时）。" +
 	"验证通过、或确认环境确实无法运行测试并说明原因后，再结束。"
+
+// closingGateThreshold/closingGateText 是收尾门槛（P1-4）：剩余 Turn 低于阈值时注入一次，
+// 要求 Agent 立即收尾验证——v4 轨迹复盘中 pylint-7114 在第 80 轮（上限）刚 edit 即被截断、
+// seaborn-3407 死在重验半途，终版 patch 均处于未验证状态。
+const closingGateThreshold = 5
+
+// planningGateThreshold 是规划门槛（P1-1）预算：连续 12 轮"纯只读探索"（无改动也无
+// plan_write）即注入一次规划提示。取 12 与 stallNudgeWindow(10) 错开节拍，且远低于
+// 全量 turns 中位 28——在探索漂移早期（而非烧掉半程预算后）介入。
+const planningGateThreshold = 12
+
+// planningGateText 是规划门槛提示：要求停下先用 plan_write 制定计划再执行。
+const planningGateText = "你已连续多轮只读探索，既没有改动也没有制定计划。请停下来：" +
+	"先用 plan_write 记录一份简短修复计划（定位 → 改动 → 验证），然后按计划执行，并随进展更新计划。"
+
+const closingGateText = "你已接近 Turn 预算上限。请立即收尾：不要开启新的探索，" +
+	"对当前改动运行相关测试验证（若尚未验证），然后总结修复内容与验证结果后结束。"
+
+// swebenchBlockedHosts 是 SWE-bench 场景的沙箱网络封禁清单（P0-1）：v4 评测中 17% 实例
+// 的轨迹出现 GitHub 访问（matplotlib-22711 命中 .patch 内容 14 次），直接污染 resolve 率。
+// DNS 层封禁后依赖自举仍走 pypi，不受影响。定位是行为护栏，非安全边界。
+var swebenchBlockedHosts = []string{
+	"github.com",
+	"raw.githubusercontent.com",
+	"api.github.com",
+	"codeload.github.com",
+	"objects.githubusercontent.com",
+	"gist.github.com",
+}
+
+// streamStats 汇总一次流式运行的轮内观测指标（单次 streamOnce 的产出）。
+type streamStats struct {
+	ranTest      bool // 是否出现过疑似测试运行的 bash 调用（looksLikeTestRun 判定）
+	planWrites   int  // plan_write 工具调用次数（Planning 实际采用信号）
+	maxTurn      int  // 本次运行到达的最大 Turn 序号
+	lastEditTurn int  // 最后一次改动（edit_file/write_file）所在 Turn；0 表示从未改动
+	lastTestTurn int  // 最后一次疑似测试运行所在 Turn；0 表示从未运行测试
+}
+
+// mergeStats 合并多次续跑的统计：ranTest 取或、planWrites 求和、其余取大。
+// 验证关卡续跑复用同一引擎与会话，各指标必须跨续跑累计才反映全轨迹。
+func mergeStats(a, b streamStats) streamStats {
+	return streamStats{
+		ranTest:      a.ranTest || b.ranTest,
+		planWrites:   a.planWrites + b.planWrites,
+		maxTurn:      max(a.maxTurn, b.maxTurn),
+		lastEditTurn: max(a.lastEditTurn, b.lastEditTurn),
+		lastTestTurn: max(a.lastTestTurn, b.lastTestTurn),
+	}
+}
+
+// finalEditUnverified 判定"最后一改未验证"：跑过测试，但最后一次改动发生在
+// 最后一次测试之后——终版 patch 处于未验证状态（轨迹复盘：pylint-7114 第 80 轮
+// 刚 edit 即被截断、seaborn-3407 死在重验半途）。全程没跑过测试的情形归验证
+// 关卡管辖（gate 会注入续跑），此处不重复标记。
+func finalEditUnverified(stats streamStats) bool {
+	return stats.ranTest && stats.lastEditTurn > 0 && stats.lastEditTurn > stats.lastTestTurn
+}
 
 // testRunnerTokens 是判定一条 bash 命令"是否在运行测试"的子串特征（小写匹配）。
 var testRunnerTokens = []string{
@@ -102,6 +161,9 @@ type Config struct {
 	// Seed 是按 repo 采样的随机种子。固定默认值保证基准可复现（同 seed → 同实例集），
 	// 修复了此前用 time.Now().UnixNano() 导致每次运行抽样不同、无法对比迭代效果的问题。
 	Seed int64
+	// InstancesPath 是可选的实例清单文件路径（每行一个 instance_id，# 注释）。
+	// 先过滤后采样：清单缩小实例全集后 --sample 的 per-repo 上限照常生效。
+	InstancesPath string
 	// RunID 标识本次运行，用于将 trajectory 日志写入 logs/<RunID>/，避免多次运行互相覆盖/污染。
 	RunID string
 }
@@ -173,6 +235,9 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	// macOS Docker Desktop 用 VirtioFS 处理 bind mount，大型 git repo 的 volume
 	// 注册比 Linux 慢，30s（默认值）容易触发超时；扩大到 90s 留足缓冲。
 	sandboxCfg.StartTimeout = 90 * time.Second
+	// 网络封禁（P0-1）：屏蔽 GitHub 系域名，消除"Agent 抓上游 issue/patch 污染评分"
+	// 的向量；pypi 自举通道不受影响。
+	sandboxCfg.NetworkBlockedHosts = swebenchBlockedHosts
 	mgr := sandbox.NewManager(sandboxCfg)
 	// sandboxCtx 必须 > StartTimeout（90s），否则外层超时先触发，
 	// 使内部 StartTimeout 的 90s 缓冲完全无效。设为 120s 留有余量。
@@ -190,12 +255,18 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 
 	// 4. 注册工具
 	registry := tools.NewRegistry()
+	// 原生规划能力（与 main.go 同款装配，但不接 FilePlanWriter）：plan_write 只写 PlanStore
+	// （Session 检查点走内存会话），不落 markdown 文件——FilePlanWriter 会把计划写进
+	// workDir/.harness9/plans/，污染 git diff 即 model_patch，benchmark 场景必须排除。
+	// PlanWrites 观测指标依赖此注册（Planning 采用率是本任务的核心观测目标）。
+	planStore := planning.NewPlanStore()
 	toolList := []tools.BaseTool{
 		// 放宽 bash 超时（默认 120s → 300s），让真实测试套件 / 依赖安装得以完成。
 		tools.NewBashTool(tmpDir, tools.WithEnvironment(env), tools.WithBashTimeout(benchmarkBashTimeout)),
 		tools.NewReadFileTool(tmpDir, tools.ReadFileWithEnvironment(env)),
 		tools.NewWriteFileTool(tmpDir, tools.WriteFileWithEnvironment(env)),
 		tools.NewEditFileTool(tmpDir, tools.EditFileWithEnvironment(env)),
+		tools.NewPlanWriteTool(planStore),
 	}
 	for _, t := range toolList {
 		if err := registry.Register(t); err != nil {
@@ -210,6 +281,8 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	if err != nil {
 		return RunResult{Instance: inst, Error: fmt.Errorf("创建 LLM provider 失败：%w", err), Duration: time.Since(start)}
 	}
+	// 用量计数装饰器：累计本实例的真实账单 token 与调用次数（含重试）。
+	counter := newCountingProvider(llm)
 	// 上下文窗口与压缩器：此前 benchmark 未配置 compactor，长轨迹上下文无界增长，
 	// 触及模型窗口后 API 返回 400（prompt too long），在无重试时直接杀实例。
 	// 这里用无需 LLM、无需 session 的 TokenBudgetCompactor 做字符级裁剪；
@@ -227,12 +300,21 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 		engine.WithContextWindow(lim.ContextTokens),
 		engine.WithCompactor(compactor),
 		engine.WithSession(sess),
+		// 原生规划：引擎每轮把活跃 Plan 原样注入发送视图（压缩免疫），
+		// plan_write 成功轮经 Session 检查点落盘（MemorySession 支撑）。
+		engine.WithPlanStore(planStore),
 		// 无人值守：显式短路审批，零延迟（不依赖是否注册了 hook）。
 		engine.WithPermissionMode(engine.PermissionModeBypassAll),
 		// 瞬时 LLM/流式错误的应用层重试：把"一次抖动杀实例"变为可恢复事件。
 		engine.WithGenerateRetry(4, 2*time.Second),
 		// 停滞提示：连续多轮无改动/无测试运行时注入一次提示，打断盲目空转（轨迹分析 R6）。
 		engine.WithStallNudge(stallNudgeWindow, stallNudgeText),
+		// 规划门槛（P1-1）：连续多轮纯只读探索且未规划时注入一次规划提示，
+		// 对抗"探索过深"漂移（sphinx-8474 64 轮读代码即此形态）。
+		engine.WithPlanningGate(planningGateThreshold, planningGateText),
+		// 收尾门槛（P1-4）：剩余 Turn 低于阈值时注入一次收尾提示，要求立即验证并总结，
+		// 杜绝"最后一改未验证"即被截断的交卷（pylint-7114、seaborn-3407 形态）。
+		engine.WithClosingGate(closingGateThreshold, closingGateText),
 	}
 	if cfg.MaxTurns > 0 {
 		engOpts = append(engOpts, engine.WithMaxTurns(cfg.MaxTurns))
@@ -241,7 +323,7 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 		// （此前沿用引擎默认 500，配合每实例超时会在卡死实例上烧掉大量 token）。
 		engOpts = append(engOpts, engine.WithMaxTurns(benchmarkMaxTurns))
 	}
-	eng := engine.NewAgentEngine(llm, hookReg, tmpDir, engOpts...)
+	eng := engine.NewAgentEngine(counter, hookReg, tmpDir, engOpts...)
 
 	// 6. 执行 agent loop（带 per-instance 超时），同时将完整 trajectory 写入日志
 	instanceCtx, instanceCancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMins)*time.Minute)
@@ -250,29 +332,40 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	// logs/<RunID>/ 目录由 main.go 在进入并发循环前统一创建（os.MkdirAll），此处无需再建。
 	// 按 RunID 命名空间隔离，避免不同运行的同名日志互相覆盖、污染分析。
 	logPath := filepath.Join(cfg.OutputDir, "logs", cfg.RunID, inst.InstanceID+".log")
-	runErr := runWithVerificationGate(instanceCtx, eng, "请修复上述 Issue。", logPath, inst)
+	stats, gateTriggered, runErr := runWithVerificationGate(instanceCtx, eng, "请修复上述 Issue。", logPath, inst)
 
-	// 7. 收集 patch（无论 runErr 如何，MaxTurns 触发时也可能有部分 patch）
-	// 先 `git add -A -N`（intent-to-add）登记新建文件：纯 `git diff` 只输出已跟踪文件的改动，
-	// Agent 用 write_file 新建的修复文件不会出现在 diff 中而被静默丢弃。-N 使新文件以
-	// 新增 hunk 形式进入 `git diff`，从而被完整捕获进 model_patch。
-	diffCtx, diffCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer diffCancel()
-	_ = exec.CommandContext(diffCtx, "git", "-C", tmpDir, "add", "-A", "-N").Run()
-	patchOut, _ := exec.CommandContext(diffCtx, "git", "-C", tmpDir, "diff").CombinedOutput()
-	patch := strings.TrimSpace(string(patchOut))
+	// 7. 收集 patch（无论 runErr 如何，MaxTurns 触发时也可能有部分 patch）。
+	// collectPatch 内部完成 intent-to-add 登记、独立超时提取与完整性校验；
+	// 校验/提取失败时宁可按实例错误上报，也绝不把残缺补丁送进评分
+	// （2026-09-10 复盘：旧实现的截断 diff 静默提交导致 astropy-14182/14365 误判为 0 分）。
+	patch, patchErr := collectPatch(tmpDir)
 
-	if runErr != nil && patch == "" {
-		return RunResult{Instance: inst, Error: runErr, Duration: time.Since(start)}
+	buildResult := func(patch string, runErr error) RunResult {
+		in, out, calls := counter.snapshot()
+		return RunResult{
+			Instance: inst, Patch: patch, Error: runErr, Duration: time.Since(start),
+			InputTokens: in, OutputTokens: out, LLMCalls: calls,
+			Turns: stats.maxTurn, PlanWrites: stats.planWrites,
+			VerifyGateActive: gateTriggered, RanTest: stats.ranTest,
+			FinalEditUnverified: finalEditUnverified(stats),
+		}
 	}
-	return RunResult{Instance: inst, Patch: patch, Duration: time.Since(start)}
+
+	if patchErr != nil {
+		return buildResult("", errors.Join(runErr, fmt.Errorf("收集 patch 失败：%w", patchErr)))
+	}
+	if runErr != nil && patch == "" {
+		return buildResult("", runErr)
+	}
+	return buildResult(patch, nil)
 }
 
 // runWithVerificationGate 执行 agent loop 并将完整 trajectory 写入 logPath，
 // 在 Agent 自然结束却"全程未运行过任何测试"时，注入一次续跑提示要求真实验证（验证关卡，
 // 轨迹分析 R2）。续跑复用同一引擎 + 内存会话（历史完整延续），且至多一次，由 per-instance
 // 超时与 turn 上限共同兜底，避免在不可运行环境里 livelock。日志文件创建失败时 fail-open。
-func runWithVerificationGate(ctx context.Context, eng *engine.AgentEngine, userPrompt, logPath string, inst Instance) error {
+// 返回值 gateTriggered 表示验证关卡是否注入过（观测指标，不影响控制流）。
+func runWithVerificationGate(ctx context.Context, eng *engine.AgentEngine, userPrompt, logPath string, inst Instance) (stats streamStats, gateTriggered bool, runErr error) {
 	// 创建日志文件（fail-open：失败时写入 Discard，agent 继续运行）
 	var w io.Writer = io.Discard
 	if lf, err := os.Create(logPath); err == nil {
@@ -287,31 +380,38 @@ func runWithVerificationGate(ctx context.Context, eng *engine.AgentEngine, userP
 	fmt.Fprintf(w, "BaseCommit:  %s\n", inst.BaseCommit)
 	fmt.Fprintf(w, "StartTime:   %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
 
-	ranTest, runErr := streamOnce(ctx, eng, w, userPrompt)
+	first, runErr := streamOnce(ctx, eng, w, userPrompt)
+	stats = first
 
 	// 验证关卡：Agent 已自然结束（ctx 未取消）但全程未运行任何测试 → 注入一次续跑提示。
-	if !ranTest && ctx.Err() == nil {
+	if !first.ranTest && ctx.Err() == nil {
+		gateTriggered = true
 		fmt.Fprint(w, "\n\n=== 验证关卡：未检测到任何测试运行，注入续跑提示要求真实验证 ===\n")
-		ranTest2, err2 := streamOnce(ctx, eng, w, verifyGateText)
+		second, err2 := streamOnce(ctx, eng, w, verifyGateText)
+		stats = mergeStats(stats, second)
 		runErr = errors.Join(runErr, err2)
-		if !ranTest2 {
+		if !second.ranTest {
 			fmt.Fprint(w, "\n\n=== 验证关卡：续跑后仍未运行测试（可能环境无法运行或 Agent 坚持静态分析）===\n")
 		}
 	}
 
-	return runErr
+	return stats, gateTriggered, runErr
 }
 
-// streamOnce 驱动一次 RunStream，把所有事件以可读格式写入 w，并返回本次是否运行过测试。
-// ranTest 通过对 bash 工具调用的 command 应用 looksLikeTestRun 启发式判定。
-func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userPrompt string) (ranTest bool, runErr error) {
+// streamOnce 驱动一次 RunStream，把所有事件以可读格式写入 w，并返回本次运行的观测统计。
+// ranTest 通过对 bash 工具调用的 command 应用 looksLikeTestRun 启发式判定；
+// planWrites 统计 plan_write 工具调用次数（Planning 实际采用信号）。
+func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userPrompt string) (stats streamStats, runErr error) {
 	stream, err := eng.RunStream(ctx, userPrompt)
 	if err != nil {
-		return false, err
+		return stats, err
 	}
 
 	currentTurn := 0
 	for evt := range stream {
+		if evt.Turn > stats.maxTurn {
+			stats.maxTurn = evt.Turn
+		}
 		// 新 Turn 时打印分隔符
 		if evt.Turn > 0 && evt.Turn != currentTurn {
 			currentTurn = evt.Turn
@@ -328,6 +428,14 @@ func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userP
 		case engine.EventToolStart:
 			tc := evt.Data.(schema.ToolCall)
 			fmt.Fprintf(w, "\n\n[Tool Call: %s]\n%s\n", tc.Name, string(tc.Arguments))
+			// Planning 采用信号：统计 plan_write 调用次数。
+			if tc.Name == "plan_write" {
+				stats.planWrites++
+			}
+			// "最后一改未验证"信号：记录最后改动与最后测试所在的 Turn。
+			if tc.Name == "edit_file" || tc.Name == "write_file" {
+				stats.lastEditTurn = evt.Turn
+			}
 			// 验证关卡信号：检测 bash 是否在运行测试（解析 command 字段后判定，避免误把
 			// `grep pytest` 当成测试运行）。
 			if tc.Name == "bash" {
@@ -335,7 +443,8 @@ func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userP
 					Command string `json:"command"`
 				}
 				if json.Unmarshal(tc.Arguments, &a) == nil && looksLikeTestRun(a.Command) {
-					ranTest = true
+					stats.ranTest = true
+					stats.lastTestTurn = evt.Turn
 				}
 			}
 
@@ -370,5 +479,5 @@ func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userP
 		}
 	}
 
-	return ranTest, runErr
+	return stats, runErr
 }

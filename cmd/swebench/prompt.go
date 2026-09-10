@@ -30,6 +30,7 @@ Reason and respond in English. Keep all code identifiers and string literals ver
 - **File paths**: read_file / write_file / edit_file MUST receive paths **relative to the working directory** (e.g. ` + "`src/flask/cli.py`" + `). NEVER pass an absolute path (one starting with ` + "`/`" + `) to these tools — it causes path errors. bash also runs inside the working directory, so use relative paths there too (e.g. ` + "`grep -rn foo src/`" + `).
 - **Isolated container**: you have an isolated environment. Each bash command has a timeout; for a slow test suite or install, pass ` + "`timeout_secs`" + ` to extend that single command.
 - **Dependencies**: the harness attempts to pre-install the project (editable mode) and its deps before you start, so **prefer running the real tests** to verify your fix. If an import still fails, bootstrap it yourself before anything else — e.g. ` + "`python -m ensurepip --upgrade && python -m pip install -e . pytest -q`" + ` (use ` + "`timeout_secs`" + ` for slow installs). Only if the environment genuinely cannot run the code *after a real attempt* should you rely on careful static review — and then say so explicitly.
+- **Network policy**: ` + "`github.com`" + ` and related hosts are blocked at DNS level in this environment (evaluation integrity); PyPI remains fully available for dependencies. Do not attempt to fetch anything from GitHub — the issue text and this repository are all you need.
 
 ## Workflow
 
@@ -86,7 +87,36 @@ type swebenchPromptBuilder struct {
 func (b *swebenchPromptBuilder) Build() string {
 	s := strings.ReplaceAll(sweBenchPromptTemplate, "{{PROBLEM_STATEMENT}}", b.instance.ProblemStatement)
 	s = strings.ReplaceAll(s, "{{HINTS}}", b.hintsSection())
-	return strings.ReplaceAll(s, "{{WORK_DIR}}", b.workDir)
+	s = strings.ReplaceAll(s, "{{WORK_DIR}}", b.workDir)
+	return s + b.planningHintSection()
+}
+
+// envHeavyRepos 是"环境重量"高的 repo（§3 成本分析：需 C 扩展编译或重依赖安装，
+// turns 中位 35-59），其任务天然多步骤，规划建议的期望收益最高。
+var envHeavyRepos = map[string]bool{
+	"astropy/astropy":           true,
+	"scikit-learn/scikit-learn": true,
+	"matplotlib/matplotlib":     true,
+}
+
+// planningHintComplexityThreshold 是"复杂 Issue"的问题描述长度阈值（字符）：
+// 长 problem statement 往往涉及多处行为/边界，值得先规划再动手。
+const planningHintComplexityThreshold = 1500
+
+// planningHintSection 返回规划建议注入段（P1-1 路线 A）：仅在任务被判定为复杂时
+// 注入——长问题描述，或环境重量高的 repo。软引导对 Kimi-K3 的牵引力有限（2/78 自发
+// 采用），故此处只做"复杂度匹配的建议"，硬约束由 engine.WithPlanningGate 承担。
+// 不复杂时返回空串（零干扰）。
+func (b *swebenchPromptBuilder) planningHintSection() string {
+	complex := len(b.instance.ProblemStatement) >= planningHintComplexityThreshold ||
+		envHeavyRepos[b.instance.Repo]
+	if !complex {
+		return ""
+	}
+	return "\n\n## Planning hint\n\n" +
+		"This fix looks multi-step (complex issue or heavy environment). Before editing, call `plan_write` once " +
+		"to record a short plan — locate → change → verify — and keep it updated as you progress. " +
+		"It costs one call and keeps long explorations on track."
 }
 
 // hintsSection 在存在 hints_text 时返回带标题的注入段，否则返回空串（省略整段）。

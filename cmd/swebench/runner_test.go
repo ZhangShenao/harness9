@@ -3,6 +3,9 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/harness9/internal/planning"
+	"github.com/harness9/internal/tools"
 )
 
 // TestDefaultBootstrapCmd 验证默认自举命令包含恢复 pip、editable 安装当前仓库、安装 pytest
@@ -41,5 +44,54 @@ func TestLooksLikeTestRun(t *testing.T) {
 		if got := looksLikeTestRun(c.cmd); got != c.want {
 			t.Errorf("looksLikeTestRun(%q) = %v, want %v", c.cmd, got, c.want)
 		}
+	}
+}
+
+// TestMergeStats 验证两次续跑统计的合并语义：ranTest 取或、planWrites 求和、maxTurn 取大。
+// 验证关卡续跑复用同一引擎/会话，合并口径必须覆盖"续跑后才出现测试运行"等场景。
+func TestMergeStats(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b streamStats
+		want streamStats
+	}{
+		{
+			name: "续跑后出现测试运行",
+			a:    streamStats{ranTest: false, planWrites: 1, maxTurn: 12},
+			b:    streamStats{ranTest: true, planWrites: 0, maxTurn: 5},
+			want: streamStats{ranTest: true, planWrites: 1, maxTurn: 12},
+		},
+		{
+			name: "两次均无测试运行",
+			a:    streamStats{ranTest: false, planWrites: 2, maxTurn: 3},
+			b:    streamStats{ranTest: false, planWrites: 1, maxTurn: 9},
+			want: streamStats{ranTest: false, planWrites: 3, maxTurn: 9},
+		},
+		{
+			name: "零值合并",
+			a:    streamStats{},
+			b:    streamStats{},
+			want: streamStats{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := mergeStats(c.a, c.b)
+			if got != c.want {
+				t.Fatalf("mergeStats(%+v, %+v) = %+v, want %+v", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
+// TestPlanWriteToolRegisteredForMetrics 锁定 PlanWrites 观测指标的生效前提：
+// runInstance 已注册原生 plan_write 工具（不接 FilePlanWriter，避免计划文件污染
+// git diff/model_patch），streamOnce 以工具名 "plan_write" 精确匹配计数。
+// 若有人重命名工具（tools.NewPlanWriteTool 的 Name() 或 streamOnce 的匹配串），
+// 指标会静默失效归零——本测试使该契约失败可见。
+func TestPlanWriteToolRegisteredForMetrics(t *testing.T) {
+	tool := tools.NewPlanWriteTool(planning.NewPlanStore())
+	if got := tool.Name(); got != "plan_write" {
+		t.Fatalf("plan_write 工具名 = %q, want %q：streamOnce 的 PlanWrites 计数依赖此精确匹配，改名会使指标静默归零", got, "plan_write")
 	}
 }

@@ -56,6 +56,7 @@ func main() {
 	flag.IntVar(&cfg.TimeoutMins, "timeout", 30, "单个 instance 超时（分钟）")
 	flag.StringVar(&cfg.Model, "model", "", "LLM 模型名称（默认使用 LLM_MODEL 环境变量）")
 	flag.Int64Var(&cfg.Seed, "seed", 1, "按 repo 采样的随机种子（固定默认值保证可复现；同 seed → 同实例集）")
+	flag.StringVar(&cfg.InstancesPath, "instances", "", "实例清单文件（每行一个 instance_id，# 注释）；先过滤后采样，--sample 上限仍生效")
 	flag.Parse()
 
 	if cfg.DatasetPath == "" {
@@ -94,12 +95,31 @@ func main() {
 	modelName := resolveModelName(cfg.Model)
 	fmt.Fprintf(os.Stderr, "使用模型: %s\n", modelName)
 
+	// 实例清单过滤（--instances）：先缩小全集，再交给 sampleByRepo 做 per-repo 上限。
+	// 清单中数据集缺失的 id 记警告不阻断（交集语义）；过滤结果为空才 fail-fast。
+	if cfg.InstancesPath != "" {
+		filter, err := loadInstanceFilter(cfg.InstancesPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "加载实例清单失败: %v\n", err)
+			os.Exit(1)
+		}
+		filtered, missing := filterInstances(allInstances, filter)
+		if len(filtered) == 0 {
+			fmt.Fprintf(os.Stderr, "实例清单过滤后为空（清单 %d 条 id 均不在数据集中）\n", len(filter))
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "实例清单过滤：%d → %d 条（清单 %d 条，数据集缺失 %d 条）\n",
+			len(allInstances), len(filtered), len(filter), missing)
+		allInstances = filtered
+	}
+
 	// 按 repo 采样（固定 seed → 可复现；--resume 时同 seed 自然复现同一实例集）
 	instances := sampleByRepo(allInstances, cfg.SampleN, cfg.Seed)
 	fmt.Fprintf(os.Stderr, "采样完成：%d 条（每 repo 最多 %d 条，seed=%d）\n", len(instances), cfg.SampleN, cfg.Seed)
 
 	// 加载已有结果（--resume 模式）
 	predictionsPath := filepath.Join(cfg.OutputDir, "predictions.jsonl")
+	usagePath := filepath.Join(cfg.OutputDir, "usage.jsonl")
 	skipIDs := make(map[string]bool)
 	if cfg.Resume {
 		skipIDs, err = loadExistingIDs(predictionsPath)
@@ -166,6 +186,20 @@ func main() {
 				ModelNameOrPath: modelName,
 			}); appendErr != nil {
 				fmt.Fprintf(os.Stderr, "[error] 写入 predictions 失败 (%s): %v\n", inst.InstanceID, appendErr)
+			}
+			if usageErr := appendUsage(usagePath, UsageRecord{
+				InstanceID:          inst.InstanceID,
+				InputTokens:         result.InputTokens,
+				OutputTokens:        result.OutputTokens,
+				LLMCalls:            result.LLMCalls,
+				Turns:               result.Turns,
+				PlanWrites:          result.PlanWrites,
+				VerifyGate:          result.VerifyGateActive,
+				RanTest:             result.RanTest,
+				FinalEditUnverified: result.FinalEditUnverified,
+				DurationSec:         result.Duration.Round(time.Second).Seconds(),
+			}); usageErr != nil {
+				fmt.Fprintf(os.Stderr, "[error] 写入 usage 失败 (%s): %v\n", inst.InstanceID, usageErr)
 			}
 			mu.Unlock()
 

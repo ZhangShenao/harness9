@@ -2,7 +2,7 @@
 // 本文件维护 knownModels 静态注册表，存储各主流模型的 ContextTokens 和 OutputTokens。
 // GetModelLimits 自动剥离 provider 前缀（如 "openai/gpt-4o" → "gpt-4o"），
 // 未知模型返回 256K 保守回退值（与 HermesAgent 策略一致）。
-// 此注册表是静态的，新模型上线后需手动添加条目。最后更新：2026-05。
+// 此注册表是静态的，新模型上线后需手动添加条目。最后更新：2026-09。
 package provider
 
 import "strings"
@@ -15,7 +15,7 @@ type ModelLimits struct {
 
 // knownModels 以裸模型名（不含 provider 前缀）为键，存储已知模型的上下文限制。
 // 数据来源：OpenAI API 文档、Anthropic API 文档、各模型 provider 官网。
-// 最后更新：2026-05。
+// 最后更新：2026-09。
 var knownModels = map[string]ModelLimits{
 	// Anthropic Claude 4.x
 	"claude-opus-4-7":           {ContextTokens: 200_000, OutputTokens: 32_000},
@@ -45,6 +45,9 @@ var knownModels = map[string]ModelLimits{
 	// Gemini
 	"gemini-2.0-flash": {ContextTokens: 1_048_576, OutputTokens: 8_192},
 	"gemini-2.5-pro":   {ContextTokens: 1_048_576, OutputTokens: 65_536},
+	// Moonshot Kimi（OpenRouter 元数据，2026-09 实测：context 1M / max_completion 943K，
+	// OutputTokens 取保守值 64K——单次响应远用不到 OpenRouter 上限）
+	"kimi-k3": {ContextTokens: 1_048_576, OutputTokens: 65_536},
 }
 
 // defaultLimits 用于 knownModels 中未找到的模型，256K 是保守回退值（与 HermesAgent 策略一致）。

@@ -57,3 +57,13 @@ func TestGetModelLimits_GeminiLargeContext(t *testing.T) {
 		t.Fatalf("want 1048576, got %d", limits.ContextTokens)
 	}
 }
+
+func TestGetModelLimits_KimiK3(t *testing.T) {
+	limits := provider.GetModelLimits("moonshotai/kimi-k3")
+	if limits.ContextTokens != 1_048_576 {
+		t.Fatalf("want 1048576, got %d", limits.ContextTokens)
+	}
+	if limits.OutputTokens != 65_536 {
+		t.Fatalf("want 65536, got %d", limits.OutputTokens)
+	}
+}
