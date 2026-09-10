@@ -92,15 +92,16 @@ func (c *countingProvider) GenerateStream(ctx context.Context, messages []schema
 // UsageRecord 是 usage.jsonl 的一行：单实例的轮内观测指标，与 predictions.jsonl
 // 逐条对应。JSON tag 为 snake_case 契约，compare.py 按字段名消费。
 type UsageRecord struct {
-	InstanceID   string  `json:"instance_id"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	LLMCalls     int64   `json:"llm_calls"`
-	Turns        int     `json:"turns"`
-	PlanWrites   int     `json:"plan_writes"`
-	VerifyGate   bool    `json:"verify_gate"`
-	RanTest      bool    `json:"ran_test"`
-	DurationSec  float64 `json:"duration_sec"`
+	InstanceID          string  `json:"instance_id"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	LLMCalls            int64   `json:"llm_calls"`
+	Turns               int     `json:"turns"`
+	PlanWrites          int     `json:"plan_writes"`
+	VerifyGate          bool    `json:"verify_gate"`
+	RanTest             bool    `json:"ran_test"`
+	FinalEditUnverified bool    `json:"final_edit_unverified"`
+	DurationSec         float64 `json:"duration_sec"`
 }
 
 // appendUsage 将单条 UsageRecord 追加写入 usage.jsonl（立即落盘，

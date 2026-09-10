@@ -46,19 +46,31 @@ const verifyGateText = "你似乎尚未运行过任何测试就准备结束。�
 
 // streamStats 汇总一次流式运行的轮内观测指标（单次 streamOnce 的产出）。
 type streamStats struct {
-	ranTest    bool // 是否出现过疑似测试运行的 bash 调用（looksLikeTestRun 判定）
-	planWrites int  // plan_write 工具调用次数（Planning 实际采用信号）
-	maxTurn    int  // 本次运行到达的最大 Turn 序号
+	ranTest      bool // 是否出现过疑似测试运行的 bash 调用（looksLikeTestRun 判定）
+	planWrites   int  // plan_write 工具调用次数（Planning 实际采用信号）
+	maxTurn      int  // 本次运行到达的最大 Turn 序号
+	lastEditTurn int  // 最后一次改动（edit_file/write_file）所在 Turn；0 表示从未改动
+	lastTestTurn int  // 最后一次疑似测试运行所在 Turn；0 表示从未运行测试
 }
 
-// mergeStats 合并多次续跑的统计：ranTest 取或、planWrites 求和、maxTurn 取大。
+// mergeStats 合并多次续跑的统计：ranTest 取或、planWrites 求和、其余取大。
 // 验证关卡续跑复用同一引擎与会话，各指标必须跨续跑累计才反映全轨迹。
 func mergeStats(a, b streamStats) streamStats {
 	return streamStats{
-		ranTest:    a.ranTest || b.ranTest,
-		planWrites: a.planWrites + b.planWrites,
-		maxTurn:    max(a.maxTurn, b.maxTurn),
+		ranTest:      a.ranTest || b.ranTest,
+		planWrites:   a.planWrites + b.planWrites,
+		maxTurn:      max(a.maxTurn, b.maxTurn),
+		lastEditTurn: max(a.lastEditTurn, b.lastEditTurn),
+		lastTestTurn: max(a.lastTestTurn, b.lastTestTurn),
 	}
+}
+
+// finalEditUnverified 判定"最后一改未验证"：跑过测试，但最后一次改动发生在
+// 最后一次测试之后——终版 patch 处于未验证状态（轨迹复盘：pylint-7114 第 80 轮
+// 刚 edit 即被截断、seaborn-3407 死在重验半途）。全程没跑过测试的情形归验证
+// 关卡管辖（gate 会注入续跑），此处不重复标记。
+func finalEditUnverified(stats streamStats) bool {
+	return stats.ranTest && stats.lastEditTurn > 0 && stats.lastEditTurn > stats.lastTestTurn
 }
 
 // testRunnerTokens 是判定一条 bash 命令"是否在运行测试"的子串特征（小写匹配）。
@@ -284,15 +296,11 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	logPath := filepath.Join(cfg.OutputDir, "logs", cfg.RunID, inst.InstanceID+".log")
 	stats, gateTriggered, runErr := runWithVerificationGate(instanceCtx, eng, "请修复上述 Issue。", logPath, inst)
 
-	// 7. 收集 patch（无论 runErr 如何，MaxTurns 触发时也可能有部分 patch）
-	// 先 `git add -A -N`（intent-to-add）登记新建文件：纯 `git diff` 只输出已跟踪文件的改动，
-	// Agent 用 write_file 新建的修复文件不会出现在 diff 中而被静默丢弃。-N 使新文件以
-	// 新增 hunk 形式进入 `git diff`，从而被完整捕获进 model_patch。
-	diffCtx, diffCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer diffCancel()
-	_ = exec.CommandContext(diffCtx, "git", "-C", tmpDir, "add", "-A", "-N").Run()
-	patchOut, _ := exec.CommandContext(diffCtx, "git", "-C", tmpDir, "diff").CombinedOutput()
-	patch := strings.TrimSpace(string(patchOut))
+	// 7. 收集 patch（无论 runErr 如何，MaxTurns 触发时也可能有部分 patch）。
+	// collectPatch 内部完成 intent-to-add 登记、独立超时提取与完整性校验；
+	// 校验/提取失败时宁可按实例错误上报，也绝不把残缺补丁送进评分
+	// （2026-09-10 复盘：旧实现的截断 diff 静默提交导致 astropy-14182/14365 误判为 0 分）。
+	patch, patchErr := collectPatch(tmpDir)
 
 	buildResult := func(patch string, runErr error) RunResult {
 		in, out, calls := counter.snapshot()
@@ -301,9 +309,13 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 			InputTokens: in, OutputTokens: out, LLMCalls: calls,
 			Turns: stats.maxTurn, PlanWrites: stats.planWrites,
 			VerifyGateActive: gateTriggered, RanTest: stats.ranTest,
+			FinalEditUnverified: finalEditUnverified(stats),
 		}
 	}
 
+	if patchErr != nil {
+		return buildResult("", errors.Join(runErr, fmt.Errorf("收集 patch 失败: %w", patchErr)))
+	}
 	if runErr != nil && patch == "" {
 		return buildResult("", runErr)
 	}
@@ -382,6 +394,10 @@ func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userP
 			if tc.Name == "plan_write" {
 				stats.planWrites++
 			}
+			// "最后一改未验证"信号：记录最后改动与最后测试所在的 Turn。
+			if tc.Name == "edit_file" || tc.Name == "write_file" {
+				stats.lastEditTurn = evt.Turn
+			}
 			// 验证关卡信号：检测 bash 是否在运行测试（解析 command 字段后判定，避免误把
 			// `grep pytest` 当成测试运行）。
 			if tc.Name == "bash" {
@@ -390,6 +406,7 @@ func streamOnce(ctx context.Context, eng *engine.AgentEngine, w io.Writer, userP
 				}
 				if json.Unmarshal(tc.Arguments, &a) == nil && looksLikeTestRun(a.Command) {
 					stats.ranTest = true
+					stats.lastTestTurn = evt.Turn
 				}
 			}
 
