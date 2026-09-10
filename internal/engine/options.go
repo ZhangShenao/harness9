@@ -89,6 +89,19 @@ func WithStallNudge(window int, text string) Option {
 	}
 }
 
+// WithClosingGate 配置收尾门槛（P1-4）：当配置了 WithMaxTurns 且剩余 Turn 数降至
+// threshold 以内时，向发送给 LLM 的历史副本注入一次 text 提示，要求 Agent 立即收尾
+// （验证当前改动并总结），杜绝"最后一改未验证"即被预算截断的交卷形态。
+//
+// 与 WithStallNudge 一致：仅注入临时副本，绝不持久化；每次 interaction 至多注入一次；
+// threshold<=0 或未配置 WithMaxTurns 时关闭。
+func WithClosingGate(threshold int, text string) Option {
+	return func(e *AgentEngine) {
+		e.closingThreshold = threshold
+		e.closingText = text
+	}
+}
+
 // WithEngineObserver 注册引擎生命周期观察者，供可观测层（OpenTelemetry 等）无侵入接入。
 func WithEngineObserver(o EngineObserver) Option {
 	return func(e *AgentEngine) { e.observer = o }

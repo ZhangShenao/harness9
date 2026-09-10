@@ -53,6 +53,8 @@ type AgentEngine struct {
 	nudgeText          string              // nudge 提示文本
 	stallWindow        int                 // >0 时连续该轮数无进展工具调用则注入一次停滞 nudge
 	stallText          string              // 停滞 nudge 提示文本
+	closingThreshold   int                 // >0 且配置 maxTurns 时，剩余该数量的 Turn 内注入一次收尾 nudge（P1-4）
+	closingText        string              // 收尾 nudge 提示文本
 	observer           EngineObserver      // 可选，nil 时自动退化为 noopObserver
 	generateRetries    int                 // LLM 生成调用最大尝试次数（默认 3）
 	generateRetryBase  time.Duration       // 重试退避基准（默认 1s）

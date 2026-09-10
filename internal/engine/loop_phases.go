@@ -49,6 +49,7 @@ type loopContext struct {
 	startLen           int              // 本次 Run 新增消息在 history 中的起始下标（持久化边界）
 	turns              int              // 已进入的 Turn 计数（含被 MaxTurns 拒绝的那一轮）
 	turnsSinceProgress int              // 自上次进展工具调用以来的轮数（驱动停滞 nudge）
+	closingNudged      bool             // 收尾 nudge（P1-4）是否已注入——每次 interaction 至多一次
 	interactionErr     error            // 记录导致交互非正常结束的错误，供 OnInteractionEnd 上报
 	overallStart       time.Time
 }
@@ -173,6 +174,15 @@ func (lc *loopContext) prepareTurnInput() turnInput {
 	if e.stallWindow > 0 && e.stallText != "" && lc.turnsSinceProgress >= e.stallWindow {
 		compactedHistory = appendUserNudge(compactedHistory, e.stallText)
 		lc.turnsSinceProgress = 0
+	}
+
+	// 4b'. 收尾门槛（P1-4）：剩余 Turn 数降至阈值以内时注入一次收尾提示，要求 Agent
+	// 立即验证当前改动并总结，杜绝"最后一改未验证"即被预算截断的交卷形态。
+	// 至多注入一次（closingNudged 守卫），不干扰预算充裕的正常路径。
+	if e.closingThreshold > 0 && e.closingText != "" && e.maxTurns > 0 &&
+		e.maxTurns-lc.turns <= e.closingThreshold && !lc.closingNudged {
+		compactedHistory = appendUserNudge(compactedHistory, e.closingText)
+		lc.closingNudged = true
 	}
 
 	// 4c. Plan 注入：活跃计划原样追加到发送视图末尾（Spec §5.2）。

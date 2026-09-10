@@ -929,3 +929,66 @@ func TestRunLoop_PlanRestore_InjectedOnFirstTurn(t *testing.T) {
 		t.Error("restored plan should be visible in first turn's view")
 	}
 }
+
+// TestClosingGate_InjectedNearTurnBudget 验证：剩余 Turn 数低于阈值时，引擎向发送给
+// LLM 的历史副本注入一次收尾提示（P1-4：杜绝"最后一改未验证"交卷）。
+func TestClosingGate_InjectedNearTurnBudget(t *testing.T) {
+	const gate = "【收尾提示】接近 Turn 预算，请立即验证并总结。"
+	prov := &countingProvider{responses: []func([]schema.ToolDefinition) *schema.Message{
+		readToolCall, readToolCall, readToolCall, readToolCall, finalText,
+	}}
+	reg := &staticRegistry{tools: []schema.ToolDefinition{{Name: "read_file"}}, output: "ok"}
+	eng := NewAgentEngine(prov, reg, "/tmp", WithMaxTurns(6), WithClosingGate(2, gate))
+
+	if err := eng.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	if !nudgeAppeared(prov, gate) {
+		t.Error("接近 Turn 预算时应注入收尾提示，但历史中未出现")
+	}
+}
+
+// TestClosingGate_InjectedOnce 验证收尾提示只注入一次，不随剩余轮数递减反复刷屏。
+func TestClosingGate_InjectedOnce(t *testing.T) {
+	const gate = "【收尾提示】只应出现一次"
+	prov := &countingProvider{responses: []func([]schema.ToolDefinition) *schema.Message{
+		readToolCall, readToolCall, readToolCall, readToolCall, readToolCall, finalText,
+	}}
+	reg := &staticRegistry{tools: []schema.ToolDefinition{{Name: "read_file"}}, output: "ok"}
+	eng := NewAgentEngine(prov, reg, "/tmp", WithMaxTurns(6), WithClosingGate(2, gate))
+
+	if err := eng.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	hits := 0
+	for _, c := range prov.calls {
+		for _, m := range c.messages {
+			if strings.Contains(m.Content, gate) {
+				hits++
+				break
+			}
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("收尾提示应恰好出现在 1 次 LLM 调用的历史中，实际 %d 次", hits)
+	}
+}
+
+// TestClosingGate_InactiveWhenFarFromBudget 验证：预算尚充裕时不注入（正常路径零干扰）。
+func TestClosingGate_InactiveWhenFarFromBudget(t *testing.T) {
+	const gate = "【收尾提示】不应出现"
+	prov := &countingProvider{responses: []func([]schema.ToolDefinition) *schema.Message{
+		readToolCall, readToolCall, finalText,
+	}}
+	reg := &staticRegistry{tools: []schema.ToolDefinition{{Name: "read_file"}}, output: "ok"}
+	eng := NewAgentEngine(prov, reg, "/tmp", WithMaxTurns(10), WithClosingGate(2, gate))
+
+	if err := eng.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	if nudgeAppeared(prov, gate) {
+		t.Error("距预算上限尚远时不应注入收尾提示")
+	}
+}
