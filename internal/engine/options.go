@@ -102,6 +102,21 @@ func WithClosingGate(threshold int, text string) Option {
 	}
 }
 
+// WithPlanningGate 配置规划门槛（P1-1）：当连续 budget 轮既无进展工具（edit_file/
+// write_file，说明尚未动手改）也无 plan_write（说明也未规划）——即"纯只读探索过深"
+// 时，向发送给 LLM 的历史副本注入一次 text 提示，要求停下来先规划再执行。
+//
+// 与 WithStallNudge 互补：stall 管"反复无进展"（空转），planning gate 管"探索过深"
+// （一直读一直没收敛、也没规划）。与 WithClosingGate 一致：仅注入临时副本，绝不
+// 持久化；每次 interaction 至多注入一次；budget<=0 时关闭。plan_write 或进展工具
+// 调用会重置计数。
+func WithPlanningGate(budget int, text string) Option {
+	return func(e *AgentEngine) {
+		e.planningGateBudget = budget
+		e.planningGateText = text
+	}
+}
+
 // WithEngineObserver 注册引擎生命周期观察者，供可观测层（OpenTelemetry 等）无侵入接入。
 func WithEngineObserver(o EngineObserver) Option {
 	return func(e *AgentEngine) { e.observer = o }

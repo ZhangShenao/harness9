@@ -992,3 +992,101 @@ func TestClosingGate_InactiveWhenFarFromBudget(t *testing.T) {
 		t.Error("距预算上限尚远时不应注入收尾提示")
 	}
 }
+
+// planWriteToolCall 返回一个调用 plan_write 的助手响应（应重置规划门槛计数）。
+func planWriteToolCall(_ []schema.ToolDefinition) *schema.Message {
+	return &schema.Message{
+		Role:      schema.RoleAssistant,
+		ToolCalls: []schema.ToolCall{{ID: "c", Name: "plan_write", Arguments: []byte(`{"items":[]}`)}},
+	}
+}
+
+// TestPlanningGate_InjectedAfterBudgetWithoutEditOrPlan 验证（P1-1）：连续 budget 轮
+// 只有只读探索（无进展工具、无 plan_write）时，引擎注入一次"停下来先规划"提示。
+func TestPlanningGate_InjectedAfterBudgetWithoutEditOrPlan(t *testing.T) {
+	const gate = "【规划提示】请停下来先用 plan_write 制定计划。"
+	prov := &countingProvider{responses: []func([]schema.ToolDefinition) *schema.Message{
+		readToolCall, readToolCall, readToolCall, readToolCall, finalText,
+	}}
+	reg := &staticRegistry{tools: []schema.ToolDefinition{
+		{Name: "read_file"}, {Name: "edit_file"}, {Name: "plan_write"},
+	}, output: "ok"}
+	eng := NewAgentEngine(prov, reg, "/tmp", WithPlanningGate(3, gate))
+
+	if err := eng.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	if !nudgeAppeared(prov, gate) {
+		t.Error("连续多轮只读探索后应注入规划提示，但历史中未出现")
+	}
+}
+
+// TestPlanningGate_ResetByPlanWrite 验证：窗口内调用过 plan_write 则不注入
+// （模型已自发规划，门槛不再打扰）。
+func TestPlanningGate_ResetByPlanWrite(t *testing.T) {
+	const gate = "【规划提示】不应出现"
+	prov := &countingProvider{responses: []func([]schema.ToolDefinition) *schema.Message{
+		readToolCall, readToolCall, planWriteToolCall, readToolCall, readToolCall, readToolCall, finalText,
+	}}
+	reg := &staticRegistry{tools: []schema.ToolDefinition{
+		{Name: "read_file"}, {Name: "edit_file"}, {Name: "plan_write"},
+	}, output: "ok"}
+	eng := NewAgentEngine(prov, reg, "/tmp", WithPlanningGate(3, gate))
+
+	if err := eng.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	if nudgeAppeared(prov, gate) {
+		t.Error("plan_write 应重置规划门槛计数，不应注入提示")
+	}
+}
+
+// TestPlanningGate_ResetByProgressTool 验证：窗口内做过改动（edit_file）则不注入
+// （已在执行，无"探索过深"问题）。
+func TestPlanningGate_ResetByProgressTool(t *testing.T) {
+	const gate = "【规划提示】不应出现"
+	prov := &countingProvider{responses: []func([]schema.ToolDefinition) *schema.Message{
+		readToolCall, readToolCall, editToolCall, readToolCall, readToolCall, readToolCall, finalText,
+	}}
+	reg := &staticRegistry{tools: []schema.ToolDefinition{
+		{Name: "read_file"}, {Name: "edit_file"}, {Name: "plan_write"},
+	}, output: "ok"}
+	eng := NewAgentEngine(prov, reg, "/tmp", WithPlanningGate(3, gate))
+
+	if err := eng.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	if nudgeAppeared(prov, gate) {
+		t.Error("进展工具应重置规划门槛计数，不应注入提示")
+	}
+}
+
+// TestPlanningGate_OnceOnly 验证规划提示至多注入一次——模型无视提示时不反复刷屏。
+func TestPlanningGate_OnceOnly(t *testing.T) {
+	const gate = "【规划提示】只应出现一次"
+	prov := &countingProvider{responses: []func([]schema.ToolDefinition) *schema.Message{
+		readToolCall, readToolCall, readToolCall, readToolCall, readToolCall, readToolCall, finalText,
+	}}
+	reg := &staticRegistry{tools: []schema.ToolDefinition{
+		{Name: "read_file"}, {Name: "edit_file"}, {Name: "plan_write"},
+	}, output: "ok"}
+	eng := NewAgentEngine(prov, reg, "/tmp", WithPlanningGate(2, gate))
+
+	if err := eng.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run 失败: %v", err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	hits := 0
+	for _, c := range prov.calls {
+		for _, m := range c.messages {
+			if strings.Contains(m.Content, gate) {
+				hits++
+				break
+			}
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("规划提示应恰好出现在 1 次 LLM 调用的历史中，实际 %d 次", hits)
+	}
+}

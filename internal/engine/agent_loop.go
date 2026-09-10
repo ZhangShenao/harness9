@@ -55,6 +55,8 @@ type AgentEngine struct {
 	stallText          string              // 停滞 nudge 提示文本
 	closingThreshold   int                 // >0 且配置 maxTurns 时，剩余该数量的 Turn 内注入一次收尾 nudge（P1-4）
 	closingText        string              // 收尾 nudge 提示文本
+	planningGateBudget int                 // >0 时连续该轮数"无进展工具且无 plan_write"则注入一次规划 nudge（P1-1）
+	planningGateText   string              // 规划 nudge 提示文本
 	observer           EngineObserver      // 可选，nil 时自动退化为 noopObserver
 	generateRetries    int                 // LLM 生成调用最大尝试次数（默认 3）
 	generateRetryBase  time.Duration       // 重试退避基准（默认 1s）
@@ -197,6 +199,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 		}
 
 		lc.trackStall(responseMsg.ToolCalls)
+		lc.trackPlanningWork(responseMsg.ToolCalls)
 
 		toolStart := time.Now()
 		results := e.executeTools(turnCtx, lc.turns, responseMsg.ToolCalls, logPrefix, em)
