@@ -138,3 +138,26 @@ func TestSwebenchPrompt_MandatesRealVerification(t *testing.T) {
 		t.Error("prompt should hint at the project's deprecation-warning convention")
 	}
 }
+
+// TestPlanningHintSection 验证 P1-1 路线 A：复杂任务（长问题描述或环境重量高的
+// repo）注入规划建议，简单任务零干扰。
+func TestPlanningHintSection(t *testing.T) {
+	longProblem := strings.Repeat("复杂问题描述。", 300) // 1800 字符，超阈值
+	tests := []struct {
+		name     string
+		inst     Instance
+		wantHint bool
+	}{
+		{name: "长问题描述触发", inst: Instance{Repo: "django/django", ProblemStatement: longProblem}, wantHint: true},
+		{name: "环境重量 repo 触发", inst: Instance{Repo: "astropy/astropy", ProblemStatement: "short"}, wantHint: true},
+		{name: "简单任务零干扰", inst: Instance{Repo: "django/django", ProblemStatement: "short bug"}, wantHint: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := (&swebenchPromptBuilder{instance: tt.inst, workDir: "/tmp"}).planningHintSection()
+			if (got != "") != tt.wantHint {
+				t.Fatalf("planningHintSection() = %q, wantHint = %v", got, tt.wantHint)
+			}
+		})
+	}
+}

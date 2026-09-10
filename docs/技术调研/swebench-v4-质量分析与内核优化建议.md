@@ -198,7 +198,7 @@ runner.go:289-292 三处叠加缺陷（详见 §5.2）：
 
 改法：两个命令各自独立 context（diff 单独给 60s）；改用 `Output()` 并显式检查 err，失败重试一次；提交前做 hunk 完整性校验（每个 hunk 头声明的行数与正文一致、diff 以换行结尾），失败时打 `patch_truncated=true` 进 usage.jsonl 并落 ERROR 日志。验收标准：astropy-14182/14365 用原始 worktree 重跑提取，patch apply 成功、评分转为 resolved。
 
-### P1-1 Planning 激活机制：从"等模型自觉"到"harness 主动触发"
+### P1-1 ✅ 已落地（A+B 双路线）— Planning 激活机制：从"等模型自觉"到"harness 主动触发"
 
 2/78 的采用率说明软引导对 Kimi-K3 无效。两条路线（推荐 A）：
 

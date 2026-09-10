@@ -49,6 +49,15 @@ const verifyGateText = "你似乎尚未运行过任何测试就准备结束。�
 // seaborn-3407 死在重验半途，终版 patch 均处于未验证状态。
 const closingGateThreshold = 5
 
+// planningGateThreshold 是规划门槛（P1-1）预算：连续 12 轮"纯只读探索"（无改动也无
+// plan_write）即注入一次规划提示。取 12 与 stallNudgeWindow(10) 错开节拍，且远低于
+// 全量 turns 中位 28——在探索漂移早期（而非烧掉半程预算后）介入。
+const planningGateThreshold = 12
+
+// planningGateText 是规划门槛提示：要求停下先用 plan_write 制定计划再执行。
+const planningGateText = "你已连续多轮只读探索，既没有改动也没有制定计划。请停下来：" +
+	"先用 plan_write 记录一份简短修复计划（定位 → 改动 → 验证），然后按计划执行，并随进展更新计划。"
+
 const closingGateText = "你已接近 Turn 预算上限。请立即收尾：不要开启新的探索，" +
 	"对当前改动运行相关测试验证（若尚未验证），然后总结修复内容与验证结果后结束。"
 
@@ -300,6 +309,9 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 		engine.WithGenerateRetry(4, 2*time.Second),
 		// 停滞提示：连续多轮无改动/无测试运行时注入一次提示，打断盲目空转（轨迹分析 R6）。
 		engine.WithStallNudge(stallNudgeWindow, stallNudgeText),
+		// 规划门槛（P1-1）：连续多轮纯只读探索且未规划时注入一次规划提示，
+		// 对抗"探索过深"漂移（sphinx-8474 64 轮读代码即此形态）。
+		engine.WithPlanningGate(planningGateThreshold, planningGateText),
 		// 收尾门槛（P1-4）：剩余 Turn 低于阈值时注入一次收尾提示，要求立即验证并总结，
 		// 杜绝"最后一改未验证"即被截断的交卷（pylint-7114、seaborn-3407 形态）。
 		engine.WithClosingGate(closingGateThreshold, closingGateText),
