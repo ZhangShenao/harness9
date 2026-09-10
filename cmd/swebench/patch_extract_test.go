@@ -145,6 +145,12 @@ func TestCollectPatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collectPatch() error = %v", err)
 	}
+	// git diff 的合法输出恒以终止换行结尾；补丁必须原样保留它——
+	// 剥掉换行的补丁在 eval 容器里会被 git apply 判为 corrupt（2026-09-10
+	// 验证轮 3 例 Patch Apply Failed 的根因，实弹复现确认）。
+	if !strings.HasSuffix(patch, "\n") {
+		t.Fatalf("collectPatch() 输出缺少终止换行，结尾: %q", patch[max(0, len(patch)-40):])
+	}
 	for _, want := range []string{"diff --git a/tracked.py", "-orig = 1", "+fixed = 2", "new file mode", "+new = 1"} {
 		if !strings.Contains(patch, want) {
 			t.Errorf("patch 缺少 %q\npatch:\n%s", want, patch)
