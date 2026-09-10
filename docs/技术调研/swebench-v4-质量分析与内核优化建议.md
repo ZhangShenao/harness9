@@ -1,14 +1,14 @@
 # SWE-bench v4 评测质量分析与 harness9 内核优化建议
 
 > 日期：2026-09-09 ｜ 分支：`opt/eval`（runner 增强已合入）｜ 模型：`moonshotai/kimi-k3`（OpenRouter，$3/$15 每 MTok）
-> 数据：RunID `20260909-130555`，78 实例（seed=1，每 repo 上限 8，SWE-bench Lite），评分 run_id `harness9-lite-v4`
+> 数据：RunID `20260909-130555`，78 实例（seed=1，每 repo 上限 8，SWE-bench Lite），评分 run_id `harness9-lite-v5`（2026-09-10 08:28 完成）
 > 前置文档：[swebench-v4-扩样评测设计](./swebench-v4-扩样评测设计.md)（本轮方案）、[swebench-轨迹分析与内核优化-v2](./swebench-轨迹分析与内核优化-v2.md)（v1 根因与优化）
 
 ---
 
 ## 0. 一句话结论
 
-> **验证闭环彻底恢复**（76/78 实例真实运行了测试，v1 时代为 0/24），runner 的环境自举 + 验证关卡 + 停滞提示三件套在 Kimi-K3 上端到端成立；**resolve 率评分因镜像拉取受阻暂未完成**（12 实例先行评分：10 resolved / 2 unresolved）。最大的新发现不是失败模式，而是**评测完整性威胁**：沙箱可直连 GitHub，17% 实例抓取了上游 issue/patch 内容，必须用网络白名单封死。Agent 能力侧的最大杠杆是 **Planning 采用率过低（2/78）**——原生规划能力已接通但 LLM 几乎不自发使用。
+> **验证闭环彻底恢复**（76/78 实例真实运行了测试，v1 时代为 0/24），runner 的环境自举 + 验证关卡 + 停滞提示三件套在 Kimi-K3 上端到端成立；**最终 resolve 率 67/78（85.9%）**（排除弃拉镜像口径 67/77=87.0%，剔除 runner 截断缺陷影响后潜在 69/77=89.6%）。最大的新发现不是失败模式，而是**评测完整性威胁**：沙箱可直连 GitHub，17% 实例抓取了上游 issue/patch 内容，必须用网络白名单封死。第二大新发现是 **runner 截断补丁缺陷**（§5.2）：`git diff` 超时被静默吞掉，2 例高质量修复被按 0 分计。Agent 能力侧的最大杠杆是 **Planning 采用率过低（2/78）**——原生规划能力已接通但 LLM 几乎不自发使用。
 
 ---
 
@@ -38,6 +38,8 @@
 | Error | 3 |
 
 对比报告（含效率指标、plan_write 采用交叉表、v3 参考对照）：`benchmarks/swebench/v4-expansion/compare-report.md`。
+
+**排除口径**（用户拍板弃拉 matplotlib-23562 镜像后重生成）：**67/77 = 87.0%**，Wilson CI [77.7%, 92.8%]（`report-v5-excl-23562.json` + `usage-excl-23562.jsonl`）。Error 3 例构成：matplotlib-23562（无镜像弃评，预期内）+ astropy-14182/14365（**runner 截断补丁所致，见 §5.2**——两例 agent 侧修复完整且本地全量验证通过，剔除该缺陷的潜在真实成绩 **69/77 = 89.6%**）。
 
 ### 2.2 先行子集（12 实例，镜像就绪即评分，非随机样本，仅作方向参考）
 
@@ -111,7 +113,31 @@ v1 轨迹分析（R1/R2）的核心发现是"24 条轨迹没有一条真正跑�
 2. **外网探查倾向**：17% 实例主动访问 GitHub（见 §5），sonnet 轨迹中无此模式（v1 时代网络受限于环境缺失，客观不可比，但探查-下载 patch 的行为本身值得警惕）。
 3. **自发规划弱**：2/78 采用率；sonnet 在 v3 的采用率未统计（当时未注册 plan_write），无对照基线，后续模型轮次应把 `plan_writes` 作为固定采集项。
 
+### 4.5 七例 unresolved 逐案归因（2026-09-10 复盘，全轨迹 + eval 日志核对）
+
+| 实例 | 失败测试特征 | 根因分类 | 一句话根因 |
+|------|------------|---------|-----------|
+| astropy-7746 | 隐藏断言要求保留非空轴数据与原形状 | 修复不完整 | 位置找对（与上游同处加 guard），但返回值错误：丢数据/改形状。教科书级规划（§2.2）也救不回返回值语义 |
+| django-15790 | F2P 全过，2 个 P2P 挂 | 改坏其他行为 | `defaultdict(list)→set` 去重破坏 E003 错误消息的确定性顺序，正确做法是保序去重 |
+| matplotlib-22711 | set_val 后手柄不跟随 | 修复不完整 | 隐藏补丁新增"手柄同步"断言，agent 只修了 IndexError 主症状（下载过上游 patch 14 次仍漏掉伴随行为） |
+| seaborn-3407 | diag_vars 需保留原始 tuple | 误诊 | Turn 12-13 已下载官方测试原文（`assert diag_vars == list(cols)`）仍选字符串化方案，且从未对该断言验证 |
+| xarray-4493 | 缺 DeprecationWarning | 修复不完整 | 只做惰性一半；本地从未点名跑 test_as_variable，静默解包恰好消掉告警 |
+| pylint-7114 | 9 个 P2P 挂 | 改坏其他行为 + 80 轮截断 | 目录一律上跳父目录改变 sys.path 语义；最后一轮 edit 后即被截断，终版 patch 零验证（80 turns 全场最高，仅 436s） |
+| sphinx-8474 | 4 个 numfig 警告文案测试 | 误诊/修错位置 | gold 改 std.py 警告文案，agent 改 toctree 编号逻辑，std.py 一字未动 |
+
+**横向模式（按杀伤力排序）**：
+
+1. **"无回归"验证替代"目标达成"验证（7/7 共性，最致命）**：全部以 `git stash` 前后失败集合不变作为交卷依据——只能证明"没改坏"，证明不了"修好了"。astropy/matplotlib/xarray 的修复本地全绿、隐藏断言全挂。
+2. **沙箱环境与 eval 容器脱节（5/7）**：numpy 2.0 / pandas 3.0.5 / docutils 0.23 等版本漂移造成几十个基线失败，真实失败信号被成批归入"预存环境问题"（sphinx-8474 恰好埋掉"警告文案不对"的关键证据）。
+3. **隐藏测试的伴随行为要求（4/7）**：修主症状、丢伴随行为（手柄同步/告警保留/形状保持/消息有序）——issue 文本不写、隐藏测试必查，是 F2P 挂掉的主力。
+4. **语义扩张性回归（2/7）**：set 化、目录上跳这类"顺手扩大适用面"的改动破坏 P2P，改动后未全量跑相关测试文件。
+5. **异常收尾（2/7）**：pylint-7114（80 轮截断在最后 edit 后）、seaborn-3407（1989s 被掐死在降级 pandas 重验的半途）——终版 patch 均处于未验证状态。
+
+7 条轨迹共 274 轮 `| error]` 工具报错为 0，无打转/重复命令——失败全部在模型层（诊断、完整性、验证策略），执行层零故障；runner 侧唯一缺陷是 patch 截断（§5.2），其 2 例因按 error 计未进入本表。
+
 ## 5. 评测完整性威胁（本轮新发现，必须处置）
+
+### 5.1 沙箱可直连 GitHub，Agent 会抓上游答案
 
 **沙箱可直连 GitHub，Agent 会抓上游答案。** 证据：
 
@@ -123,6 +149,17 @@ v1 轨迹分析（R1/R2）的核心发现是"24 条轨迹没有一条真正跑�
 SWE-bench 官方协议不禁止网络访问（官方 harness 的镜像也不禁），但对**衡量 harness 内核能力**而言，这是直接的分数污染：resolved 可能反映"模型会搜索答案"而非"harness 能引导模型修复"。该威胁在 v1/v3 不存在——当时沙箱没依赖、没网络使用场景；环境自举修好后网络也随之打开，这是**修 R1 带来的副作用**。
 
 **处置建议（已列入 §7 P0）**：SWE-bench runner 模式下对沙箱启用网络白名单——放行 pypi（自举必需），封禁 github.com/raw.githubusercontent.com/api.github.com。
+
+补充：污染不保证做对——matplotlib-22711 命中 .patch 14 次仍 unresolved（漏掉隐藏断言的伴随行为），seaborn-3407 下载官方测试原文后仍选错修法。但"抓到答案还做错"不改变"分数被污染"的定性。
+
+### 5.2 runner 截断补丁（本轮新发现，直接影响 2 例评分）
+
+astropy-14182/14365 官方评分报 Patch Apply Failed，复盘发现**不是模型补丁质量问题，而是 runner 把 diff 截断了**：
+
+- **证据**：eval 侧 `patch.diff` 与 predictions.jsonl 的 model_patch 逐字节一致地截断——14182 的 changelog hunk 头声明 `@@ -0,0 +1,3 @@`，正文只有 2 行且无收尾换行；14365 结尾停在句中（`...in any case.`）。容器内三档降级（`git apply` / `git apply --reject` / `patch --fuzz=5`）全部失败，报 `malformed patch at line 31 / unexpectedly ends in middle of line`。两例 agent 侧轨迹都完整收尾且本地验证通过（14182 是教科书级修复），修复本体大概率正确。
+- **机制**（runner.go:289-292）：`git add -A -N` 与 `git diff` **共享同一个 15s context**，且 `patchOut, _ := exec.CommandContext(...).CombinedOutput()` **把超时/错误整个吞掉**——diff 进程被超时杀死时，半截输出被静默当作 model_patch 提交。astropy 是唯一诱发 agent 产生大量 C 构建产物的 repo（最可能的慢 diff 触发条件），两例恰好全部落在该 repo，其余 76 例无此症状。
+- **影响**：2 例按 error 计 0 分。剔除该缺陷的潜在真实成绩 **69/77 = 89.6%**。
+- **修复**：见 §7 P0-3。
 
 ## 6. 有效性威胁与边界
 
@@ -147,6 +184,18 @@ SWE-bench 官方协议不禁止网络访问（官方 harness 的镜像也不禁�
 
 本轮暴露：77 个 x86_64 镜像 110GB 的拉取无脚本、无断点、受 registry 限速阻塞评分一天。补 `benchmarks/swebench/pull-images.sh`（清单由 predictions.jsonl + swebench spec 生成，`docker pull --platform linux/amd64`，带重试与跳过已有），并把"镜像就绪检查"做成评分前置步骤。顺带 `docker builder prune` 纳入常规清理（本地已积累 21.98GB build cache）。
 
+本轮实测补强两条工程参数：① Apple Silicon 上 Docker Desktop 拉取并发上限实测 **9 路安全**（12 路触发 daemon 500 错误风暴并回滚已拉镜像，损失约 1 小时）；② 大镜像（matplotlib 系）单张可达 4GB+ 且易遇下载连接僵死，需要"杀进程换新连接重试"的兜底，单纯退避等待无法恢复。另注意：swebench 拉镜像走 docker-py，**不读 `DOCKER_DEFAULT_PLATFORM`**，环境变量方案无效，必须 CLI `--platform linux/amd64` 预拉。
+
+### P0-3 runner patch 提取加固（本轮直接丢 2 分的缺陷）
+
+runner.go:289-292 三处叠加缺陷（详见 §5.2）：
+
+1. `git add -A -N` 与 `git diff` 共享 15s context——重产物 repo 下 diff 被超时截断；
+2. `patchOut, _ :=` 吞掉超时错误，截断补丁静默入库并提交评分；
+3. `CombinedOutput()` 把 stderr 混入补丁流，任何 git warning 都会污染 patch。
+
+改法：两个命令各自独立 context（diff 单独给 60s）；改用 `Output()` 并显式检查 err，失败重试一次；提交前做 hunk 完整性校验（每个 hunk 头声明的行数与正文一致、diff 以换行结尾），失败时打 `patch_truncated=true` 进 usage.jsonl 并落 ERROR 日志。验收标准：astropy-14182/14365 用原始 worktree 重跑提取，patch apply 成功、评分转为 resolved。
+
 ### P1-1 Planning 激活机制：从"等模型自觉"到"harness 主动触发"
 
 2/78 的采用率说明软引导对 Kimi-K3 无效。两条路线（推荐 A）：
@@ -159,6 +208,12 @@ SWE-bench 官方协议不禁止网络访问（官方 harness 的镜像也不禁�
 ### P1-2 验证关卡升级：从"提示"到"硬门槛"
 
 当前关卡是一次性软提示（4 次触发全部有效补跑，说明够用），但 Agent 仍可能在提示后放弃验证交卷。升级方向：`runWithVerificationGate` 中第二轮续跑后仍 `ranTest == false` 时，将最终 patch 标记为 `unverified`（写入 usage.jsonl），报告中对 unverified patch 的 resolved 打折解读。成本近零，诚实度提升。
+
+另据 §4.5 横向模式 1（7/7 实例均为"无回归式"验证），续跑提示的措辞应要求**正向断言**——"运行 Issue 的复现脚本并展示其从失败转为通过，点名跑你改动文件的测试"——而非泛泛的"跑一下测试"。无回归式验证（`git stash` 前后失败集合对比）在本轮 7 例 unresolved 中无一例外地给出了虚假信心。
+
+### P1-4 收尾验证预算：杜绝"最后一改未验证"交卷
+
+pylint-7114 在第 80 轮（turn 上限）刚做完 edit 即被截断，终版 patch 零验证；seaborn-3407 在 1989s 被时间预算掐死在"降级 pandas 准备重跑官方测试"的验证半途。当前验证关卡只在"自然结束且从未跑过测试"时触发，对"预算耗尽前的最后改动"完全没有保护。建议：runner 感知预算余量，turns 或时长低于阈值（如剩余 10% / 5 turns）且存在未验证的改动时，注入一次"立即收尾：运行相关测试验证当前改动并总结"提示；若预算已不足以注入，在 usage.jsonl 标记 `final_edit_unverified=true` 供报告打折解读。
 
 ### P1-3 churn 检测：stall nudge 的盲区
 
@@ -177,5 +232,6 @@ astropy/sklearn 的 55-59 中位 turns 里相当部分耗在依赖/编译反复�
 - [x] 78 实例 predictions.jsonl + usage.jsonl + run_summary.md（`benchmarks/swebench/v4-expansion/`）
 - [x] 冒烟 24 实例独立目录（`swebench-smoke/`，$34.23，验证用量链路）
 - [x] runner 增强 9 提交在 `opt/eval`（countingProvider / usage.jsonl / --instances / plan_write 注册 / compare.py / kimi-k3 注册，最终 review Approved）
-- [ ] 官方 harness 最终评分 + compare-report.md（阻塞于镜像拉取，脚本已在后台执行；完成后回填 §2.1）
-- [x] 本质量分析与内核优化建议报告
+- [x] 官方 harness 最终评分（run_id `harness9-lite-v5`，2026-09-10 08:28，67/78=85.9%）+ compare-report.md（已按排除 23562 口径重生成：67/77=87.0%）
+- [x] 本质量分析与内核优化建议报告（含 2026-09-10 复盘增补：§4.5 失败归因、§5.2 runner 截断、§7 P0-3/P1-4）
+- [ ] P0-1/P0-2/P0-3 落地后用 astropy-14182/14365 + 47 实例冒烟集做验证轮
