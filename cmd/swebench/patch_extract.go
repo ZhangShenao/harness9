@@ -53,12 +53,16 @@ func collectPatch(tmpDir string) (string, error) {
 			continue
 		}
 		// 校验必须针对原始输出：git diff 的合法输出恒以换行结尾，TrimSpace 会把它
-		// 剥掉、令校验器误报截断。校验通过后才 TrimSpace（model_patch 口径与旧实现一致）。
+		// 剥掉、令校验器误报截断。
 		if verr := validateUnifiedDiff(string(out)); verr != nil {
 			lastErr = fmt.Errorf("git diff 输出未通过完整性校验（第 %d 次）: %w", attempt+1, verr)
 			continue
 		}
-		return strings.TrimSpace(string(out)), nil
+		// 返回必须保留原始输出的终止换行：剥掉换行的补丁在 eval 容器里会被
+		// git apply 判为 corrupt（"corrupt patch at line N"），2026-09-10 验证轮
+		// 3 例 Patch Apply Failed 即此根因（TrimSpace 所致，实弹复现确认）。
+		// model_patch 末尾多一个 \n 对 git apply / GNU patch 均无害。
+		return string(out), nil
 	}
 	return "", lastErr
 }
