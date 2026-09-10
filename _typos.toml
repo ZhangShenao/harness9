@@ -11,3 +11,11 @@ extend-ignore-identifiers-re = [
 
 [default.extend-words]
 harness9 = "harness9"
+
+# 模型输出数据文件（SWE-bench predictions）：patch 内含上游代码片段、git hash、
+# 上游源码的原样拼写（如 numpy 的 "determinstic"），属数据而非文档，拼写检查误报。
+[files]
+extend-exclude = [
+  "**/predictions*.jsonl",
+  "swebench-smoke/predictions.jsonl",
+]
