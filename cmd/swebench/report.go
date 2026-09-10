@@ -66,6 +66,12 @@ const summaryTmpl = `# SWE-bench Lite Run Summary
 - 空 patch（agent 无改动）: {{.EmptyPatch}}
 - 运行出错：{{.Errors}}
 
+## 模型快照
+
+- 模型：{{.Model}}
+- 元数据：{{.SnapshotInfo}}
+- 快照文件：{{.SnapshotFile}}
+
 ## 按 Repo 分布
 
 | Repo | 实例数 | 有 patch | 空 patch | 出错 |
@@ -104,17 +110,28 @@ type summaryData struct {
 	EmptyPatch int
 	Errors     int
 	Repos      []repoStats
+	// 模型版本快照摘要（官方打榜 P0 可复现性存证）
+	Model        string
+	SnapshotInfo string
+	SnapshotFile string
 }
 
-// writeSummary 将运行摘要写入 cfg.OutputDir/run_summary.md，记录 RunID 与 seed 以支持复现。
+// writeSummary 将运行摘要写入 cfg.OutputDir/run_summary.md，记录 RunID 与 seed 以支持复现；
+// cfg.Snapshot 非空时附带模型版本快照摘要（该轮由哪个版本模型服务的存证）。
 func writeSummary(cfg Config, results []RunResult, start, end time.Time) error {
 	byRepo := make(map[string]*repoStats)
 	sd := summaryData{
-		RunID:     cfg.RunID,
-		Seed:      cfg.Seed,
-		StartTime: start.Format("2006-01-02 15:04:05"),
-		EndTime:   end.Format("2006-01-02 15:04:05"),
-		Total:     len(results),
+		RunID:        cfg.RunID,
+		Seed:         cfg.Seed,
+		StartTime:    start.Format("2006-01-02 15:04:05"),
+		EndTime:      end.Format("2006-01-02 15:04:05"),
+		Total:        len(results),
+		Model:        cfg.ModelName,
+		SnapshotInfo: describeModelSnapshot(cfg.Snapshot),
+		SnapshotFile: "未写入",
+	}
+	if cfg.Snapshot != nil {
+		sd.SnapshotFile = "model_snapshot.json"
 	}
 	for _, r := range results {
 		if byRepo[r.Instance.Repo] == nil {
