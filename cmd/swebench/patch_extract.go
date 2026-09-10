@@ -93,7 +93,7 @@ func validateUnifiedDiff(patch string) error {
 		}
 		oldN, newN, ok := parseHunkHeader(lines[i])
 		if !ok {
-			return fmt.Errorf("无法解析 hunk 头: %.60s", lines[i])
+			return fmt.Errorf("无法解析 hunk 头：%.60s", lines[i])
 		}
 		i++
 		var oldCnt, newCnt int
@@ -115,7 +115,7 @@ func validateUnifiedDiff(patch string) error {
 			i++
 		}
 		if oldCnt != oldN || newCnt != newN {
-			return fmt.Errorf("hunk 行数不匹配: 头声明 -%d +%d，实际 -%d +%d，疑似截断", oldN, newN, oldCnt, newCnt)
+			return fmt.Errorf("hunk 行数不匹配：头声明 -%d +%d，实际 -%d +%d，疑似截断", oldN, newN, oldCnt, newCnt)
 		}
 		// 行数已满足时 i 停在下一 hunk/文件头或 "\ No newline" 标记上，交回外层循环。
 		i--

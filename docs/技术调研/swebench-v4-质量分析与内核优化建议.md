@@ -107,7 +107,7 @@ v1 轨迹分析（R1/R2）的核心发现是"24 条轨迹没有一条真正跑�
 
 ### 4.3 效率损耗点：3 例 80-turn 满转 + 环境重 repo 的构建循环
 
-满转实例（astropy-12907、pylint-7114、sklearn-14983）合计烧掉 ~$16（11% 总成本）。astropy-12907 的行为分布：76 bash / 5 read_file / 1 edit_file——典型的"用 bash 盲试替代读代码"。它与 astropy-7746 是同一道题的两个镜像：环境构建受挫（C 扩展编译）后，7746 选择规划+对照实验收敛，12907 选择高速盲试。**stall nudge（10 轮无改动即提示）对"有工具输出但无实质进展"的循环不敏感**——12907 每轮都有新命令输出，不触发 nudge，但 76 次 bash 中大量是变体重试。
+满转实例（astropy-12907、pylint-7114、sklearn-14983）合计烧掉 ~$16（11% 总成本）。astropy-12907 的行为分布：76 bash / 5 read_file / 1 edit_file——典型的"用 bash 盲试替代读代码"。它与 astropy-7746 是同一道题的两个镜像：环境构建受挫（C 扩展编译）后，7746 选择规划 + 对照实验收敛，12907 选择高速盲试。**stall nudge（10 轮无改动即提示）对"有工具输出但无实质进展"的循环不敏感**——12907 每轮都有新命令输出，不触发 nudge，但 76 次 bash 中大量是变体重试。
 
 ### 4.4 Kimi-K3 特有行为画像（相对 v1/v3 的 sonnet-4.6 轨迹）
 
@@ -236,7 +236,7 @@ astropy/sklearn 的 55-59 中位 turns 里相当部分耗在依赖/编译反复�
 - [x] runner 增强 9 提交在 `opt/eval`（countingProvider / usage.jsonl / --instances / plan_write 注册 / compare.py / kimi-k3 注册，最终 review Approved）
 - [x] 官方 harness 最终评分（run_id `harness9-lite-v5`，2026-09-10 08:28，67/78=85.9%）+ compare-report.md（已按排除 23562 口径重生成：67/77=87.0%）
 - [x] 本质量分析与内核优化建议报告（含 2026-09-10 复盘增补：§4.5 失败归因、§5.2 runner 截断、§7 P0-3/P1-4）
-- [x] P0-1/P0-2/P0-3/P1-4 全部落地（opt/eval，23 包测试全绿）并以 47 实例验证轮端到端确认（§9：41/47=87.2%，error 清零）
+- [x] P0-1/P0-2/P0-3/P1-4 全部落地（opt/eval，23 包测试全绿）并以 47 实例验证轮端到端确认（§9:41/47=87.2%，error 清零）
 - [x] 冒烟 24 实例产物入库（swebench-smoke/，提交 88b937f）
 - [ ] PR #116（opt/eval → master）审阅合并；下一杠杆：P1-1 Planning 激活机制
 

@@ -352,7 +352,7 @@ func runInstance(ctx context.Context, inst Instance, cfg Config) RunResult {
 	}
 
 	if patchErr != nil {
-		return buildResult("", errors.Join(runErr, fmt.Errorf("收集 patch 失败: %w", patchErr)))
+		return buildResult("", errors.Join(runErr, fmt.Errorf("收集 patch 失败：%w", patchErr)))
 	}
 	if runErr != nil && patch == "" {
 		return buildResult("", runErr)
