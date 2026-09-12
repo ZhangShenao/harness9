@@ -158,6 +158,17 @@ if [ "$NON_EMPTY" -eq 0 ]; then
 fi
 fi
 
+# ---- 步骤 3.6：基础设施污染审计（评分前强制门控）----
+# patch 交付率≠质量：daemon 抖动期 agent 会盲写 patch（2026-09-12 校准教训：
+# 交付率 93% 但 resolve 率 63.2%，整轮作废）。轨迹覆盖缺口或 daemon 污染超阈值
+# 即终止，禁止把不可信产物送进评分。
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo ""
+  echo "==> [3.6/7] [dry-run] 跳过污染审计"
+else
+  run_sh "python3 '$REPO_ROOT/benchmarks/swebench/audit_run_health.py' '$OUTPUT'"
+fi
+
 # ---- 步骤 4：官方每实例 eval 镜像预拉（复用 pull-images.sh，依赖 predictions 清单）----
 run_sh "bash '$REPO_ROOT/benchmarks/swebench/pull-images.sh' '$OUTPUT/predictions.jsonl' 9 || echo '警告: 部分镜像预拉失败，评分阶段将按需拉取'"
 
