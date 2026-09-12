@@ -15,8 +15,10 @@
 # 用法：
 #   ./run-official-lite.sh [--sample N] [--dataset PATH] [--output DIR] [--parallel N] [--instances PATH] [--dry-run]
 #
-#   --sample N    每 repo 抽样上限（默认 100，覆盖 SWE-bench Lite 全部 300 条）；
-#                 官方打榜要求全量 300 条 pass@1，校准阶段可用 --sample 5（约 50 例）
+#   --sample N    每 repo 抽样上限（默认 999 = 不裁剪，覆盖 SWE-bench Lite 全部 300 条）；
+#                 官方打榜要求全量 300 条 pass@1。注意这是 per-repo 封顶而非总数：
+#                 2026-09-12 实测 Lite 里 django 有 114 条，--sample 100 会静默裁成 286 条，
+#                 导致整轮作废。校准阶段可用 --sample 5（约 50 例）
 #   --instances P 实例清单文件（每行一个 instance_id，透传 runner）；与 --sample 叠加，
 #                 用于单实例冒烟：先过滤后采样。校准/正赛不要传
 #   --dry-run     只打印将执行的步骤，不实际执行
@@ -25,7 +27,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TEMPLATE="$REPO_ROOT/benchmarks/swebench/submission/README.template.md"
 
-SAMPLE=100
+SAMPLE=999
 DATASET="$REPO_ROOT/swe-bench-lite.jsonl"
 OUTPUT=""
 PARALLEL="${SWEBENCH_PARALLEL:-1}"
