@@ -65,8 +65,8 @@ test_output 离线重判每个实例（无需 Docker 重跑）；"verified" 勾�
 | 阶段 | 内容 | 产出 | 状态 |
 |------|------|------|------|
 | **P0 可复现性打包** | 模型版本快照存证、一键复现脚本、官方提交物导出、提交 README 模板与本方案 | `cmd/swebench/model_snapshot.go`、`cmd/swebench/export_submission.go`、`benchmarks/swebench/run-official-lite.sh`、`benchmarks/swebench/submission/README.template.md` | ✅ 已完成 |
-| **P1 全量跑分** | Lite 全量 300 例 pass@1（Kimi-K3，seed=1）；跑前 50 例校准预估分数与成本 | `swebench-official/<run_id>/` 完整 run 目录（predictions + usage + 轨迹 + 模型快照） | 待执行 |
-| **P2 官方评分与导出** | `pull-images.sh` 预拉 amd64 评测镜像 → 官方 harness 评分 → `--mode export` 产出 submission 目录 → 填充 `swebench submit package` 所需件 | submission/（all_preds + logs + trajs + README） | 待执行 |
+| **P1 全量跑分** | Lite 全量 300 例 pass@1（Kimi-K3，seed=1）；跑前 50 例校准预估分数与成本 | `swebench-official/<run_id>/` 完整 run 目录（predictions + usage + 轨迹 + 模型快照） | 校准 ✅（2026-09-12，48/57=84.2%，见 §3.1）；全量待执行 |
+| **P2 官方评分与导出** | `pull-images.sh` 预拉 amd64 评测镜像 → 官方 harness 评分 → `--mode export` 产出 submission 目录 → 填充 `swebench submit package` 所需件 | submission/（all_preds + logs + trajs + README） | 校准轮已演练通过（trajs 57/57，EXPORT_MANIFEST 如实记录缺失件）；正赛待执行 |
 | **P3 发布与登记** | 公开 artifacts 仓库（GitHub public repo）→ `swebench submit publish` → `register` 开 PR → 跟进官方审查/verify 抽查 | experiments 仓库 PR + 公开 artifacts 仓库 | 待执行 |
 
 P1 执行入口：
@@ -76,6 +76,26 @@ P1 执行入口：
 ./benchmarks/swebench/run-official-lite.sh --sample 5      # 校准：~50 例
 ./benchmarks/swebench/run-official-lite.sh --dry-run       # 只打印步骤
 ```
+
+### 3.1 校准结果（calib-r3，2026-09-12）
+
+**48/57 = 84.2% resolved**（Wilson 95% CI [72.6%, 91.4%]；排除官方 harness
+error 口径 48/56 = 85.7%），与 v4 基线（78 例 85.9%、硬化验证 87.2%）一致：
+55 个可比实例上两轮各解决 48 个（重叠 42、新修 6、回退 6），净漂移为零。
+完整归因、r2 作废证据链与成本（$99.35）见
+`swebench-official/calib-r3-final/CALIBRATION_REPORT.md`。
+
+校准过程沉淀的三件质量基础设施（均在 `feat/benchmark` 分支）：
+
+| 工具 | 作用 | 背景 |
+|------|------|------|
+| `benchmarks/swebench/merge-predictions.py`（575473d） | 多 run keep-best 合并（空 patch 恒被非空覆盖）+ logs/usage/快照拼装 | runner `--resume` 追加式，多轮续跑必须去重 |
+| `benchmarks/swebench/audit_run_health.py`（6f578f7） | 评分前审计：轨迹覆盖完整性 + daemon 污染签名（docker.sock / exec format error），不过即禁止评分 | round2 在 daemon 抖动期推理，patch 交付率 93% 但 resolve 仅 63.2%，**整轮作废** |
+| `run-official-lite.sh` 步骤 3.6 | 审计门控固化进一键流程 | 同上 |
+
+**正赛执行纪律（从校准教训固化的三条）**：①单轮连续完成，避免 resume 混代次；
+②评分前必须过污染审计；③基础设施失败（clone 超时、provider 流中断）可定点重试，
+模型行为结果（含空 patch、生成退化）按 pass@1 如实保留，不重骰。
 
 ## 4. 预算
 
