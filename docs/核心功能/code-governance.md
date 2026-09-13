@@ -117,7 +117,9 @@ threshold = ceil(基线重复行百分比) + 2
 
 ### 与 CI 的接入点
 
+::: v-pre
 漂移检测跑在 `lint` job 中：PR 触发时以 `origin/${{ github.base_ref }}` 为 base 比对（即「这个 PR 相对目标分支改了什么」）；push 到 master 时显式与 `origin/master` 比对——此时 HEAD 已是最新提交，diff 为空，检查显式通过（真正的门禁发生在 PR 阶段）。
+:::
 
 ---
 
