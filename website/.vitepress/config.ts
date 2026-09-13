@@ -1,7 +1,8 @@
 import { defineConfig } from 'vitepress'
+import { withMermaid } from 'vitepress-plugin-mermaid'
 import { docsSidebarEn, docsSidebarZh } from './sidebar.generated.js'
 
-export default defineConfig({
+export default withMermaid(defineConfig({
   title: 'harness9',
   description: 'A lightweight, complete, production-ready Go Agent Harness framework',
   base: '/harness9/',
@@ -133,4 +134,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))
