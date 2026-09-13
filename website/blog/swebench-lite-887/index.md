@@ -234,7 +234,7 @@ The general conclusion is one sentence: **patch delivery rate ≠ quality**. Any
 The submission follows the public SWE-bench/experiments process:
 
 1. **Eligibility**: confirmed in advance via [SWE-bench/experiments#482](https://github.com/SWE-bench/experiments/issues/482).
-2. **Submission PR**: the experiment is submitted as a PR to SWE-bench/experiments; this post is the technical report cited by that submission: SWE-bench/experiments（PR 开启后此处更新为具体链接）
+2. **Submission PR**: the experiment is submitted as a PR to SWE-bench/experiments; this post is the technical report cited by that submission: [SWE-bench/experiments#483](https://github.com/SWE-bench/experiments/pull/483)
 3. **Public artifacts**: all predictions (all_preds.jsonl, 300 entries), per-instance scoring logs, and human-readable trajectories generated during inference (trajs, 300/300) live in a public repository, together with the model_snapshot.json evidence and an EXPORT_MANIFEST that records missing items as-is: [ZhangShenao/swebench-lite-20260913](https://github.com/ZhangShenao/swebench-lite-20260913)
 
 The trajectories were generated during inference, not reconstructed afterwards — the official checklist requires this, and it is also what makes the audit possible in the first place.

@@ -233,7 +233,7 @@ patch 交付率 93%，resolve 率 63.2%。两个数字的落差就是污染的�
 提交 SWE-bench 官方榜单走的是 SWE-bench/experiments 的公开流程，这次打得也比较规范：
 
 1. **资格确认**：先在 [SWE-bench/experiments#482](https://github.com/SWE-bench/experiments/issues/482) 确认提交资格与口径。
-2. **提交 PR**：实验结果以 PR 形式提交到 SWE-bench/experiments，本文即该提交所引用的技术报告：SWE-bench/experiments（PR 开启后此处更新为具体链接）
+2. **提交 PR**：实验结果以 PR 形式提交到 SWE-bench/experiments，本文即该提交所引用的技术报告：[SWE-bench/experiments#483](https://github.com/SWE-bench/experiments/pull/483)
 3. **公开 artifacts**：全部预测（all_preds.jsonl，300 条）、per-instance 评分日志、推理时同步生成的人类可读轨迹（trajs，300/300）都在公开仓库，含 `model_snapshot.json` 存证与如实记录缺失项的 EXPORT_MANIFEST：[ZhangShenao/swebench-lite-20260913](https://github.com/ZhangShenao/swebench-lite-20260913)
 
 轨迹是推理时同步生成的，不是事后补写——这一点官方 checklist 明确要求，也是审计能成立的物理基础。
