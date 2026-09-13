@@ -3,7 +3,6 @@ title: "全量 300 例 88.7%：harness9 打榜 SWE-bench Lite 技术报告"
 date: 2026-09-13
 tags: [harness9, agent, golang, benchmark, swe-bench]
 summary: "harness9 搭配开放权重模型 moonshotai/kimi-k3 全量跑完 SWE-bench Lite 300 例，266 例解决（88.7%，Wilson 95% CI [84.6%, 91.8%]），推理成本 $485.29、墙钟 11 小时 22 分。本文是提交 SWE-bench 官方榜单的技术报告：完整口径、容器级反污染设计、34 例未解决的诚实归因，以及一轮被我们整轮作废的 63.2%。"
-cover: /blog/swebench-lite-887/images/cover.png
 ---
 
 # 全量 300 例 88.7%：harness9 打榜 SWE-bench Lite 技术报告
@@ -42,28 +41,11 @@ harness9 是一款 Local-First、轻量级、功能完备、生产可用的通�
 
 置信区间相当于给分数画一根误差棒：换一批同等规模的采样，真实水平大概率落在这个范围里。这次跑分不是孤注一掷——此前 57 例校准先导拿到 84.2%（CI 72.6%–91.4%），全量结果正落在校准区间内，说明子集到全量的外推是有效的。
 
-![图：从校准先导到全量正赛的成绩收敛](/blog/swebench-lite-887/images/run-results-overview-01.png)
-
-> 🎨 **图片 Prompt**（可用于 Midjourney / DALL-E / Stable Diffusion）
->
-> *图：从校准先导到全量正赛的成绩收敛*
->
-> ```
-> A benchmark results overview diagram: left rounded node labeled "calibration"
-> shows a medium bar labeled "57 cases" with height mark "84.2%" wrapped in a soft
-> translucent band labeled "CI 72.6-91.4%", a large flowing organic arrow labeled
-> "seed=1" leads right to a taller node labeled "full run" with bar "300 cases",
-> mark "88.7%" and band "CI 84.6-91.8%", the calibration band visibly overlapping
-> the full-run bar to show the extrapolation holds, three small caption chips at
-> the bottom labeled "266 / 300 resolved", "$485.29", "11h22m",
-> Studio Ghibli minimalist illustration style,
-> soft watercolor washes, gentle pastel palette, clean white background,
-> hand-drawn rounded shapes for nodes, warm earthy tones with sky blue accents,
-> flowing organic arrows to show data flow, simple sans-serif labels,
-> whimsical yet precise technical diagram, quiet and serene atmosphere,
-> Hayao Miyazaki sketch aesthetic meets infographic clarity,
-> no gradients, flat color fills, subtle paper texture, 16:9 aspect ratio
-> ```
+```mermaid
+flowchart LR
+    A["校准先导<br/>57 例 · 84.2%<br/>CI 72.6%–91.4%"] -->|"seed=1 同一实例集"| B["全量正赛<br/>300 例 · 88.7%<br/>CI 84.6%–91.8%"]
+    B --> C["266 resolved<br/>$485.29 · 11h22m"]
+```
 
 账单和时钟也一并交代。正赛推理成本 **$485.29**（input 136.5M tokens / output 5.05M tokens），墙钟时间 11 小时 22 分（2026-09-13 05:31–16:53），3 路并发。算上校准阶段约 $225（含作废的 round2），全战役约 **$710**，落在 $800 预算内。
 
@@ -127,30 +109,13 @@ for _, host := range c.cfg.NetworkBlockedHosts {
 
 `--add-host` 改写的是容器内的 DNS 解析：域名直接指向 0.0.0.0，连接在第一步就被拒掉，Agent 想绕也没有路径。PyPI 通道不受影响，依赖自举照常工作。轨迹里可以复核：300 条轨迹中不存在任何对上游 issue / patch 页面的成功抓取。
 
-![图：容器级反污染——GitHub 域名钉死 0.0.0.0，PyPI 通道放行](/blog/swebench-lite-887/images/anti-pollution-network-block-02.png)
-
-> 🎨 **图片 Prompt**（可用于 Midjourney / DALL-E / Stable Diffusion）
->
-> *图：容器级反污染——GitHub 域名钉死 0.0.0.0，PyPI 通道放行*
->
-> ```
-> A Docker sandbox island labeled "Sandbox" containing a rounded node
-> "AgentEngine" with five small tool chips labeled "bash", "read_file",
-> "write_file", "edit_file", "plan_write"; around the island a translucent dome
-> labeled "--add-host" with six small crossed-out signs labeled "github.com",
-> "raw.githubusercontent.com", "api.github.com", "codeload.github.com",
-> "objects.githubusercontent.com", "gist.github.com" bouncing off the dome;
-> a separate open water lane labeled "pypi.org" flows into the island with a
-> small chip "bootstrap"; an output arrow leaves the island to a scroll labeled
-> "git diff" then to a balanced scale labeled "official evaluator",
-> Studio Ghibli minimalist illustration style,
-> soft watercolor washes, gentle pastel palette, clean white background,
-> hand-drawn rounded shapes for nodes, warm earthy tones with sky blue accents,
-> flowing organic arrows to show data flow, simple sans-serif labels,
-> whimsical yet precise technical diagram, quiet and serene atmosphere,
-> Hayao Miyazaki sketch aesthetic meets infographic clarity,
-> no gradients, flat color fills, subtle paper texture, 16:9 aspect ratio
-> ```
+```mermaid
+flowchart TD
+    A["Agent 容器内请求 github.com<br/>等 6 个 GitHub 域名"] --> B{"docker --add-host<br/>域名钉死 0.0.0.0"}
+    B -->|"GitHub 系请求"| C["DNS 解析即拒<br/>0ms 失败，无出逃路径"]
+    B -->|"PyPI 依赖自举"| D["正常放行"]
+    C --> E["300 条轨迹可复核：<br/>零次成功抓取"]
+```
 
 红线逐条声明，这也是提交官方榜单的 checklist：
 
@@ -200,29 +165,13 @@ patch 交付率 93%，resolve 率 63.2%。两个数字的落差就是污染的�
 
 我们的处置是**整轮作废，而不是补例重跑**。理由很直接：daemon 死亡按实例随机分布，无法定点剥离哪些 patch 被污染、哪些幸存；留下任何一部分，都是在往分数里掺未知杂质。在稳定环境干净重跑后，同样的 57 例拿到 84.2%。
 
-![图：round2 交付率高但质量崩坏，整轮作废后干净重跑](/blog/swebench-lite-887/images/delivery-vs-quality-03.png)
-
-> 🎨 **图片 Prompt**（可用于 Midjourney / DALL-E / Stable Diffusion）
->
-> *图：round2 交付率高但质量崩坏，整轮作废后干净重跑*
->
-> ```
-> A before-and-after comparison diagram split by a soft vertical seam: left panel
-> labeled "round2 (void)" shows a cracked terminal card with repeated small error
-> lines labeled "failed to connect to the docker API", a tall stack of patch
-> scrolls labeled "delivery 93%" beside a short stack labeled "resolved 63.2%",
-> and a large warm-red wax seal stamped "VOID"; right panel labeled "clean rerun"
-> shows a healthy terminal card, two balanced stacks labeled "resolved 84.2%",
-> flowing through a small gate node labeled "audit_run_health.py" to a checkmark
-> node labeled "score"; a thin ribbon at the bottom reads "delivery != quality",
-> Studio Ghibli minimalist illustration style,
-> soft watercolor washes, gentle pastel palette, clean white background,
-> hand-drawn rounded shapes for nodes, warm earthy tones with sky blue accents,
-> flowing organic arrows to show data flow, simple sans-serif labels,
-> whimsical yet precise technical diagram, quiet and serene atmosphere,
-> Hayao Miyazaki sketch aesthetic meets infographic clarity,
-> no gradients, flat color fills, subtle paper texture, 16:9 aspect ratio
-> ```
+```mermaid
+flowchart LR
+    A["round2（作废）<br/>daemon 濒死期跑完<br/>交付 93% · resolve 63.2%"] --> B["轨迹审计<br/>32/32 含 docker.sock 错误"]
+    B --> C["处置：整轮作废<br/>污染随机分布，补例无意义"]
+    C --> D["稳定环境干净重跑<br/>57 例 · 84.2%"]
+    D --> E["全量正赛<br/>300 例 · 88.7%"]
+```
 
 教训被工具化，而不是写进教训总结就完事。我们写了 `audit_run_health.py`：扫描轨迹日志中的 docker.sock 错误签名、校验轨迹覆盖完整性，正赛的 300 例在评分前先过这道门——不通过，不许评分。正赛审计结论：daemon 污染 0，轨迹覆盖 300/300。
 
@@ -263,24 +212,3 @@ cp .env.example .env   # 填入 API Key，设置 LLM_MODEL=moonshotai/kimi-k3
 
 下一次你看到某个 Agent 榜单分数时，不妨先问一句：轨迹公开吗？执行环境健康吗？重跑过模型行为吗？
 
-## 封面图
-
-![封面](/blog/swebench-lite-887/images/cover.png)
-
-> 🎨 **封面图 Prompt**（横版，适配文章头图 / 社交分享卡片）
->
-> *[全量 300 例 88.7%：harness9 打榜 SWE-bench Lite 技术报告]*
->
-> ```
-> A solitary lighthouse keeper walking a long stone pier through the night,
-> methodically tending to 300 small lanterns one by one and recording each in an
-> open brass ledger, most lanterns glowing warm gold while a handful remain dim
-> and honestly unlit, calm dark sea beyond the pier, first pale light of dawn
-> breaking on the horizon, an atmosphere of patient rigor and quiet honesty,
-> Studio Ghibli cinematic illustration style, Hayao Miyazaki aesthetic,
-> lush painterly details, rich layered composition with foreground mid-ground background,
-> misty dawn atmosphere, vibrant yet harmonious color palette,
-> expressive character, hand-painted texture, no text, no labels, no diagrams,
-> cinematic wide composition, landscape orientation,
-> breathtaking beauty, emotional resonance, 16:9 aspect ratio, compact small-size render ~1280x720
-> ```

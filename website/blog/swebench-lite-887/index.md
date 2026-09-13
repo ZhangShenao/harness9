@@ -3,7 +3,6 @@ title: "88.7% on the Full SWE-bench Lite 300: A harness9 Technical Report"
 date: 2026-09-13
 tags: [harness9, agent, golang, benchmark, swe-bench]
 summary: "harness9 completed the full SWE-bench Lite 300 instances with the open-weight model moonshotai/kimi-k3: 266 resolved (88.7%, Wilson 95% CI [84.6%, 91.8%]), $485.29 of inference cost, 11h22m wall clock. This is the technical report accompanying our submission to the official leaderboard: full methodology, container-level anti-contamination design, an honest breakdown of all 34 unresolved cases, and a contaminated 63.2% calibration round we threw away entirely."
-cover: /blog/swebench-lite-887/images/cover.png
 ---
 
 # 88.7% on the Full SWE-bench Lite 300: A harness9 Technical Report
@@ -42,28 +41,11 @@ The headline: on the full SWE-bench Lite 300, **266/300 = 88.7% resolved**, Wils
 
 A confidence interval is an error bar for a score: rerun a same-sized sample and the true skill most likely lands in that range. This was not a one-shot gamble — a 57-instance calibration pilot beforehand scored 84.2% (CI 72.6%–91.4%), and the full run landed squarely inside that interval. The subset-to-full extrapolation held.
 
-![Figure: score convergence from calibration pilot to the full run](/blog/swebench-lite-887/images/run-results-overview-01.png)
-
-> 🎨 **Image Prompt** (Midjourney / DALL-E / Stable Diffusion)
->
-> *Figure: score convergence from calibration pilot to the full run*
->
-> ```
-> A benchmark results overview diagram: left rounded node labeled "calibration"
-> shows a medium bar labeled "57 cases" with height mark "84.2%" wrapped in a soft
-> translucent band labeled "CI 72.6-91.4%", a large flowing organic arrow labeled
-> "seed=1" leads right to a taller node labeled "full run" with bar "300 cases",
-> mark "88.7%" and band "CI 84.6-91.8%", the calibration band visibly overlapping
-> the full-run bar to show the extrapolation holds, three small caption chips at
-> the bottom labeled "266 / 300 resolved", "$485.29", "11h22m",
-> Studio Ghibli minimalist illustration style,
-> soft watercolor washes, gentle pastel palette, clean white background,
-> hand-drawn rounded shapes for nodes, warm earthy tones with sky blue accents,
-> flowing organic arrows to show data flow, simple sans-serif labels,
-> whimsical yet precise technical diagram, quiet and serene atmosphere,
-> Hayao Miyazaki sketch aesthetic meets infographic clarity,
-> no gradients, flat color fills, subtle paper texture, 16:9 aspect ratio
-> ```
+```mermaid
+flowchart LR
+    A["Calibration pilot<br/>57 cases · 84.2%<br/>CI 72.6%–91.4%"] -->|"seed=1, same instance set"| B["Full run<br/>300 cases · 88.7%<br/>CI 84.6%–91.8%"]
+    B --> C["266 resolved<br/>$485.29 · 11h22m"]
+```
 
 The bill and the clock, in full. The main run cost **$485.29** of inference (136.5M input / 5.05M output tokens) and 11 hours 22 minutes of wall clock (2026-09-13 05:31–16:53) at concurrency 3. Adding roughly $225 for calibration (including the voided round), the whole campaign came to about **$710**, inside an $800 budget.
 
@@ -128,30 +110,13 @@ for _, host := range c.cfg.NetworkBlockedHosts {
 
 `--add-host` rewrites the container's DNS resolution: the domains resolve to 0.0.0.0 and connections are refused at the first step. There is no path around it. The PyPI channel is untouched, so dependency bootstrap keeps working. The trajectories are reviewable: across all 300, there is not a single successful fetch of an upstream issue or patch page.
 
-![Figure: container-level anti-contamination — GitHub domains pinned to 0.0.0.0, PyPI allowed](/blog/swebench-lite-887/images/anti-pollution-network-block-02.png)
-
-> 🎨 **Image Prompt** (Midjourney / DALL-E / Stable Diffusion)
->
-> *Figure: container-level anti-contamination — GitHub domains pinned to 0.0.0.0, PyPI allowed*
->
-> ```
-> A Docker sandbox island labeled "Sandbox" containing a rounded node
-> "AgentEngine" with five small tool chips labeled "bash", "read_file",
-> "write_file", "edit_file", "plan_write"; around the island a translucent dome
-> labeled "--add-host" with six small crossed-out signs labeled "github.com",
-> "raw.githubusercontent.com", "api.github.com", "codeload.github.com",
-> "objects.githubusercontent.com", "gist.github.com" bouncing off the dome;
-> a separate open water lane labeled "pypi.org" flows into the island with a
-> small chip "bootstrap"; an output arrow leaves the island to a scroll labeled
-> "git diff" then to a balanced scale labeled "official evaluator",
-> Studio Ghibli minimalist illustration style,
-> soft watercolor washes, gentle pastel palette, clean white background,
-> hand-drawn rounded shapes for nodes, warm earthy tones with sky blue accents,
-> flowing organic arrows to show data flow, simple sans-serif labels,
-> whimsical yet precise technical diagram, quiet and serene atmosphere,
-> Hayao Miyazaki sketch aesthetic meets infographic clarity,
-> no gradients, flat color fills, subtle paper texture, 16:9 aspect ratio
-> ```
+```mermaid
+flowchart TD
+    A["Agent container requests github.com<br/>and 6 GitHub domains in total"] --> B{"docker --add-host<br/>domains pinned to 0.0.0.0"}
+    B -->|"GitHub-family requests"| C["DNS resolution denied<br/>fails at 0ms, no way out"]
+    B -->|"PyPI bootstrap"| D["passes through"]
+    C --> E["300 trajectories auditable:<br/>zero successful lookups"]
+```
 
 The red lines, stated one by one — this doubles as the official submission checklist:
 
@@ -201,29 +166,13 @@ Patch delivery rate: 93%. Resolve rate: 63.2%. The gap between those two numbers
 
 Our call was to **void the entire round rather than patch it up with reruns**. The reasoning is direct: daemon deaths were randomly distributed across instances, so there is no way to cleanly separate contaminated patches from survivors. Keeping any portion would fold unknown impurities into the score. On a clean rerun in a stable environment, the same 57 instances scored 84.2%.
 
-![Figure: round2 had high delivery but broken quality; voided, then cleanly rerun](/blog/swebench-lite-887/images/delivery-vs-quality-03.png)
-
-> 🎨 **Image Prompt** (Midjourney / DALL-E / Stable Diffusion)
->
-> *Figure: round2 had high delivery but broken quality; voided, then cleanly rerun*
->
-> ```
-> A before-and-after comparison diagram split by a soft vertical seam: left panel
-> labeled "round2 (void)" shows a cracked terminal card with repeated small error
-> lines labeled "failed to connect to the docker API", a tall stack of patch
-> scrolls labeled "delivery 93%" beside a short stack labeled "resolved 63.2%",
-> and a large warm-red wax seal stamped "VOID"; right panel labeled "clean rerun"
-> shows a healthy terminal card, two balanced stacks labeled "resolved 84.2%",
-> flowing through a small gate node labeled "audit_run_health.py" to a checkmark
-> node labeled "score"; a thin ribbon at the bottom reads "delivery != quality",
-> Studio Ghibli minimalist illustration style,
-> soft watercolor washes, gentle pastel palette, clean white background,
-> hand-drawn rounded shapes for nodes, warm earthy tones with sky blue accents,
-> flowing organic arrows to show data flow, simple sans-serif labels,
-> whimsical yet precise technical diagram, quiet and serene atmosphere,
-> Hayao Miyazaki sketch aesthetic meets infographic clarity,
-> no gradients, flat color fills, subtle paper texture, 16:9 aspect ratio
-> ```
+```mermaid
+flowchart LR
+    A["round2 (voided)<br/>run while the daemon was dying<br/>delivery 93% · resolved 63.2%"] --> B["Trajectory audit<br/>32/32 logs with docker.sock errors"]
+    B --> C["Verdict: void the whole round<br/>contamination is random, spot-fixing is meaningless"]
+    C --> D["Clean rerun on stable infra<br/>57 cases · 84.2%"]
+    D --> E["Full run<br/>300 cases · 88.7%"]
+```
 
 The lesson became a tool, not a paragraph in a retrospective. We wrote `audit_run_health.py`: it scans trajectory logs for docker.sock error signatures and verifies trajectory coverage completeness. For the main run, all 300 instances passed through this gate before scoring — no pass, no scoring. The main-run audit: zero daemon contamination, trajectory coverage 300/300.
 
@@ -264,24 +213,3 @@ A leaderboard row can always be made prettier — if you are willing to lay out 
 
 Next time you see an agent benchmark score, ask first: are the trajectories public? Was the execution environment healthy? Were model-behavior results ever rerun?
 
-## Cover
-
-![Cover](/blog/swebench-lite-887/images/cover.png)
-
-> 🎨 **Cover Image Prompt** (landscape, for the article header / social share card)
->
-> *[88.7% on the Full SWE-bench Lite 300: A harness9 Technical Report]*
->
-> ```
-> A solitary lighthouse keeper walking a long stone pier through the night,
-> methodically tending to 300 small lanterns one by one and recording each in an
-> open brass ledger, most lanterns glowing warm gold while a handful remain dim
-> and honestly unlit, calm dark sea beyond the pier, first pale light of dawn
-> breaking on the horizon, an atmosphere of patient rigor and quiet honesty,
-> Studio Ghibli cinematic illustration style, Hayao Miyazaki aesthetic,
-> lush painterly details, rich layered composition with foreground mid-ground background,
-> misty dawn atmosphere, vibrant yet harmonious color palette,
-> expressive character, hand-painted texture, no text, no labels, no diagrams,
-> cinematic wide composition, landscape orientation,
-> breathtaking beauty, emotional resonance, 16:9 aspect ratio, compact small-size render ~1280x720
-> ```
