@@ -32,7 +32,6 @@ export default defineConfig({
                   navigateUpKeyAriaLabel: '上箭头',
                   navigateDownKeyAriaLabel: '下箭头',
                   closeText: '关闭',
-                  closeKeyAriaLabel: 'esc',
                 },
               },
             },
@@ -63,6 +62,7 @@ export default defineConfig({
               text: 'Technical Blog',
               items: [
                 { text: 'All Posts', link: '/blog/' },
+                { text: '88.7% on the Full SWE-bench Lite 300: A harness9 Technical Report', link: '/blog/swebench-lite-887/' },
                 { text: 'Agent Loop: A Production-Grade ReAct Loop in 500 Lines of Go', link: '/blog/agent-loop/' },
                 { text: "harness9's Tool Calling System: From Interface Contracts to Concurrent Sandboxing", link: '/blog/tool-calling/' },
                 { text: 'The Planning Module: Plan Mode, TodoStore, and Execution Automation', link: '/blog/planning-module/' },
@@ -108,6 +108,7 @@ export default defineConfig({
               text: '技术博客',
               items: [
                 { text: '所有文章', link: '/zh/blog/' },
+                { text: '全量 300 例 88.7%：harness9 打榜 SWE-bench Lite 技术报告', link: '/zh/blog/swebench-lite-887/' },
                 { text: 'Agent Loop — 500 行 Go 代码驱动的生产级 ReAct 主循环', link: '/zh/blog/agent-loop/' },
                 { text: '工具调用系统 — 从接口契约到并发沙箱的工程实践', link: '/zh/blog/tool-calling/' },
                 { text: 'Planning 模块：Plan Mode、TodoStore 与执行自动化', link: '/zh/blog/planning-module/' },
