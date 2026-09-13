@@ -33,7 +33,9 @@ for line in open(sys.argv[1]):
 EOF
 )
 TOTAL=$(echo "$LIST" | grep -c .)
-echo "目标镜像 $TOTAL 个，并发 $P，日志 $LOG" | tee -a "$LOG"
+# 花括号不可省：macOS bash 3.2 在 UTF-8 locale 下会把 `并发 $P，` 的全角逗号
+# 拼进变量名（$P，→ unbound variable，set -u 直接退出，2026-09-10 实测）。
+echo "目标镜像 ${TOTAL} 个，并发 ${P}，日志 ${LOG}" | tee -a "$LOG"
 
 pull_one() {
   img="$1"
@@ -51,4 +53,4 @@ HAVE=$(mktemp)
 docker images --format '{{.Repository}}' | grep "sweb.eval" | sed 's/:latest$//' | sort > "$HAVE"
 echo "$LIST" | grep -vxFf "$HAVE" | xargs -P "$P" -I{} bash -c 'pull_one "$@"' _ {}
 
-docker images --format '{{.Repository}}' | grep -c "sweb.eval" | xargs -I{} echo "完成：本地 eval 镜像 {}/$TOTAL" | tee -a "$LOG"
+docker images --format '{{.Repository}}' | grep -c "sweb.eval" | xargs -I{} echo "完成：本地 eval 镜像 {}/${TOTAL}" | tee -a "$LOG"

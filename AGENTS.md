@@ -178,11 +178,13 @@ harness9/
 │   │   ├── cli.go                   # 交互式 CLI REPL 实现
 │   │   └── upgrade.go               # 自动升级：GitHub Releases API + SHA256 校验 + 原子替换
 │   ├── swebench/                    # SWE-bench Lite benchmark runner（评估真实 Issue 修复能力）
-│   │   ├── main.go                  # CLI 入口：--dataset / --work-dir / --instance 等 flag
+│   │   ├── main.go                  # CLI 入口：--dataset / --work-dir / --instance 等 flag；--mode export 分发官方提交物导出
 │   │   ├── dataset.go               # SWE-bench 数据集加载与实例解析（HuggingFace JSON）
 │   │   ├── runner.go                # 运行器：构建隔离引擎 + 执行修复 + 收集轨迹
 │   │   ├── prompt.go                # 实例 prompt 组装（注入 repo 结构 / 问题描述 / patch 提示）
-│   │   └── report.go                # 评分与报告生成（apply_patch 校验 + 汇总输出）
+│   │   ├── report.go                # 评分与报告生成（apply_patch 校验 + 汇总输出）
+│   │   ├── model_snapshot.go        # 模型版本快照：OpenRouter 公开元数据端点抓取 + run 目录存证（fail-open，10s 超时，base URL 可注入）
+│   │   └── export_submission.go     # 官方提交物导出：all_preds.jsonl + logs/<id>/{patch.diff, report.json, test_output.txt.gz} + trajs/<id>.md + EXPORT_MANIFEST.md
 │   └── starhistory/                 # GitHub Star History 图表生成（写入本地 SVG）
 │       ├── main.go                  # CLI 入口：仓库名 / 输出路径 / 颜色参数
 │       └── render.go                # SVG 渲染：时间序列曲线 + 标注 + 主题

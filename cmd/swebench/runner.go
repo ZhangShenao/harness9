@@ -166,6 +166,11 @@ type Config struct {
 	InstancesPath string
 	// RunID 标识本次运行，用于将 trajectory 日志写入 logs/<RunID>/，避免多次运行互相覆盖/污染。
 	RunID string
+	// ModelName 是解析后的最终模型名（cfg.Model > LLM_MODEL > 默认值），写入报告摘要。
+	ModelName string
+	// Snapshot 是评测启动时抓取的模型版本快照（官方打榜 P0 存证）。
+	// nil 表示抓取失败（fail-open），报告摘要将如实标注"未获取"。
+	Snapshot *ModelSnapshot
 }
 
 // resolveModelName 解析最终使用的模型名：cfg.Model > LLM_MODEL 环境变量 > 默认值。

@@ -47,6 +47,9 @@ swe-bench-lite.jsonl
 swebench-results/
 *.harness9-lite-*.json
 
+# SWE-bench 官方打榜 run 目录（run-official-lite.sh 产物：predictions + 轨迹 + 提交物），均为生成物
+swebench-official/
+
 # Terminal-Bench (Harbor) pilot：预编译二进制与评测结果均为生成物，不纳入版本控制
 benchmarks/terminal_bench/bin/
 benchmarks/terminal_bench/runs/

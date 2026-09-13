@@ -47,7 +47,11 @@ func main() {
 	}
 
 	cfg := Config{}
-	flag.StringVar(&cfg.DatasetPath, "dataset", "", "SWE-bench Lite JSONL 文件路径（必填）")
+	mode := flag.String("mode", "run", "运行模式：run（执行评测）或 export（导出官方提交物）")
+	fromDir := flag.String("from", "", "export 模式：runner run 目录（含 predictions.jsonl 与 logs/）")
+	submissionOut := flag.String("out", "", "export 模式：导出目录（官方 artifacts 仓库结构）")
+	evalLogs := flag.String("eval-logs", "", "export 模式：官方 harness 评分产物目录（可选，缺失件记入 EXPORT_MANIFEST.md）")
+	flag.StringVar(&cfg.DatasetPath, "dataset", "", "SWE-bench Lite JSONL 文件路径（run 模式必填）")
 	flag.IntVar(&cfg.SampleN, "sample", 10, "每个 repo 抽取的 instance 数量")
 	flag.StringVar(&cfg.OutputDir, "output", "./swebench-results", "输出目录")
 	flag.IntVar(&cfg.MaxTurns, "max-turns", 0, "每个 instance 最大 LLM Turn 数（0 = 沿用引擎默认值 500）")
@@ -58,6 +62,16 @@ func main() {
 	flag.Int64Var(&cfg.Seed, "seed", 1, "按 repo 采样的随机种子（固定默认值保证可复现；同 seed → 同实例集）")
 	flag.StringVar(&cfg.InstancesPath, "instances", "", "实例清单文件（每行一个 instance_id，# 注释）；先过滤后采样，--sample 上限仍生效")
 	flag.Parse()
+
+	// export 模式：把一轮 run 的产物重排为官方提交要求的 artifacts 结构，
+	// 不做任何评测前置检查（无需 Docker / API Key）。
+	if *mode == "export" {
+		if err := runExport(*fromDir, *submissionOut, *evalLogs); err != nil {
+			fmt.Fprintf(os.Stderr, "导出官方提交物失败: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if cfg.DatasetPath == "" {
 		fmt.Fprintln(os.Stderr, "错误：--dataset 必填")
@@ -93,6 +107,7 @@ func main() {
 
 	// 解析实际使用的模型名（用于填写 predictions.jsonl 的 model_name_or_path 字段）
 	modelName := resolveModelName(cfg.Model)
+	cfg.ModelName = modelName
 	fmt.Fprintf(os.Stderr, "使用模型: %s\n", modelName)
 
 	// 实例清单过滤（--instances）：先缩小全集，再交给 sampleByRepo 做 per-repo 上限。
@@ -139,6 +154,19 @@ func main() {
 	if err := os.MkdirAll(filepath.Join(cfg.OutputDir, "logs", cfg.RunID), 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "创建输出目录失败: %v\n", err)
 		os.Exit(1)
+	}
+
+	// 模型版本快照（官方打榜 P0 可复现性）：评测启动时从 OpenRouter 公开元数据端点
+	// 存证"该轮由哪个版本模型服务"，落盘 model_snapshot.json 并写入报告摘要。
+	// fail-open：端点不可达 / 模型未收录只记警告，绝不阻断一轮昂贵的评测。
+	cfg.Snapshot = captureModelSnapshot(context.Background(), nil, openRouterModelsURL, modelName)
+	if cfg.Snapshot != nil {
+		snapPath := filepath.Join(cfg.OutputDir, "model_snapshot.json")
+		if err := saveModelSnapshot(snapPath, cfg.Snapshot); err != nil {
+			fmt.Fprintf(os.Stderr, "警告: 模型快照落盘失败: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "模型快照已写入: %s\n", snapPath)
+		}
 	}
 
 	// 信号处理（Ctrl+C 优雅退出）
