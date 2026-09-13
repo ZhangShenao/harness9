@@ -9,12 +9,13 @@ bash 工具连不上 daemon（docker.sock 消失），模型盲写 patch；round
 检查项与判定：
   1. 轨迹覆盖：predictions.jsonl 的每个 instance_id 在 logs/*/ 下至少一份
      <id>.log（官方要求 trajs 推理时生成、逐实例齐全；多代日志取最新一代即可）
-  2. daemon 污染：单实例全部代次日志中 docker daemon 连接失败签名总数 > 阈值
-     （默认 3；瞬时抖动 1-2 次可容忍，round2 污染实例为 7-62 次/实例）
-  3. 架构翻转：出现 "exec format error"（amd64 镜像落入模拟层的签名）
+  2. daemon 污染：单实例全部代次日志中 docker daemon 连接失败签名总数 > 3
+     （瞬时抖动 1-2 次可容忍，round2 污染实例为 7-62 次/实例）
+  3. 架构翻转：出现 "exec format error" 超过 1 次（真实翻转每次 exec 都会失败；
+     单次字面提及常是模型推理散文，见 THRESHOLDS 注释中的实测案例）
 
 用法：
-  python3 audit_run_health.py <run_dir> [--threshold N]
+  python3 audit_run_health.py <run_dir>
 
 退出码：0=通过（可评分）；1=存在污染或覆盖缺口（禁止评分）。
 签名清单集中在 SIGNATURES，发现新的基础设施故障签名时在此扩充。
@@ -36,6 +37,19 @@ SIGNATURES = {
     "arch": ("exec format error",),
 }
 
+# 架构翻转签名的阈值：真实翻转会让每次 exec 都失败（重复出现），而模型的推理
+# 散文里可能出现单次字面提及（2026-09-13 全量正赛实测：sklearn-14087 的模型
+# 在猜测 macOS 权限问题时写下 "OSError Exec format error"，该实例最终 resolved）。
+# daemon 阈值 3 的理由见模块 docstring；单次瞬时抖动可容忍，污染实例为 7-62 次。
+THRESHOLDS = {"daemon": 3, "arch": 1}
+
+
+def counts_exceed(counts: dict) -> bool:
+    return any(
+        counts[kind] > threshold
+        for kind, threshold in THRESHOLDS.items()
+    )
+
 
 def instance_ids(pred_path: Path) -> list[str]:
     ids = []
@@ -47,7 +61,7 @@ def instance_ids(pred_path: Path) -> list[str]:
     return ids
 
 
-def audit(run_dir: Path, threshold: int) -> int:
+def audit(run_dir: Path) -> int:
     pred_path = run_dir / "predictions.jsonl"
     if not pred_path.exists():
         print(f"错误：{pred_path} 不存在", file=sys.stderr)
@@ -66,7 +80,7 @@ def audit(run_dir: Path, threshold: int) -> int:
             text = log.read_text(errors="replace").lower()
             for kind, sigs in SIGNATURES.items():
                 counts[kind] += sum(text.count(s) for s in sigs)
-        if counts["daemon"] > threshold or counts["arch"] > 0:
+        if counts_exceed(counts):
             contaminated.append((iid, counts))
 
     total = len(ids)
@@ -77,7 +91,7 @@ def audit(run_dir: Path, threshold: int) -> int:
         print(f"  [覆盖缺口] {iid}（logs/ 下无任何轨迹日志）")
     for iid, counts in contaminated:
         detail = " ".join(f"{k}={v}" for k, v in counts.items() if v)
-        print(f"  [污染] {iid}（阈值 daemon≤{threshold}）：{detail}")
+        print(f"  [污染] {iid}（阈值 {THRESHOLDS}）：{detail}")
 
     if gaps or contaminated:
         print("结论：不通过——禁止评分；污染轮次应整轮重跑（补例无法修复同类污染）。")
@@ -89,10 +103,8 @@ def audit(run_dir: Path, threshold: int) -> int:
 def main() -> None:
     ap = argparse.ArgumentParser(description="run 目录基础设施污染审计")
     ap.add_argument("run_dir", help="runner run 目录（含 predictions.jsonl 与 logs/）")
-    ap.add_argument("--threshold", type=int, default=3,
-                    help="单实例 daemon 错误容忍上限（默认 3）")
     args = ap.parse_args()
-    sys.exit(audit(Path(args.run_dir), args.threshold))
+    sys.exit(audit(Path(args.run_dir)))
 
 
 if __name__ == "__main__":
