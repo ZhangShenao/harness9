@@ -117,7 +117,9 @@ The split is a deliberate evolution strategy: **run in warn as an observation pe
 
 ### CI Integration Point
 
+::: v-pre
 Drift detection runs inside the `lint` job: on pull requests it uses `origin/${{ github.base_ref }}` as the base (i.e. "what did this PR change relative to the target branch"); on pushes to master it compares against `origin/master` explicitly — at that point HEAD is already the latest commit, so the diff is empty and the check passes explicitly (the real gate runs during the PR phase).
+:::
 
 ---
 
