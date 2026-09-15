@@ -254,6 +254,6 @@ func TestCompaction_WriteBackOnce(t *testing.T) {
 	}
 	// [OLDMSG-09, task] + turn1 tool-call 响应 + observation + turn2 最终回复。
 	if len(got) != 5 {
-		t.Errorf("session 应为压缩产物(2) + 新增消息(3) 共 5 条，实际 %d 条", len(got))
+		t.Errorf("session 应为压缩产物 (2) + 新增消息 (3) 共 5 条，实际 %d 条", len(got))
 	}
 }

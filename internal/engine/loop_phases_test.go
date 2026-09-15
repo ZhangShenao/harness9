@@ -430,7 +430,7 @@ func TestPrepareTurnInput_WriteBackPersistsToSession(t *testing.T) {
 	}
 	// [sys, old1..old4, task] 6 条 → 保留 system + 最近 2 条 → session 存 2 条（old4, task）。
 	if len(got) != 2 || got[0].Content != "old4" || got[1].Content != "task" {
-		t.Fatalf("session 应为压缩产物（old4, task），实际 %d 条: %+v", len(got), got)
+		t.Fatalf("session 应为压缩产物（old4, task），实际 %d 条：%+v", len(got), got)
 	}
 
 	// 写回点之后的新消息追加持久化，无重复。
@@ -447,7 +447,7 @@ func TestPrepareTurnInput_WriteBackPersistsToSession(t *testing.T) {
 
 // TestPrepareTurnInput_WriteBackRollbackOnSessionError 验证写回失败的回滚：
 // AddMessages 失败时引擎本地历史保持原样（本轮仍以压缩视图作为 LLM 输入），
-// 且原始历史已恢复落盘，不会因 Clear+写回失败丢数据。
+// 且原始历史已恢复落盘，不会因 Clear + 写回失败丢数据。
 func TestPrepareTurnInput_WriteBackRollbackOnSessionError(t *testing.T) {
 	sess := &failingAddSession{
 		Session:      memory.NewMemorySession("wb-rollback"),

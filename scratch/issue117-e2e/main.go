@@ -129,7 +129,7 @@ func main() {
 	w := func(f string, a ...any) { sb.WriteString(fmt.Sprintf(f, a...)); sb.WriteString("\n") }
 	w("\n================ E2E 报告 [%s] ================", *label)
 	w("模型: %s | context window: %d token | 总耗时: %s", model, *window, elapsed)
-	w("真实 LLM 调用: 主循环 %d 次 + 压缩摘要 %d 次 = %d 次", counted.mainCalls, counted.summaryCalls, counted.mainCalls+counted.summaryCalls)
+	w("真实 LLM 调用：主循环 %d 次 + 压缩摘要 %d 次 = %d 次", counted.mainCalls, counted.summaryCalls, counted.mainCalls+counted.summaryCalls)
 
 	rs := memory.NewFileRecordStore(*recordsDir)
 	records, _ := rs.List("e2e117")
@@ -156,7 +156,7 @@ func main() {
 		w("读取 session 失败: %v", gerr)
 	} else {
 		w("\n---- Session 终态 ----")
-		w("持久化消息总数: %d", len(msgs))
+		w("持久化消息总数：%d", len(msgs))
 		markerCount, dupTool := 0, 0
 		seen := map[string]bool{}
 		for _, m := range msgs {
@@ -174,11 +174,11 @@ func main() {
 				finalMsg = &last
 			}
 		}
-		w("压缩产物消息: %d 条 | 重复 tool_call_id: %d 个", markerCount, dupTool)
+		w("压缩产物消息：%d 条 | 重复 tool_call_id: %d 个", markerCount, dupTool)
 	}
 
 	offloads, _ := filepath.Glob(filepath.Join(*workDir, ".harness9", "tool_results", "e2e117", "*.txt"))
-	w("offload 外存文件: %d 个", len(offloads))
+	w("offload 外存文件：%d 个", len(offloads))
 
 	if runErr != nil {
 		w("Run 错误: %v", runErr)
