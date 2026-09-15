@@ -611,22 +611,28 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, ...) error
             em.tokenUpdate(usage.InputTokens, e.contextWindow)
         }
 
-        // 注意：contextHistory 持续累积完整历史（非压缩版）
-        // compactedHistory 只是传给 LLM 的视图
+        // 写回式压缩：压缩生效时 compactedHistory 整体替换 contextHistory 并持久化
+        // （writeBackCompaction），一次压缩持续生效多轮；nudge/Plan 仍只注入视图
         contextHistory = append(contextHistory, *responseMsg)
         // ...工具执行、观察注入...
     }
 
-    // 只保存 contextHistory[startLen:]（全量历史，非压缩版）
+    // 只保存 contextHistory[startLen:]（写回点之后的新增消息，无重复）
     e.saveHistoryWith(ctx, sess, contextHistory, startLen)
 }
 ```
 
-**非破坏性压缩设计：**
+**写回式压缩设计（issue #117）：**
 
-- `contextHistory`：完整历史，持续追加（含所有消息），作为长期记忆
-- `compactedHistory`：每轮从 `contextHistory` 派生的压缩视图，只传给 LLM
-- `saveHistoryWith` 保存 `contextHistory`（非压缩版），确保历史不丢失
+- `contextHistory`：引擎本地历史。Recorded 压缩器（生产默认 ProgressiveCompactor）
+  真正生效时，压缩产物整体替换 contextHistory 并持久化到 Session，一次压缩持续
+  生效多轮，各档位按预期递进触发
+- `compactedHistory`：当轮 LLM 输入视图；压缩生效时它同时成为新的 contextHistory
+- 写回门控：仅 Recorded 压缩器 + 记录无降级 Error + 有实际削减（消息数减少或发生
+  offload）；降级截断不写回，只作用于当轮视图，下一轮可重试真正的 LLM 摘要
+- 写回失败自动回滚：Session 侧 Clear 后写回失败时，用独立 ctx 精确恢复持久化边界
+  内的原始历史；引擎侧保留原历史，本轮仍以压缩视图作为 LLM 输入
+- nudge / 活跃 Plan 依旧只注入发送副本，绝不写入 `contextHistory`
 
 ### 8.3 辅助方法语义
 
@@ -819,7 +825,7 @@ eng := engine.NewAgentEngine(llm, registry, workDir,
 | **char÷4 估算 + API 实际值校正** | 无依赖估算用于压缩决策；实际值用于 TUI 展示精度 |
 | **两阶段 tokenUpdate** | 调用前发估算值（即时响应），调用后发实际值（精确展示） |
 | **contextWindow 首次设置不覆盖** | 防止每轮更新导致 TUI 闪烁；0→N 只设置一次 |
-| **非破坏性压缩（compactedHistory）** | contextHistory 保持完整，saveHistoryWith 持久化全量历史 |
+| **写回式压缩（issue #117）** | 压缩生效时产物写回历史并持久化，一次压缩持续生效多轮；降级截断不写回，失败自动回滚 |
 | **sync.RWMutex 快照** | runLoop 开始时一次性快照 session/compactor，消除与 TUI goroutine 的竞争 |
 | **失败 warning 不中断** | saveHistoryWith 失败不影响主流程；持久化是增强功能，不是核心依赖 |
 

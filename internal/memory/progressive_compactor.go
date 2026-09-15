@@ -251,7 +251,7 @@ func (c *ProgressiveCompactor) tierWarn(msgs []schema.Message) ([]schema.Message
 	if head == nil {
 		return msgs, CompactionRecord{}
 	}
-	offloaded := c.offloadHead(head)
+	head, offloaded := c.offloadHead(head)
 	result := make([]schema.Message, 0, 1+len(head)+len(tail))
 	result = append(result, msgs[0])
 	result = append(result, head...)
@@ -275,7 +275,7 @@ func (c *ProgressiveCompactor) tierSoft(msgs []schema.Message) ([]schema.Message
 	if c.extractor != nil {
 		c.extractor.Extract(headOldest)
 	}
-	offloaded := c.offloadHead(headOldest)
+	headOldest, offloaded := c.offloadHead(headOldest)
 
 	summary, anchors, err := c.summarizeAndExtract(headOldest)
 	if err != nil {
@@ -311,7 +311,7 @@ func (c *ProgressiveCompactor) tierFull(msgs []schema.Message) ([]schema.Message
 	if c.extractor != nil {
 		c.extractor.Extract(head)
 	}
-	offloaded := c.offloadHead(head)
+	head, offloaded := c.offloadHead(head)
 
 	summary, anchors, err := c.summarizeAndExtract(head)
 	if err != nil {
@@ -353,25 +353,30 @@ func (c *ProgressiveCompactor) tierEmergency(msgs []schema.Message) ([]schema.Me
 
 // offloadHead 遍历 head 中的 tool_result 消息，将超过 OffloadThreshold 的内容
 // 通过 offloader 写入文件系统并替换为带预览的占位符。
-// offloader 为 nil 时直接返回 nil（无外存能力，跳过）。
+// offloader 为 nil 时原样返回（无外存能力，跳过）。
+// 返回值是 head 的防御性拷贝（命中 offload 的条目已替换为占位符）与外存条目：
+// head 与调用方切片共享底层数组，若原地替换 Content 会永久改写调用方的完整历史
+// （issue #117 别名 bug），因此占位符只允许出现在拷贝与压缩视图中。
 // 写入失败的单条消息会被静默跳过（fail-open），不影响整体压缩流程。
-func (c *ProgressiveCompactor) offloadHead(head []schema.Message) []OffloadEntry {
+func (c *ProgressiveCompactor) offloadHead(head []schema.Message) ([]schema.Message, []OffloadEntry) {
 	if c.offloader == nil {
-		return nil
+		return head, nil
 	}
+	out := make([]schema.Message, len(head))
+	copy(out, head)
 	var entries []OffloadEntry
-	for i, msg := range head {
-		if msg.ToolCallID == "" || len(msg.Content) <= c.OffloadThreshold {
+	for i := range out {
+		if out[i].ToolCallID == "" || len(out[i].Content) <= c.OffloadThreshold {
 			continue
 		}
-		entry, placeholder, err := c.offloader.OffloadToolResult(msg)
+		entry, placeholder, err := c.offloader.OffloadToolResult(out[i])
 		if err != nil {
 			continue
 		}
-		head[i].Content = placeholder
+		out[i].Content = placeholder
 		entries = append(entries, entry)
 	}
-	return entries
+	return out, entries
 }
 
 // summarizeAndExtract 调用 LLM 对 head 生成结构化压缩（锚点 + 摘要正文）。

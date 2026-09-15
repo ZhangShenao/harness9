@@ -300,3 +300,68 @@ func TestProgressiveCompactor_ContextWindowZero(t *testing.T) {
 		t.Error("should return unchanged")
 	}
 }
+
+// TestProgressiveCompactor_CompactDoesNotMutateInput 回归 issue #117 别名 bug：
+// offloadHead 曾通过 head[i].Content = placeholder 原地改写与输入共享底层数组的
+// head，导致调用方（engine 场景下即 lc.history）原始历史被永久替换为占位符——
+// token 占比随之塌缩、高级 tier 难以触发。压缩器契约：输入切片必须保持不变，
+// 占位符只允许出现在返回的压缩视图中。
+func TestProgressiveCompactor_CompactDoesNotMutateInput(t *testing.T) {
+	// 10000 字节 / 500 行：保证 offload 占位符（预览 10 行）远小于原文。
+	big := strings.Repeat(strings.Repeat("x", 19)+"\n", 500)
+	msgs := []schema.Message{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleAssistant, Content: "running",
+			ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "bash", Arguments: []byte(`{}`)}}},
+		{Role: schema.RoleUser, Content: big, ToolCallID: "call-1"},
+		{Role: schema.RoleAssistant, Content: "t1"},
+		{Role: schema.RoleUser, Content: "t2"},
+		{Role: schema.RoleAssistant, Content: "t3"},
+		{Role: schema.RoleUser, Content: "t4"},
+		{Role: schema.RoleAssistant, Content: "t5"},
+		{Role: schema.RoleUser, Content: "t6"},
+	}
+
+	offloader := memory.NewCompactionOffloader(t.TempDir(), "sess-117")
+	// 占比 ≈0.625 → Warn 档（仅 offload，不调用 LLM）。
+	c := memory.NewProgressiveCompactor(&mockSummarizer{}, memory.EstimateTokens(msgs)*8/5,
+		memory.WithProgressiveOffloader(offloader),
+	)
+	c.OffloadThreshold = 100
+
+	snapshot := make([]schema.Message, len(msgs))
+	copy(snapshot, msgs)
+
+	result, record := c.CompactWithRecord(msgs)
+
+	if record.Tier != memory.TierWarn {
+		t.Fatalf("want TierWarn, got %d", record.Tier)
+	}
+	if len(record.Offloaded) != 1 {
+		t.Fatalf("want 1 offloaded entry, got %d", len(record.Offloaded))
+	}
+
+	// 不变量：输入切片不得被修改（Content 为 string，浅拷贝即可对比）。
+	for i := range snapshot {
+		if snapshot[i].Content != msgs[i].Content {
+			t.Errorf("输入切片第 %d 条被原地改写（长度 %d → %d）",
+				i, len(snapshot[i].Content), len(msgs[i].Content))
+		}
+	}
+
+	// 压缩视图必须包含占位符（offload 语义保留在视图中）。
+	found := false
+	for _, m := range result {
+		if strings.Contains(m.Content, "[offloaded:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("压缩视图应包含 offloaded 占位符")
+	}
+
+	// 无震荡：输入未被改写 → 再次压缩判定仍为 Warn 档。
+	if _, record2 := c.CompactWithRecord(msgs); record2.Tier != memory.TierWarn {
+		t.Errorf("第二次压缩应仍为 TierWarn（输入未收缩），got %d", record2.Tier)
+	}
+}

@@ -331,7 +331,7 @@ type ProgressiveCompactor struct {
 }
 ```
 
-**为什么不用 contextHistory 中的 marker 检测**：contextHistory 是非破坏性的（完整历史持久化到 DB），compactionMsg 仅存在于 compactedHistory（压缩视图）中。下一轮 head 从 contextHistory 派生，不含上次 compactionMsg。因此无法通过 marker 检测实现增量更新，改用 Compactor 内部状态追踪。
+**为什么用 Compactor 内部状态而非历史 marker 检测**：逐轮视图时代 compactionMsg 不会进入下一轮输入，marker 检测无从谈起；写回式压缩（§8.2）后 compactionMsg 会随压缩产物进入历史，但内部状态追踪仍更可靠——降级截断轮不产生 compactionMsg、多次压缩的 marker 归属易混淆，且状态追踪不依赖对历史文本的解析。
 
 压缩成功后调用 `updateLastState(summary, anchors)` 更新内部状态。下次压缩时 `summarizeAndExtract` 检测 `lastSummary` 非空则走增量模板。
 
@@ -556,24 +556,32 @@ WithProgressiveSessionID(id string)                 // 会话 ID
 ```
 每个 Turn:
   1. availableTools = registry.GetAvailableTools()
-  2. toolTokens = EstimateToolTokens(availableTools)
-  3. msgTokensBefore = EstimateTokens(contextHistory)
-  4. compactedHistory, record = applyCompactionWith(comp, contextHistory)
-  5. msgTokensAfter = EstimateTokens(compactedHistory)
-  6. if record != nil && record.Tier != TierNone:
-       em.compaction(*record)  → 发出 EventCompaction
-  7. em.tokenUpdate(totalTokens, contextWindow)  → TUI 展示
-  8. responseMsg = em.generate(compactedHistory, availableTools)  → LLM 调用
-  9. if usage != nil: em.tokenUpdate(usage.InputTokens)  → 实际值校正
-  10. contextHistory = append(contextHistory, responseMsg)  → 完整历史
+  2. compactedHistory, record = applyCompactionWith(comp, contextHistory)
+  3. if record != nil:
+       writeBackCompaction(compactedHistory, *record)
+         → 压缩真正生效时（无降级 Error 且消息数减少或有 offload）：
+           contextHistory = compactedHistory（写回）
+           session: Clear + 写入压缩产物（失败则独立 ctx 回滚 + 保留原历史）
+       if record.Tier != TierNone:
+         em.compaction(*record)  → 发出 EventCompaction
+  4. em.tokenUpdate(totalTokens, contextWindow)  → TUI 展示
+  5. responseMsg = em.generate(compactedHistory, availableTools)  → LLM 调用
+  6. if usage != nil: em.tokenUpdate(usage.InputTokens)  → 实际值校正
+  7. contextHistory = append(contextHistory, responseMsg)  → 写回后的历史继续增长
 ```
 
-### 8.2 非破坏性压缩设计
+### 8.2 写回式压缩设计（issue #117）
 
-- `contextHistory`：完整历史，持续追加，持久化到 DB
-- `compactedHistory`：每轮从 contextHistory 派生的压缩视图，只传给 LLM
-- `saveHistoryWith` 保存 contextHistory（非压缩版），确保历史不丢失
-- offload 修改的是 compactedHistory 中的消息副本，不影响 contextHistory
+- `contextHistory`：引擎本地历史。Recorded 压缩器真正生效时被替换为压缩产物并持久化
+- `compactedHistory`：当轮 LLM 输入视图；压缩生效时它同时成为新的 contextHistory
+- **写回门控**：仅 Recorded 压缩器 + 记录无降级 Error + 有实际削减（消息数减少或发生
+  offload）；非 Recorded 压缩器保持纯视图语义
+- **降级不固化**：LLM 摘要失败回退的截断不写回，只作用于当轮视图，下一轮可重试真正的摘要
+- **失败回滚**：Session 侧 Clear 后写回失败时，用独立 5s ctx 精确恢复持久化边界内
+  （`history[:startLen]`）的原始历史；引擎侧保留原历史，本轮仍以压缩视图作为 LLM 输入
+- **防御性拷贝**：offload 占位符只写入 head 的拷贝，绝不原地改写调用方切片——
+  修复前 `offloadHead` 经共享底层数组永久改写 `contextHistory`，导致 token 占比
+  塌缩、高级 tier 难以触发（issue #117 别名 bug，回归测试覆盖）
 - offloader cache 保证不重复写同一文件
 
 ### 8.3 手动 /compact 命令
@@ -605,7 +613,7 @@ func (e *AgentEngine) Compact(ctx context.Context) (memory.CompactionRecord, err
 | `internal/memory/compaction_offloader.go` | CompactionOffloader + OffloadEntry |
 | `internal/memory/record_store.go` | CompactionRecord + CompactionTier + RecordStore + FileRecordStore |
 | `internal/memory/compaction.go` | RecordedCompactor 接口 + repairOrphanedToolPairs |
-| `internal/engine/history.go` | applyCompactionWith 类型断言（压缩适配） |
+| `internal/engine/history.go` | applyCompactionWith + writeBackCompaction/persistCompacted（压缩适配与写回） |
 | `internal/engine/loop_phases.go` | prepareTurnInput 中的 runLoop 压缩集成 |
 | `internal/engine/stream.go` | EventCompaction 携带 CompactionRecord |
 | `internal/engine/compact.go` | 手动 /compact 适配 RecordedCompactor |
@@ -620,7 +628,8 @@ func (e *AgentEngine) Compact(ctx context.Context) (memory.CompactionRecord, err
 | 决策 | 原因 |
 |------|------|
 | **四层渐进阈值** | 避免"要么不压要么全压"的突变，60% 开始预防性 offload |
-| **内部状态增量更新** | contextHistory 非破坏性，compactionMsg 不进入 contextHistory，无法用 marker 检测 |
+| **压缩写回（write-back）** | 逐轮视图在过阈后每轮重跑压缩（Soft/Full 每轮多一次 LLM 摘要、伪增量重喂全部 head 原文）；写回让一次压缩持续生效多轮，各 tier 递进触发（issue #117） |
+| **内部状态增量更新** | 降级轮不产生 compactionMsg、marker 归属易混淆，内部状态追踪不依赖历史文本解析，更可靠 |
 | **Anchor + 散文双层** | Anchor 是程序化可校验的保底信息，散文是补充上下文 |
 | **缺失 Anchor 填 N/A** | 保证 []Anchor 始终 5 条，程序化校验结构完整 |
 | **增量合并取并集** | 防止 LLM 增量更新时遗漏旧锚点 |

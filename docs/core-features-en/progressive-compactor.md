@@ -241,7 +241,7 @@ const (
 
 ### 4.6 Cross-Turn Incremental Update
 
-ProgressiveCompactor uses **internal state** (`lastSummary`, `lastAnchors`) rather than contextHistory markers, because contextHistory is non-destructive and compactionMsg never enters it. After successful compression, `updateLastState` updates internal state for the next incremental merge.
+ProgressiveCompactor uses **internal state** (`lastSummary`, `lastAnchors`) for incremental updates. In the era of per-turn views this was the only option — compactionMsg never entered the next turn's input. With write-back compaction (§8.2) compactionMsg does enter the history, yet internal state remains more robust: degraded-truncation turns produce no compactionMsg, marker attribution across multiple compactions gets confusing, and state tracking does not depend on parsing history text.
 
 ---
 
@@ -308,11 +308,17 @@ Constructor options: `WithProgressiveTodoInjector`, `WithProgressiveMemoryExtrac
 
 ### 8.1 Compression Timing in runLoop
 
-Each Turn: estimate tokens -> `applyCompactionWith` -> emit `EventCompaction` if tier != TierNone -> LLM call with compactedHistory -> append response to contextHistory (non-destructive).
+Each Turn: `applyCompactionWith` -> if record != nil, `writeBackCompaction` (on real effect: replace contextHistory with the compacted product and persist to session, rollback on failure) -> emit `EventCompaction` if tier != TierNone -> LLM call with compactedHistory -> append response to the written-back contextHistory.
 
-### 8.2 Non-Destructive Design
+### 8.2 Write-Back Design (issue #117)
 
-`contextHistory` (full history, persisted to DB) is never modified by compression. `compactedHistory` is a derived view sent to LLM. Offload modifies copies in compactedHistory only.
+- `contextHistory`: the engine-local history. When a Recorded compactor takes real effect, it is replaced by the compacted product and persisted to the session — one compaction stays effective for many turns, and tiers progress as designed.
+- `compactedHistory`: the per-turn view sent to the LLM; on a real compaction it becomes the new contextHistory.
+- **Write-back gating**: Recorded compactors only, no degraded `Error` in the record, and an actual reduction (fewer messages or offload happened). Non-Recorded compactors keep the pure view semantics.
+- **Degraded compactions are never persisted**: the forced truncation produced when LLM summarization fails only applies to the current turn's view; the next turn retries a real summary instead of freezing a lossy truncation.
+- **Rollback on failure**: if the session write-back fails after Clear, an independent 5s context restores exactly the persisted prefix (`history[:startLen]`); the engine keeps its original history and still feeds the compacted view to the LLM this turn.
+- **Defensive copy**: offload placeholders are written into a copy of head, never in-place into the caller's slice. Previously `offloadHead` permanently rewrote `contextHistory` through a shared backing array, collapsing the token ratio and preventing higher tiers from ever triggering (issue #117 alias bug; covered by a regression test).
+- The offloader cache guarantees each file is written only once.
 
 ---
 
@@ -325,7 +331,7 @@ Each Turn: estimate tokens -> `applyCompactionWith` -> emit `EventCompaction` if
 | `internal/memory/compaction_offloader.go` | CompactionOffloader + OffloadEntry |
 | `internal/memory/record_store.go` | CompactionRecord + CompactionTier + RecordStore + FileRecordStore |
 | `internal/memory/compaction.go` | RecordedCompactor interface + repairOrphanedToolPairs |
-| `internal/engine/history.go` | applyCompactionWith type assertion (compaction adapter) |
+| `internal/engine/history.go` | applyCompactionWith + writeBackCompaction/persistCompacted (compaction adapter and write-back) |
 | `internal/engine/loop_phases.go` | runLoop compaction integration inside prepareTurnInput |
 | `internal/engine/stream.go` | EventCompaction carrying CompactionRecord |
 | `internal/engine/compact.go` | Manual /compact adapts to RecordedCompactor |
@@ -340,7 +346,8 @@ Each Turn: estimate tokens -> `applyCompactionWith` -> emit `EventCompaction` if
 | Decision | Rationale |
 |----------|-----------|
 | **Four-tier progressive thresholds** | Avoids abrupt "all-or-nothing", 60% starts preventive offload |
-| **Internal state incremental update** | contextHistory non-destructive, compactionMsg never enters it |
+| **Write-back compaction** | The per-turn view re-ran compression every turn once over threshold (Soft/Full paid an extra LLM summary per turn, with the "incremental" template re-feeding the full head); write-back makes one compaction effective for many turns and lets tiers progress (issue #117) |
+| **Internal state incremental update** | Degraded turns produce no compactionMsg and marker attribution is error-prone; internal state does not rely on parsing history text |
 | **Anchor + prose dual layer** | Anchors are verifiable guarantee, prose is supplementary |
 | **Missing anchors filled with N/A** | Ensures []Anchor always 5 items, structure complete |
 | **Incremental merge takes union** | Prevents LLM from omitting old anchors |

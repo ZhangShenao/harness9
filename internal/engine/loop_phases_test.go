@@ -5,6 +5,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -331,5 +332,204 @@ func TestPrepareTurnInput_InjectsActivePlan(t *testing.T) {
 	in3 := lc3.prepareTurnInput()
 	if last3 := in3.history[len(in3.history)-1]; strings.Contains(last3.Content, "当前执行计划") {
 		t.Error("no injection expected for nil store")
+	}
+}
+
+// failingAddSession 包装 MemorySession：首次 AddMessages 返回错误（模拟 DB 瞬时故障），
+// 用于验证写回失败后的回滚路径（原始历史恢复落盘、引擎本地历史保持原样）。
+type failingAddSession struct {
+	memory.Session
+	failFirstAdd bool
+	adds         int
+}
+
+func (s *failingAddSession) AddMessages(ctx context.Context, msgs []schema.Message) error {
+	s.adds++
+	if s.failFirstAdd && s.adds == 1 {
+		return errors.New("simulated db failure")
+	}
+	return s.Session.AddMessages(ctx, msgs)
+}
+
+// newWriteBackLC 构造带 n 条额外 user/assistant 消息的 loopContext：
+// history = [system, user task, n×(assistant/user)]，startLen=2（task 及之后为本 Run 新增）。
+func newWriteBackLC(comp memory.Compactor, sess memory.Session, n int) (*loopContext, []schema.Message) {
+	eng := &AgentEngine{registry: noopRegistry{}}
+	lc := &loopContext{engine: eng, comp: comp, sess: sess, em: noopEmitter()}
+	lc.history = append(lc.history,
+		schema.Message{Role: schema.RoleSystem, Content: "sys"},
+		schema.Message{Role: schema.RoleUser, Content: "task"},
+	)
+	for i := 0; i < n; i++ {
+		lc.history = append(lc.history,
+			schema.Message{Role: schema.RoleAssistant, Content: fmt.Sprintf("a%d", i)},
+			schema.Message{Role: schema.RoleUser, Content: fmt.Sprintf("q%d", i)},
+		)
+	}
+	lc.startLen = 2
+	orig := append([]schema.Message(nil), lc.history...)
+	return lc, orig
+}
+
+// TestPrepareTurnInput_WriteBackReplacesHistory 验证写回式压缩（issue #117）：
+// 压缩触发时压缩产物写回 lc.history（而非仅作当次视图），一次压缩持续生效——
+// 下一轮基于已写回的历史重新判定，不再重复压缩。
+func TestPrepareTurnInput_WriteBackReplacesHistory(t *testing.T) {
+	lc, _ := newWriteBackLC(&fixedCompactor{keep: 2}, nil, 3) // 8 条消息
+
+	in := lc.prepareTurnInput()
+
+	// 写回：lc.history 被替换为压缩产物（system + 最近 2 条）。
+	if len(lc.history) != 3 {
+		t.Errorf("压缩产物应写回 lc.history（3 条），实际 %d 条", len(lc.history))
+	}
+	// 本轮 LLM 输入视图与写回后的历史一致。
+	if len(in.history) != len(lc.history) {
+		t.Errorf("发送视图应与写回后历史一致：%d vs %d", len(in.history), len(lc.history))
+	}
+
+	// 第二轮：历史已收缩，压缩器返回原样（MsgsAfter==MsgsBefore），不再写回/再缩减。
+	before := append([]schema.Message(nil), lc.history...)
+	lc.prepareTurnInput()
+	if len(lc.history) != len(before) {
+		t.Errorf("第二轮不应再次缩减历史：%d → %d", len(before), len(lc.history))
+	}
+	for i := range before {
+		if before[i].Content != lc.history[i].Content {
+			t.Errorf("第二轮历史第 %d 条被改动: %q → %q", i, before[i].Content, lc.history[i].Content)
+		}
+	}
+}
+
+// TestPrepareTurnInput_WriteBackPersistsToSession 验证写回的持久化语义：
+// 压缩产物剥离 system 后整体替换 session 历史（Clear + AddMessages），
+// startLen 前移使 saveHistory 只追加写回之后的新消息，不产生重复。
+func TestPrepareTurnInput_WriteBackPersistsToSession(t *testing.T) {
+	sess := memory.NewMemorySession("wb-persist")
+	seed := []schema.Message{
+		{Role: schema.RoleUser, Content: "old1"},
+		{Role: schema.RoleAssistant, Content: "old2"},
+		{Role: schema.RoleUser, Content: "old3"},
+		{Role: schema.RoleAssistant, Content: "old4"},
+	}
+	if err := sess.AddMessages(context.Background(), seed); err != nil {
+		t.Fatalf("AddMessages: %v", err)
+	}
+
+	comp := &fixedCompactor{keep: 2}
+	lc, _ := newWriteBackLC(comp, sess, 0)
+	lc.history = append([]schema.Message{{Role: schema.RoleSystem, Content: "sys"}}, seed...)
+	lc.history = append(lc.history, schema.Message{Role: schema.RoleUser, Content: "task"})
+	lc.startLen = len(seed) + 1
+
+	lc.prepareTurnInput()
+
+	got, err := sess.GetMessages(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	// [sys, old1..old4, task] 6 条 → 保留 system + 最近 2 条 → session 存 2 条（old4, task）。
+	if len(got) != 2 || got[0].Content != "old4" || got[1].Content != "task" {
+		t.Fatalf("session 应为压缩产物（old4, task），实际 %d 条: %+v", len(got), got)
+	}
+
+	// 写回点之后的新消息追加持久化，无重复。
+	lc.history = append(lc.history, schema.Message{Role: schema.RoleAssistant, Content: "resp"})
+	lc.saveHistory(context.Background())
+	got2, err := sess.GetMessages(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("GetMessages after save: %v", err)
+	}
+	if len(got2) != 3 || got2[2].Content != "resp" {
+		t.Errorf("session 应为压缩产物 + 新消息共 3 条，实际 %d 条", len(got2))
+	}
+}
+
+// TestPrepareTurnInput_WriteBackRollbackOnSessionError 验证写回失败的回滚：
+// AddMessages 失败时引擎本地历史保持原样（本轮仍以压缩视图作为 LLM 输入），
+// 且原始历史已恢复落盘，不会因 Clear+写回失败丢数据。
+func TestPrepareTurnInput_WriteBackRollbackOnSessionError(t *testing.T) {
+	sess := &failingAddSession{
+		Session:      memory.NewMemorySession("wb-rollback"),
+		failFirstAdd: true,
+	}
+	seed := []schema.Message{
+		{Role: schema.RoleUser, Content: "old1"},
+		{Role: schema.RoleAssistant, Content: "old2"},
+		{Role: schema.RoleUser, Content: "old3"},
+		{Role: schema.RoleAssistant, Content: "old4"},
+	}
+	// 种子数据直接写入内部 session，让包装器的首次 AddMessages 正好是写回尝试。
+	if err := sess.Session.AddMessages(context.Background(), seed); err != nil {
+		t.Fatalf("seed AddMessages: %v", err)
+	}
+
+	lc, orig := newWriteBackLC(&fixedCompactor{keep: 2}, sess, 0)
+	lc.history = append([]schema.Message{{Role: schema.RoleSystem, Content: "sys"}}, seed...)
+	lc.history = append(lc.history, schema.Message{Role: schema.RoleUser, Content: "task"})
+	lc.startLen = len(seed) + 1
+	orig = append([]schema.Message(nil), lc.history...)
+
+	lc.prepareTurnInput()
+
+	// 引擎本地历史保持原样（写回失败不替换）。
+	if len(lc.history) != len(orig) {
+		t.Fatalf("写回失败后 lc.history 应保持原样（%d 条），实际 %d 条", len(orig), len(lc.history))
+	}
+	for i := range orig {
+		if orig[i].Content != lc.history[i].Content {
+			t.Errorf("写回失败后历史第 %d 条被改动", i)
+		}
+	}
+	// 写回确实被尝试过：首次 AddMessages 失败 + 回滚成功，共 2 次调用。
+	// （若压缩路径根本不写回，此断言失败——回滚逻辑就没有被真正执行到。）
+	if sess.adds != 2 {
+		t.Errorf("写回应尝试 1 次并回滚 1 次（共 2 次 AddMessages），实际 %d 次", sess.adds)
+	}
+	// session 内容恢复为原始历史（回滚 AddMessages 已执行）。
+	got, err := sess.GetMessages(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(got) != len(seed) {
+		t.Errorf("session 应回滚为原始 %d 条，实际 %d 条", len(seed), len(got))
+	}
+}
+
+// degradedRecorder 返回携带 Error 的降级压缩记录（模拟 LLM 摘要失败回退截断）。
+type degradedRecorder struct{}
+
+func (degradedRecorder) Compact(msgs []schema.Message) []schema.Message {
+	if len(msgs) <= 2 {
+		return msgs
+	}
+	return append([]schema.Message{msgs[0]}, msgs[len(msgs)-1:]...)
+}
+
+func (c degradedRecorder) CompactWithRecord(msgs []schema.Message) ([]schema.Message, memory.CompactionRecord) {
+	result := c.Compact(msgs)
+	return result, memory.CompactionRecord{
+		TokensBefore: memory.EstimateTokens(msgs),
+		TokensAfter:  memory.EstimateTokens(result),
+		MsgsBefore:   len(msgs),
+		MsgsAfter:    len(result),
+		Error:        "LLM summary failed in TierSoft",
+	}
+}
+
+// TestPrepareTurnInput_DegradedCompactionNotPersisted 验证降级压缩（Error 非空）
+// 不写回：瞬时 LLM 失败触发的截断只作用于当次视图，下一轮可重试真正的摘要压缩，
+// 避免把有损截断永久固化进历史。
+func TestPrepareTurnInput_DegradedCompactionNotPersisted(t *testing.T) {
+	lc, orig := newWriteBackLC(degradedRecorder{}, nil, 3)
+
+	in := lc.prepareTurnInput()
+
+	if len(lc.history) != len(orig) {
+		t.Fatalf("降级压缩不应写回历史（%d 条），实际 %d 条", len(orig), len(lc.history))
+	}
+	// 但本轮 LLM 输入仍是降级截断后的视图（保命语义不变）。
+	if len(in.history) >= len(orig) {
+		t.Errorf("本轮视图应为降级截断结果，实际 %d 条（原始 %d 条）", len(in.history), len(orig))
 	}
 }
