@@ -591,22 +591,35 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, ...) error
             em.tokenUpdate(usage.InputTokens, e.contextWindow)
         }
 
-        // Note: contextHistory keeps accumulating the full history (uncompacted)
-        // compactedHistory is only the view passed to the LLM
+        // Write-back compaction: when a compaction takes real effect, compactedHistory
+        // replaces contextHistory entirely and is persisted (writeBackCompaction);
+        // one compaction stays effective for many turns. Nudges/Plan remain view-only
         contextHistory = append(contextHistory, *responseMsg)
         // ...tool execution, observation injection...
     }
 
-    // Only save contextHistory[startLen:] (the full history, not the compacted version)
+    // Only save contextHistory[startLen:] (messages appended after the write-back
+    // point — no duplicates)
     e.saveHistoryWith(ctx, sess, contextHistory, startLen)
 }
 ```
 
-**Non-destructive compaction design:**
+**Write-back compaction design (issue #117):**
 
-- `contextHistory`: the full history, continuously appended (containing all messages), serving as the long-term record
-- `compactedHistory`: a compacted view derived from `contextHistory` each turn, passed to the LLM only
-- `saveHistoryWith` saves `contextHistory` (the uncompacted version), ensuring no history is lost
+- `contextHistory`: the engine-local history. When a Recorded compactor (the production
+  default, ProgressiveCompactor) takes real effect, the compacted product replaces
+  contextHistory entirely and is persisted to the session — one compaction stays
+  effective for many turns, and tiers progress as designed
+- `compactedHistory`: the per-turn view sent to the LLM; on a real compaction it also
+  becomes the new contextHistory
+- Write-back gating: Recorded compactors only, no degraded `Error` in the record, and an
+  actual reduction (fewer messages or offload happened). Degraded truncation is never
+  persisted — it only applies to the current turn's view so the next turn can retry a
+  real LLM summary
+- Rollback on failure: if the session write-back fails after Clear, an independent
+  context restores exactly the persisted prefix of the original history; the engine keeps
+  its own history and still feeds the compacted view to the LLM this turn
+- Nudges and the active Plan remain send-view-only and are never written into `contextHistory`
 
 ### 8.3 Helper Method Semantics
 
@@ -799,7 +812,7 @@ eng := engine.NewAgentEngine(llm, registry, workDir,
 | **char÷4 estimation + API actual-value correction** | Dependency-free estimation is used for compaction decisions; the actual value is used for TUI display precision |
 | **Two-phase tokenUpdate** | Emits the estimated value before the call (immediate feedback), and the actual value after the call (precise display) |
 | **contextWindow set only once, not overwritten** | Prevents TUI flicker from being updated every turn; 0→N is set only once |
-| **Non-destructive compaction (compactedHistory)** | contextHistory remains complete; saveHistoryWith persists the full history |
+| **Write-back compaction (issue #117)** | On a real compaction the product is written back to the history and persisted; one compaction stays effective for many turns; degraded truncation is never persisted, failures roll back |
 | **sync.RWMutex snapshot** | runLoop takes a one-time snapshot of session/compactor at the start, eliminating races with the TUI goroutine |
 | **Failure logs a warning without interrupting** | A saveHistoryWith failure does not affect the main flow; persistence is an enhancement, not a core dependency |
 

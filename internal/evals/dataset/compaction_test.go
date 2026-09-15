@@ -5,6 +5,7 @@ package dataset
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -149,5 +150,110 @@ func TestCompaction_PlanSurvives(t *testing.T) {
 	}
 	if !strings.Contains(turn2Tail, "当前执行计划") || !strings.Contains(turn2Tail, "压缩后仍可见的步骤") {
 		t.Errorf("plan must survive compaction verbatim, tail: %q", turn2Tail)
+	}
+}
+
+// budgetRecorder 是带 token 预算判定的 Recorded 压缩器桩：超过预算时收缩为
+// [system + 最近 2 条]，并记录实际发生收缩的次数。用于验证写回式压缩的核心
+// 不变量——一次压缩写回后持续生效，后续轮次不重复压缩（issue #117）。
+type budgetRecorder struct {
+	budget      int
+	shrinkCalls int
+}
+
+func (c *budgetRecorder) Compact(msgs []schema.Message) []schema.Message {
+	result, _ := c.CompactWithRecord(msgs)
+	return result
+}
+
+func (c *budgetRecorder) CompactWithRecord(msgs []schema.Message) ([]schema.Message, memory.CompactionRecord) {
+	if memory.EstimateTokens(msgs) <= c.budget {
+		return msgs, memory.CompactionRecord{}
+	}
+	c.shrinkCalls++
+	result := append([]schema.Message{msgs[0]}, msgs[len(msgs)-2:]...)
+	return result, memory.CompactionRecord{
+		MsgsBefore:   len(msgs),
+		MsgsAfter:    len(result),
+		TokensBefore: memory.EstimateTokens(msgs),
+		TokensAfter:  memory.EstimateTokens(result),
+	}
+}
+
+// TestCompaction_WriteBackOnce 验证写回式压缩（issue #117）：历史过阈触发一次
+// 压缩后，压缩产物写回历史与 Session——下一轮基于已收缩的历史判定，不再重复
+// 压缩；LLM 看到的是写回后的压缩形态，Session 持久化无重复。
+// 反向不变量（对照）：修复前"逐轮视图"模式下同一历史每轮都会重新触发压缩。
+func TestCompaction_WriteBackOnce(t *testing.T) {
+	evals.SetupHermeticEnv(t)
+
+	turn := 0
+	var turn2Input string
+	p := providertest.NewMockWithCallback(func(msgs []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		turn++
+		if turn == 1 {
+			return schema.Message{
+				Role: schema.RoleAssistant,
+				ToolCalls: []schema.ToolCall{
+					{ID: "c1", Name: "bash", Arguments: []byte(`{"command":"echo hi"}`)},
+				},
+			}
+		}
+		for _, m := range msgs {
+			turn2Input += m.Content + "\n"
+		}
+		return schema.Message{Role: schema.RoleAssistant, Content: "任务完成"}
+	})
+
+	reg := tools.NewRegistry()
+	if err := reg.Register(tools.NewBashTool(t.TempDir())); err != nil {
+		t.Fatalf("注册工具失败: %v", err)
+	}
+	hookReg := hooks.NewHookRegistry(reg)
+
+	// 预填 10 条大消息（每条 ≈600 token，总计 ≈6000 远超 3000 预算），Turn 1 必然触发压缩；
+	// 收缩后仅剩 system + 最近 2 条（≈1300 token），追加本轮新消息也不会再次越阈。
+	sess := memory.NewMemorySession("eval-writeback")
+	seed := make([]schema.Message, 0, 10)
+	for i := 0; i < 10; i++ {
+		role := schema.RoleUser
+		if i%2 == 1 {
+			role = schema.RoleAssistant
+		}
+		seed = append(seed, schema.Message{Role: role,
+			Content: fmt.Sprintf("OLDMSG-%02d %s", i, strings.Repeat("filler", 400))})
+	}
+	if err := sess.AddMessages(context.Background(), seed); err != nil {
+		t.Fatalf("AddMessages: %v", err)
+	}
+
+	rec := &budgetRecorder{budget: 3000}
+	eng := engine.NewAgentEngine(p, hookReg, t.TempDir(),
+		engine.WithSession(sess),
+		engine.WithCompactor(rec),
+	)
+	if err := eng.Run(context.Background(), "执行任务"); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	// 核心断言：整个 Run 只发生一次实际收缩（Turn 1 触发写回后，Turn 2 不再重压）。
+	if rec.shrinkCalls != 1 {
+		t.Errorf("压缩应恰好发生 1 次（写回后持续生效），实际 %d 次", rec.shrinkCalls)
+	}
+	// LLM 第二轮看到写回后的压缩形态：保留尾部原文，早期大消息已被收缩掉。
+	if !strings.Contains(turn2Input, "OLDMSG-09") {
+		t.Error("压缩视图应保留尾部消息原文")
+	}
+	if strings.Contains(turn2Input, "OLDMSG-00") {
+		t.Error("早期旧消息应已被压缩，不应出现在 Turn 2 输入中")
+	}
+	// Session 持久化：压缩产物 + 本次 Run 新增消息，无重复。
+	got, err := sess.GetMessages(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	// [OLDMSG-09, task] + turn1 tool-call 响应 + observation + turn2 最终回复。
+	if len(got) != 5 {
+		t.Errorf("session 应为压缩产物 (2) + 新增消息 (3) 共 5 条，实际 %d 条", len(got))
 	}
 }

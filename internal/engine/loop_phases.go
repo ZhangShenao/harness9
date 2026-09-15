@@ -59,8 +59,9 @@ type loopContext struct {
 
 // turnInput 是单次 LLM 调用的完整输入。
 type turnInput struct {
-	// history 是发送给 LLM 的历史视图：在完整历史之上应用压缩与 nudge 注入后的副本，
-	// 仅作用于当次调用——lc.history 保持完整增长，不因压缩或 nudge 而改变。
+	// history 是发送给 LLM 的历史视图：在压缩写回后的历史之上应用 nudge 注入后的副本，
+	// 仅作用于当次调用——nudge/Plan 只注入发送副本，绝不写入 lc.history；
+	// 压缩产物则通过写回（writeBackCompaction）替换 lc.history 并持久化。
 	history []schema.Message
 	// toolDefs 是本 Turn 对 LLM 可见的工具定义（全量，Plan Mode 工具过滤已移除）。
 	toolDefs []schema.ToolDefinition
@@ -144,7 +145,7 @@ func (lc *loopContext) beginTurn(ctx context.Context) (context.Context, error) {
 // 与压缩通知 → token 上报 → nudge 注入的对外事件顺序一致）：
 //
 //  1. 工具列表：读取本 Turn 可用工具列表（Plan Mode 已移除，恒为全量）
-//  2. 压缩检查：超过阈值时生成本轮的压缩视图，并上报压缩详情
+//  2. 压缩检查：超过阈值时生成压缩视图并写回历史/Session，上报压缩详情
 //  3. token 估算上报：压缩后消息 + 工具定义的估算值（LLM 调用后由实际用量覆盖）
 //  4. nudge/Plan 注入：记忆 nudge（周期性）、停滞 nudge（无进展检测）与活跃 Plan（原样注入），
 //     均只注入发送副本，绝不写入 lc.history（因此不会被持久化、不会累积）
@@ -156,11 +157,16 @@ func (lc *loopContext) prepareTurnInput() turnInput {
 	// 1. 工具列表每轮重新读取：注册表内容可能在运行期变化（如 MCP 异步注入）。
 	availableTools := e.registry.GetAvailableTools()
 
-	// 2. 压缩检查：comp 为 nil 时原样返回。压缩是逐轮视图——结果仅用于本次调用，
-	//    lc.history 保留完整历史，保证下一轮压缩仍能看到全部上下文重新计算。
+	// 2. 压缩检查：comp 为 nil 时原样返回。压缩是写回式——Recorded 压缩器真正
+	//    生效时把压缩产物写回 lc.history 并持久化到 Session（issue #117：一次压缩
+	//    持续生效多轮，而非每轮重算视图）；写回失败自动回滚。本轮 LLM 输入始终
+	//    使用压缩后的视图。
 	compactedHistory, record := e.applyCompactionWith(lc.comp, lc.history)
-	if record != nil && record.Tier != memory.TierNone {
-		lc.em.compaction(*record)
+	if record != nil {
+		lc.writeBackCompaction(compactedHistory, *record)
+		if record.Tier != memory.TierNone {
+			lc.em.compaction(*record)
+		}
 	}
 
 	// 3. token 用量上报（估算值）：字符数÷4 估算，供 TUI 在 LLM 响应前先行展示。

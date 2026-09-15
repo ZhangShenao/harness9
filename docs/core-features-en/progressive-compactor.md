@@ -241,7 +241,7 @@ const (
 
 ### 4.6 Cross-Turn Incremental Update
 
-ProgressiveCompactor uses **internal state** (`lastSummary`, `lastAnchors`) rather than contextHistory markers, because contextHistory is non-destructive and compactionMsg never enters it. After successful compression, `updateLastState` updates internal state for the next incremental merge.
+ProgressiveCompactor uses **internal state** (`lastSummary`, `lastAnchors`) for incremental updates. In the era of per-turn views this was the only option — compactionMsg never entered the next turn's input. With write-back compaction (§8.2) compactionMsg does enter the history, yet internal state remains more robust: degraded-truncation turns produce no compactionMsg, marker attribution across multiple compactions gets confusing, and state tracking does not depend on parsing history text.
 
 ---
 
@@ -289,7 +289,7 @@ TierFull:
 
 ### 6.2 Emergency Fallback
 
-TierEmergency skips LLM, delegates to `Fallback.CompactForce(msgs)`, record marks `Error="emergency fallback: forced truncation"`.
+TierEmergency skips LLM, delegates to `Fallback.CompactForce(msgs)`, record marks `Error="emergency fallback: forced truncation"`. The truncated view **always keeps the first task message** (task anchor), then greedily includes the newest messages within the remaining budget, skipping any single message that does not fit — the issue #117 E2E run showed that an emergency view without the task anchor leaves the model amnesiac and spinning (143 consecutive Emergency turns, task failed). The Emergency truncated view is also written back and persisted (unlike transient summarization-failure fallbacks), so the next turn starts from a converged history.
 
 ---
 
@@ -308,11 +308,17 @@ Constructor options: `WithProgressiveTodoInjector`, `WithProgressiveMemoryExtrac
 
 ### 8.1 Compression Timing in runLoop
 
-Each Turn: estimate tokens -> `applyCompactionWith` -> emit `EventCompaction` if tier != TierNone -> LLM call with compactedHistory -> append response to contextHistory (non-destructive).
+Each Turn: `applyCompactionWith` -> if record != nil, `writeBackCompaction` (on real effect: replace contextHistory with the compacted product and persist to session, rollback on failure) -> emit `EventCompaction` if tier != TierNone -> LLM call with compactedHistory -> append response to the written-back contextHistory.
 
-### 8.2 Non-Destructive Design
+### 8.2 Write-Back Design (issue #117)
 
-`contextHistory` (full history, persisted to DB) is never modified by compression. `compactedHistory` is a derived view sent to LLM. Offload modifies copies in compactedHistory only.
+- `contextHistory`: the engine-local history. When a Recorded compactor takes real effect, it is replaced by the compacted product and persisted to the session — one compaction stays effective for many turns, and tiers progress as designed.
+- `compactedHistory`: the per-turn view sent to the LLM; on a real compaction it becomes the new contextHistory.
+- **Write-back gating**: Recorded compactors only, no degraded `Error` in the record, and an actual reduction (fewer messages or offload happened). Non-Recorded compactors keep the pure view semantics.
+- **Degraded write-back is tier-aware**: a TierEmergency truncated view (true capacity overflow — the full history can no longer be sent through the API) **is written back** and persisted; it is the only recovery path, letting the next turn start from a converged history where Soft/Full summaries work again — otherwise every turn re-triggers Emergency (a 200-turn truncation loop was observed in E2E). The forced truncation caused by transient LLM summarization failures (Soft/Full + Error) is **never persisted**; it only applies to the current turn's view so the next turn can retry a real summary.
+- **Rollback on failure**: if the session write-back fails after Clear, an independent 5s context restores exactly the persisted prefix (`history[:startLen]`); the engine keeps its original history and still feeds the compacted view to the LLM this turn.
+- **Defensive copy**: offload placeholders are written into a copy of head, never in-place into the caller's slice. Previously `offloadHead` permanently rewrote `contextHistory` through a shared backing array, collapsing the token ratio and preventing higher tiers from ever triggering (issue #117 alias bug; covered by a regression test).
+- The offloader cache guarantees each file is written only once.
 
 ---
 
@@ -325,7 +331,7 @@ Each Turn: estimate tokens -> `applyCompactionWith` -> emit `EventCompaction` if
 | `internal/memory/compaction_offloader.go` | CompactionOffloader + OffloadEntry |
 | `internal/memory/record_store.go` | CompactionRecord + CompactionTier + RecordStore + FileRecordStore |
 | `internal/memory/compaction.go` | RecordedCompactor interface + repairOrphanedToolPairs |
-| `internal/engine/history.go` | applyCompactionWith type assertion (compaction adapter) |
+| `internal/engine/history.go` | applyCompactionWith + writeBackCompaction/persistCompacted (compaction adapter and write-back) |
 | `internal/engine/loop_phases.go` | runLoop compaction integration inside prepareTurnInput |
 | `internal/engine/stream.go` | EventCompaction carrying CompactionRecord |
 | `internal/engine/compact.go` | Manual /compact adapts to RecordedCompactor |
@@ -340,12 +346,14 @@ Each Turn: estimate tokens -> `applyCompactionWith` -> emit `EventCompaction` if
 | Decision | Rationale |
 |----------|-----------|
 | **Four-tier progressive thresholds** | Avoids abrupt "all-or-nothing", 60% starts preventive offload |
-| **Internal state incremental update** | contextHistory non-destructive, compactionMsg never enters it |
+| **Write-back compaction** | The per-turn view re-ran compression every turn once over threshold (Soft/Full paid an extra LLM summary per turn, with the "incremental" template re-feeding the full head); write-back makes one compaction effective for many turns and lets tiers progress (issue #117) |
+| **Internal state incremental update** | Degraded turns produce no compactionMsg and marker attribution is error-prone; internal state does not rely on parsing history text |
 | **Anchor + prose dual layer** | Anchors are verifiable guarantee, prose is supplementary |
 | **Missing anchors filled with N/A** | Ensures []Anchor always 5 items, structure complete |
 | **Incremental merge takes union** | Prevents LLM from omitting old anchors |
 | **offload threshold 4000 < OffloadHook 10000** | More aggressive space saving during compression |
 | **offloader cache idempotency** | Avoids redundant file writes across turns |
 | **TierEmergency skips LLM** | 95% context near hard limit, cannot afford summarization input |
+| **Emergency keeps task anchor** | Dropping the first task message in emergency truncation leaves the model spinning without a goal (issue #117 E2E); anchor guarantee + budget-greedy tail keeps a minimal workable context |
 | **JSONL persistence** | Append-only efficient, one record per line, fail-open |
 | **Three interface implementation** | Backward compat Compact/ForceCompactor + new RecordedCompactor |

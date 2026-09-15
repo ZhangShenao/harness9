@@ -331,7 +331,7 @@ type ProgressiveCompactor struct {
 }
 ```
 
-**为什么不用 contextHistory 中的 marker 检测**：contextHistory 是非破坏性的（完整历史持久化到 DB），compactionMsg 仅存在于 compactedHistory（压缩视图）中。下一轮 head 从 contextHistory 派生，不含上次 compactionMsg。因此无法通过 marker 检测实现增量更新，改用 Compactor 内部状态追踪。
+**为什么用 Compactor 内部状态而非历史 marker 检测**：逐轮视图时代 compactionMsg 不会进入下一轮输入，marker 检测无从谈起；写回式压缩（§8.2）后 compactionMsg 会随压缩产物进入历史，但内部状态追踪仍更可靠——降级截断轮不产生 compactionMsg、多次压缩的 marker 归属易混淆，且状态追踪不依赖对历史文本的解析。
 
 压缩成功后调用 `updateLastState(summary, anchors)` 更新内部状态。下次压缩时 `summarizeAndExtract` 检测 `lastSummary` 非空则走增量模板。
 
@@ -501,7 +501,7 @@ TierSoft/TierFull LLM 调用失败
 
 ### 6.3 Emergency 回退
 
-TierEmergency 不调用 LLM，直接委托 `Fallback.CompactForce(msgs)`（TokenBudgetCompactor 的强制截断模式），record 标记 `Error="emergency fallback: forced truncation"`。
+TierEmergency 不调用 LLM，直接委托 `Fallback.CompactForce(msgs)`（TokenBudgetCompactor 的强制截断模式），record 标记 `Error="emergency fallback: forced truncation"`。截断视图**无条件保留首条任务消息**（任务锚点），再从最新消息向前按预算贪心纳入、单条超预算即跳过——issue #117 E2E 实测表明，丢掉任务锚点的紧急视图会让模型失忆空转（连续 143 轮 Emergency、任务失败）。同时 Emergency 截断视图会**写回历史并持久化**（与 LLM 摘要失败的瞬时回退不同），使下一轮占比收敛、Soft/Full 摘要得以恢复工作。
 
 ---
 
@@ -556,24 +556,32 @@ WithProgressiveSessionID(id string)                 // 会话 ID
 ```
 每个 Turn:
   1. availableTools = registry.GetAvailableTools()
-  2. toolTokens = EstimateToolTokens(availableTools)
-  3. msgTokensBefore = EstimateTokens(contextHistory)
-  4. compactedHistory, record = applyCompactionWith(comp, contextHistory)
-  5. msgTokensAfter = EstimateTokens(compactedHistory)
-  6. if record != nil && record.Tier != TierNone:
-       em.compaction(*record)  → 发出 EventCompaction
-  7. em.tokenUpdate(totalTokens, contextWindow)  → TUI 展示
-  8. responseMsg = em.generate(compactedHistory, availableTools)  → LLM 调用
-  9. if usage != nil: em.tokenUpdate(usage.InputTokens)  → 实际值校正
-  10. contextHistory = append(contextHistory, responseMsg)  → 完整历史
+  2. compactedHistory, record = applyCompactionWith(comp, contextHistory)
+  3. if record != nil:
+       writeBackCompaction(compactedHistory, *record)
+         → 压缩真正生效时（无降级 Error 且消息数减少或有 offload）：
+           contextHistory = compactedHistory（写回）
+           session: Clear + 写入压缩产物（失败则独立 ctx 回滚 + 保留原历史）
+       if record.Tier != TierNone:
+         em.compaction(*record)  → 发出 EventCompaction
+  4. em.tokenUpdate(totalTokens, contextWindow)  → TUI 展示
+  5. responseMsg = em.generate(compactedHistory, availableTools)  → LLM 调用
+  6. if usage != nil: em.tokenUpdate(usage.InputTokens)  → 实际值校正
+  7. contextHistory = append(contextHistory, responseMsg)  → 写回后的历史继续增长
 ```
 
-### 8.2 非破坏性压缩设计
+### 8.2 写回式压缩设计（issue #117）
 
-- `contextHistory`：完整历史，持续追加，持久化到 DB
-- `compactedHistory`：每轮从 contextHistory 派生的压缩视图，只传给 LLM
-- `saveHistoryWith` 保存 contextHistory（非压缩版），确保历史不丢失
-- offload 修改的是 compactedHistory 中的消息副本，不影响 contextHistory
+- `contextHistory`：引擎本地历史。Recorded 压缩器真正生效时被替换为压缩产物并持久化
+- `compactedHistory`：当轮 LLM 输入视图；压缩生效时它同时成为新的 contextHistory
+- **写回门控**：仅 Recorded 压缩器 + 记录无降级 Error + 有实际削减（消息数减少或发生
+  offload）；非 Recorded 压缩器保持纯视图语义
+- **降级写回分级**：TierEmergency（真性容量溢出，全量历史已无法通过 API 发送）的截断视图**写回**历史并持久化——这是唯一恢复路径，下一轮占比收敛后 Soft/Full 摘要可重新工作，否则每轮都会重新 Emergency（实测 200 轮级截断循环）；LLM 摘要失败的回退截断（Soft/Full + Error）**不写回**，只作用于当轮视图，下一轮可重试真正的摘要
+- **失败回滚**：Session 侧 Clear 后写回失败时，用独立 5s ctx 精确恢复持久化边界内
+  （`history[:startLen]`）的原始历史；引擎侧保留原历史，本轮仍以压缩视图作为 LLM 输入
+- **防御性拷贝**：offload 占位符只写入 head 的拷贝，绝不原地改写调用方切片——
+  修复前 `offloadHead` 经共享底层数组永久改写 `contextHistory`，导致 token 占比
+  塌缩、高级 tier 难以触发（issue #117 别名 bug，回归测试覆盖）
 - offloader cache 保证不重复写同一文件
 
 ### 8.3 手动 /compact 命令
@@ -605,7 +613,7 @@ func (e *AgentEngine) Compact(ctx context.Context) (memory.CompactionRecord, err
 | `internal/memory/compaction_offloader.go` | CompactionOffloader + OffloadEntry |
 | `internal/memory/record_store.go` | CompactionRecord + CompactionTier + RecordStore + FileRecordStore |
 | `internal/memory/compaction.go` | RecordedCompactor 接口 + repairOrphanedToolPairs |
-| `internal/engine/history.go` | applyCompactionWith 类型断言（压缩适配） |
+| `internal/engine/history.go` | applyCompactionWith + writeBackCompaction/persistCompacted（压缩适配与写回） |
 | `internal/engine/loop_phases.go` | prepareTurnInput 中的 runLoop 压缩集成 |
 | `internal/engine/stream.go` | EventCompaction 携带 CompactionRecord |
 | `internal/engine/compact.go` | 手动 /compact 适配 RecordedCompactor |
@@ -620,12 +628,14 @@ func (e *AgentEngine) Compact(ctx context.Context) (memory.CompactionRecord, err
 | 决策 | 原因 |
 |------|------|
 | **四层渐进阈值** | 避免"要么不压要么全压"的突变，60% 开始预防性 offload |
-| **内部状态增量更新** | contextHistory 非破坏性，compactionMsg 不进入 contextHistory，无法用 marker 检测 |
+| **压缩写回（write-back）** | 逐轮视图在过阈后每轮重跑压缩（Soft/Full 每轮多一次 LLM 摘要、伪增量重喂全部 head 原文）；写回让一次压缩持续生效多轮，各 tier 递进触发（issue #117） |
+| **内部状态增量更新** | 降级轮不产生 compactionMsg、marker 归属易混淆，内部状态追踪不依赖历史文本解析，更可靠 |
 | **Anchor + 散文双层** | Anchor 是程序化可校验的保底信息，散文是补充上下文 |
 | **缺失 Anchor 填 N/A** | 保证 []Anchor 始终 5 条，程序化校验结构完整 |
 | **增量合并取并集** | 防止 LLM 增量更新时遗漏旧锚点 |
 | **offload 阈值 4000 < OffloadHook 10000** | 压缩时更积极省空间，retroactive offload 中等大小结果 |
 | **offloader cache 幂等** | 避免每轮压缩重复写同一文件 |
 | **TierEmergency 跳过 LLM** | 95% 时上下文接近硬上限，无法承受摘要调用的输入 |
+| **Emergency 保留任务锚点** | 紧急截断丢掉首条任务消息会让模型失去目标空转（issue #117 E2E 实测），锚点保底 + 预算贪心让紧急视图保住最小可工作上下文 |
 | **CompactionRecord JSONL 持久化** | 追加写入高效，每行一条记录易解析，fail-open 不影响压缩 |
 | **三接口实现** | 向后兼容 Compact/ForceCompactor，新增 RecordedCompactor 供引擎类型断言 |
