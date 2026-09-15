@@ -517,6 +517,52 @@ func (c degradedRecorder) CompactWithRecord(msgs []schema.Message) ([]schema.Mes
 	}
 }
 
+// emergencyRecorder 模拟真性容量溢出：视图大幅收缩但消息数不变（巨型结果被裁、
+// 修复桩补位），Tier=TierEmergency 且携带 Error 标记。
+type emergencyRecorder struct{}
+
+func (emergencyRecorder) Compact(msgs []schema.Message) []schema.Message {
+	if len(msgs) <= 2 {
+		return msgs
+	}
+	return append([]schema.Message{msgs[0], msgs[1]}, msgs[len(msgs)-1:]...)
+}
+
+func (c emergencyRecorder) CompactWithRecord(msgs []schema.Message) ([]schema.Message, memory.CompactionRecord) {
+	result := c.Compact(msgs)
+	return result, memory.CompactionRecord{
+		Tier:         memory.TierEmergency,
+		TokensBefore: memory.EstimateTokens(msgs),
+		TokensAfter:  memory.EstimateTokens(result),
+		MsgsBefore:   len(msgs),
+		MsgsAfter:    len(result),
+		Error:        "emergency fallback: forced truncation",
+	}
+}
+
+// TestPrepareTurnInput_EmergencyWriteBack 验证真性容量溢出（TierEmergency）的截断
+// 视图应当写回：全量历史已无法通过 API 发送，写回是唯一恢复路径——下一轮占比
+// 收敛，Soft/Full 摘要可重新工作。与 LLM 摘要失败的瞬时回退（不写回）相区分。
+func TestPrepareTurnInput_EmergencyWriteBack(t *testing.T) {
+	lc, _ := newWriteBackLC(emergencyRecorder{}, nil, 6)
+
+	in := lc.prepareTurnInput()
+
+	// 写回：截断视图成为新历史（消息数未变但 token 大幅收缩，同样构成有效削减）。
+	if len(lc.history) > 4 {
+		t.Errorf("Emergency 截断视图应写回 lc.history（≤3 条），实际 %d 条", len(lc.history))
+	}
+	if len(in.history) != len(lc.history) {
+		t.Errorf("发送视图应与写回后历史一致：%d vs %d", len(in.history), len(lc.history))
+	}
+	// 下一轮基于收敛后的历史判定，不再连续 Emergency。
+	before := append([]schema.Message(nil), lc.history...)
+	lc.prepareTurnInput()
+	if len(lc.history) != len(before) {
+		t.Errorf("第二轮不应再次触发 Emergency 截断：%d → %d", len(before), len(lc.history))
+	}
+}
+
 // TestPrepareTurnInput_DegradedCompactionNotPersisted 验证降级压缩（Error 非空）
 // 不写回：瞬时 LLM 失败触发的截断只作用于当次视图，下一轮可重试真正的摘要压缩，
 // 避免把有损截断永久固化进历史。

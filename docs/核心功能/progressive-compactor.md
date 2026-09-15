@@ -501,7 +501,7 @@ TierSoft/TierFull LLM 调用失败
 
 ### 6.3 Emergency 回退
 
-TierEmergency 不调用 LLM，直接委托 `Fallback.CompactForce(msgs)`（TokenBudgetCompactor 的强制截断模式），record 标记 `Error="emergency fallback: forced truncation"`。
+TierEmergency 不调用 LLM，直接委托 `Fallback.CompactForce(msgs)`（TokenBudgetCompactor 的强制截断模式），record 标记 `Error="emergency fallback: forced truncation"`。截断视图**无条件保留首条任务消息**（任务锚点），再从最新消息向前按预算贪心纳入、单条超预算即跳过——issue #117 E2E 实测表明，丢掉任务锚点的紧急视图会让模型失忆空转（连续 143 轮 Emergency、任务失败）。同时 Emergency 截断视图会**写回历史并持久化**（与 LLM 摘要失败的瞬时回退不同），使下一轮占比收敛、Soft/Full 摘要得以恢复工作。
 
 ---
 
@@ -576,7 +576,7 @@ WithProgressiveSessionID(id string)                 // 会话 ID
 - `compactedHistory`：当轮 LLM 输入视图；压缩生效时它同时成为新的 contextHistory
 - **写回门控**：仅 Recorded 压缩器 + 记录无降级 Error + 有实际削减（消息数减少或发生
   offload）；非 Recorded 压缩器保持纯视图语义
-- **降级不固化**：LLM 摘要失败回退的截断不写回，只作用于当轮视图，下一轮可重试真正的摘要
+- **降级写回分级**：TierEmergency（真性容量溢出，全量历史已无法通过 API 发送）的截断视图**写回**历史并持久化——这是唯一恢复路径，下一轮占比收敛后 Soft/Full 摘要可重新工作，否则每轮都会重新 Emergency（实测 200 轮级截断循环）；LLM 摘要失败的回退截断（Soft/Full + Error）**不写回**，只作用于当轮视图，下一轮可重试真正的摘要
 - **失败回滚**：Session 侧 Clear 后写回失败时，用独立 5s ctx 精确恢复持久化边界内
   （`history[:startLen]`）的原始历史；引擎侧保留原历史，本轮仍以压缩视图作为 LLM 输入
 - **防御性拷贝**：offload 占位符只写入 head 的拷贝，绝不原地改写调用方切片——
@@ -636,5 +636,6 @@ func (e *AgentEngine) Compact(ctx context.Context) (memory.CompactionRecord, err
 | **offload 阈值 4000 < OffloadHook 10000** | 压缩时更积极省空间，retroactive offload 中等大小结果 |
 | **offloader cache 幂等** | 避免每轮压缩重复写同一文件 |
 | **TierEmergency 跳过 LLM** | 95% 时上下文接近硬上限，无法承受摘要调用的输入 |
+| **Emergency 保留任务锚点** | 紧急截断丢掉首条任务消息会让模型失去目标空转（issue #117 E2E 实测），锚点保底 + 预算贪心让紧急视图保住最小可工作上下文 |
 | **CompactionRecord JSONL 持久化** | 追加写入高效，每行一条记录易解析，fail-open 不影响压缩 |
 | **三接口实现** | 向后兼容 Compact/ForceCompactor，新增 RecordedCompactor 供引擎类型断言 |

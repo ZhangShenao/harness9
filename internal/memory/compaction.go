@@ -131,26 +131,50 @@ func (c *TokenBudgetCompactor) Compact(msgs []schema.Message) []schema.Message {
 	return repairOrphanedToolPairs(result)
 }
 
-// CompactForce 强制压缩，跳过 token 预算阈值检查，直接移除最旧的非 system 消息。
-// 用于手动触发的 /compact 命令：无论当前 token 用量多少，都执行一次结构裁剪。
-// 与 Compact 的区别：minTail 固定为 1，允许在消息数量很少时也能压缩。
+// CompactForce 强制压缩，跳过 token 预算阈值检查，直接执行有损截断。
+// 用于手动触发的 /compact 命令与 ProgressiveCompactor 的 Emergency 档兜底。
 //
-// 注意：此方法不做 LLM 摘要，直接丢弃旧消息，仅保留 system + 最新 1 条；
-// 通常作为 SummarizationCompactor.CompactForce 摘要失败时的 fallback。
+// 保留策略（issue #117 E2E 实测教训）：
+//  1. 首条任务消息无条件保留——紧急截断若把任务一并丢弃，模型将失去目标陷入
+//     空转死循环（实测：连续 143 轮 Emergency、任务失败）；
+//  2. 从最新消息向前按剩余预算逐条纳入，单条超预算即跳过——防止单条巨型
+//     tool_result 撑爆紧急视图，让模型连任务都看不到的局面不会再出现；
+//  3. 最后执行双向工具对修复，保证截断后的消息序列满足 API 配对约束。
+//
+// 与 Compact 的区别：不做预算判断直接压缩，且不保留 MinTail 固定尾部结构。
+// 注意：此方法不做 LLM 摘要，通常作为 SummarizationCompactor.CompactForce
+// 摘要失败时的 fallback。
 func (c *TokenBudgetCompactor) CompactForce(msgs []schema.Message) []schema.Message {
 	if len(msgs) == 0 || msgs[0].Role != schema.RoleSystem {
 		return msgs
 	}
-	const forceMinTail = 1
 	rest := msgs[1:]
-	if len(rest) <= forceMinTail {
-		return msgs // 只有 system + 1 条消息，无可裁剪的头部
+	if len(rest) == 0 {
+		return msgs
 	}
-	// 直接移除中间最旧的非 system 消息，只保留 system + 最近 1 条。
-	tail := rest[len(rest)-forceMinTail:]
-	result := make([]schema.Message, 0, 1+len(tail))
-	result = append(result, msgs[0])
-	result = append(result, tail...)
+
+	// 任务锚点：首条非 system 消息无条件保留。
+	task := rest[0]
+	tail := rest[1:]
+
+	// 从最新消息向前按预算贪心纳入；单条放不下则跳过（更早的较小消息仍有机会）。
+	budget := c.maxTokens() - EstimateTokens([]schema.Message{msgs[0], task})
+	keep := make([]bool, len(tail))
+	for i := len(tail) - 1; i >= 0; i-- {
+		cost := EstimateTokens(tail[i : i+1])
+		if cost <= budget {
+			budget -= cost
+			keep[i] = true
+		}
+	}
+
+	result := make([]schema.Message, 0, 2+len(tail))
+	result = append(result, msgs[0], task)
+	for i := range keep {
+		if keep[i] {
+			result = append(result, tail[i])
+		}
+	}
 	return repairOrphanedToolPairs(result)
 }
 

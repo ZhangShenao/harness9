@@ -358,3 +358,79 @@ func TestTokenBudgetCompactor_InsertsStubForOrphanedToolCall(t *testing.T) {
 		}
 	}
 }
+
+// TestTokenBudgetCompactor_CompactForceKeepsTaskAnchor 回归 issue #117 E2E 实测的
+// Emergency 失忆死循环：旧实现 forceMinTail=1 仅保留 system + 最近 1 条，且最近
+// 消息若为孤立巨型 tool_result 会被配对修复删除，紧急视图只剩 system——模型看不到
+// 任务目标而陷入空转（真实基线跑出连续 143 轮 Emergency、任务失败）。
+// 契约：强制压缩必须无条件保留首条任务消息，并从最新消息起按预算尽量多保留。
+func TestTokenBudgetCompactor_CompactForceKeepsTaskAnchor(t *testing.T) {
+	c := &memory.TokenBudgetCompactor{MaxTokens: 600, MinTailMessages: 6}
+	big := longContent(2000) // ≈500 token
+	msgs := []schema.Message{
+		{Role: schema.RoleSystem, Content: "sys prompt"},
+		{Role: schema.RoleUser, Content: "task: 找出验证码"},
+		{Role: schema.RoleAssistant, Content: big},
+		{Role: schema.RoleUser, Content: big},
+		{Role: schema.RoleAssistant, Content: "recent tail"},
+	}
+
+	result := c.CompactForce(msgs)
+
+	if len(result) == 0 || result[0].Role != schema.RoleSystem {
+		t.Fatalf("首条必须是 system，实际 %+v", result)
+	}
+	taskKept := false
+	recentKept := false
+	for _, m := range result {
+		if m.Content == "task: 找出验证码" {
+			taskKept = true
+		}
+		if m.Content == "recent tail" {
+			recentKept = true
+		}
+	}
+	if !taskKept {
+		t.Error("强制压缩必须保留首条任务消息（丢任务 = 模型失忆空转）")
+	}
+	if !recentKept {
+		t.Error("预算内的最新消息应保留")
+	}
+	// 真正的契约是预算约束：贪心纳入后总占用不得超过 MaxTokens
+	//（大消息是否被裁取决于预算余量，不逐条断言）。
+	if got := memory.EstimateTokens(result); got > c.MaxTokens {
+		t.Errorf("强制压缩结果应不超过预算 %d token，实际 %d", c.MaxTokens, got)
+	}
+}
+
+// TestTokenBudgetCompactor_CompactForceGiantTailSkipped 验证单条超预算的最新消息
+// 会被跳过而非强行塞入（防止单条巨型 tool_result 撑爆紧急视图），此时任务锚点
+// 仍是无条件保底。
+func TestTokenBudgetCompactor_CompactForceGiantTailSkipped(t *testing.T) {
+	c := &memory.TokenBudgetCompactor{MaxTokens: 300, MinTailMessages: 6}
+	giant := longContent(4000) // ≈1000 token，单条即超预算
+	msgs := []schema.Message{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "task prompt"},
+		{Role: schema.RoleUser, Content: giant, ToolCallID: "c1"},
+	}
+
+	result := c.CompactForce(msgs)
+
+	taskKept := false
+	giantKept := false
+	for _, m := range result {
+		if m.Content == "task prompt" {
+			taskKept = true
+		}
+		if m.Content == giant {
+			giantKept = true
+		}
+	}
+	if !taskKept {
+		t.Error("任务锚点必须无条件保留")
+	}
+	if giantKept {
+		t.Error("单条超预算的巨型消息应被跳过，不能撑爆紧急视图")
+	}
+}

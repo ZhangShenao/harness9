@@ -289,7 +289,7 @@ TierFull:
 
 ### 6.2 Emergency Fallback
 
-TierEmergency skips LLM, delegates to `Fallback.CompactForce(msgs)`, record marks `Error="emergency fallback: forced truncation"`.
+TierEmergency skips LLM, delegates to `Fallback.CompactForce(msgs)`, record marks `Error="emergency fallback: forced truncation"`. The truncated view **always keeps the first task message** (task anchor), then greedily includes the newest messages within the remaining budget, skipping any single message that does not fit — the issue #117 E2E run showed that an emergency view without the task anchor leaves the model amnesiac and spinning (143 consecutive Emergency turns, task failed). The Emergency truncated view is also written back and persisted (unlike transient summarization-failure fallbacks), so the next turn starts from a converged history.
 
 ---
 
@@ -315,7 +315,7 @@ Each Turn: `applyCompactionWith` -> if record != nil, `writeBackCompaction` (on 
 - `contextHistory`: the engine-local history. When a Recorded compactor takes real effect, it is replaced by the compacted product and persisted to the session — one compaction stays effective for many turns, and tiers progress as designed.
 - `compactedHistory`: the per-turn view sent to the LLM; on a real compaction it becomes the new contextHistory.
 - **Write-back gating**: Recorded compactors only, no degraded `Error` in the record, and an actual reduction (fewer messages or offload happened). Non-Recorded compactors keep the pure view semantics.
-- **Degraded compactions are never persisted**: the forced truncation produced when LLM summarization fails only applies to the current turn's view; the next turn retries a real summary instead of freezing a lossy truncation.
+- **Degraded write-back is tier-aware**: a TierEmergency truncated view (true capacity overflow — the full history can no longer be sent through the API) **is written back** and persisted; it is the only recovery path, letting the next turn start from a converged history where Soft/Full summaries work again — otherwise every turn re-triggers Emergency (a 200-turn truncation loop was observed in E2E). The forced truncation caused by transient LLM summarization failures (Soft/Full + Error) is **never persisted**; it only applies to the current turn's view so the next turn can retry a real summary.
 - **Rollback on failure**: if the session write-back fails after Clear, an independent 5s context restores exactly the persisted prefix (`history[:startLen]`); the engine keeps its original history and still feeds the compacted view to the LLM this turn.
 - **Defensive copy**: offload placeholders are written into a copy of head, never in-place into the caller's slice. Previously `offloadHead` permanently rewrote `contextHistory` through a shared backing array, collapsing the token ratio and preventing higher tiers from ever triggering (issue #117 alias bug; covered by a regression test).
 - The offloader cache guarantees each file is written only once.
@@ -354,5 +354,6 @@ Each Turn: `applyCompactionWith` -> if record != nil, `writeBackCompaction` (on 
 | **offload threshold 4000 < OffloadHook 10000** | More aggressive space saving during compression |
 | **offloader cache idempotency** | Avoids redundant file writes across turns |
 | **TierEmergency skips LLM** | 95% context near hard limit, cannot afford summarization input |
+| **Emergency keeps task anchor** | Dropping the first task message in emergency truncation leaves the model spinning without a goal (issue #117 E2E); anchor guarantee + budget-greedy tail keeps a minimal workable context |
 | **JSONL persistence** | Append-only efficient, one record per line, fail-open |
 | **Three interface implementation** | Backward compat Compact/ForceCompactor + new RecordedCompactor |

@@ -103,18 +103,32 @@ func (e *AgentEngine) applyCompactionWith(comp memory.Compactor, msgs []schema.M
 // 写回时机与门控：
 //   - 仅 Recorded 压缩器走写回（生产默认 ProgressiveCompactor）；非 Recorded
 //     压缩器保持纯视图语义；
-//   - 降级压缩（record.Error 非空，如 LLM 摘要失败回退截断）不写回——有损截断
-//     只作用于当次视图，下一轮可重试真正的摘要压缩，避免把瞬时失败固化成永久截断；
-//   - 无实际削减（消息数未减少且无 offload）不写回，避免无意义的 Session 重写。
+//   - TierEmergency 写回：真性容量溢出下全量历史已无法通过 API 发送，写回截断
+//     视图是唯一恢复路径——下一轮占比收敛，Soft/Full 摘要可重新工作（若不写回，
+//     每轮都会重新 Emergency，实测会陷入 200 轮级别的截断循环）；
+//   - 其余降级压缩（LLM 摘要失败的回退截断，Soft/Full + Error）不写回——瞬时
+//     故障，下一轮可重试真正的摘要压缩，避免把有损截断固化成永久截断；
+//   - 无实际削减（消息数与 token 均未减少且无 offload）不写回，避免无意义的
+//     Session 重写。
 //
 // Session 侧与手动 /compact（compact.go）一致：Clear + AddMessages，写回失败时
 // 用独立 ctx 尽力回滚原始历史；差异在于失败后的引擎侧处理——手动路径直接报错
 // 返回，这里保留原始 lc.history（本轮仍以压缩视图作为 LLM 输入），下一轮重新判定。
 func (lc *loopContext) writeBackCompaction(compacted []schema.Message, record memory.CompactionRecord) {
-	if record.Error != "" || len(compacted) == 0 {
+	// Emergency（真性容量溢出）写回；其余带 Error 的降级压缩（LLM 摘要失败的
+	// 瞬时回退）不写回，下一轮重试真正的摘要。
+	if record.Error != "" && record.Tier != memory.TierEmergency {
 		return
 	}
-	if record.MsgsAfter >= record.MsgsBefore && len(record.Offloaded) == 0 {
+	if len(compacted) == 0 {
+		return
+	}
+	// 有效性：token 收缩（Emergency 裁巨型消息 / offload）或消息数减少（Soft/Full
+	// 摘要）任一成立即视为真正削减。
+	effective := record.MsgsAfter < record.MsgsBefore ||
+		record.TokensAfter < record.TokensBefore ||
+		len(record.Offloaded) > 0
+	if !effective {
 		return
 	}
 
