@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -139,6 +140,9 @@ const (
 	phaseChat
 )
 
+// autoWakeBudgetMax 是会话级自动唤醒预算（用户输入重置）。
+const autoWakeBudgetMax = 10
+
 var spinnerVerbs = []string{
 	"思考中", "分析中", "处理中", "推理中", "计算中", "评估中",
 }
@@ -258,6 +262,12 @@ type tuiModel struct {
 	// dispatch() 在下次发送 prompt 前将其前置注入并清空（展示与注入分离，避免与 TaskTracker 双重消费）。
 	pendingSubAgentInject []string
 
+	// 自动唤醒（异步闭环，spec §5.7）：后台任务完成且主 agent 空闲时自动 dispatch
+	// 消费结果。预算防"task→唤醒→task"无限链；任何真实用户输入重置。
+	autoWakeBudget    int  // 剩余自动唤醒次数
+	autoWakeEnabled   bool // HARNESS9_AUTOWAKE=false 关闭
+	autoWakeExhausted bool // 预算耗尽提示是否已展示一次
+
 	// compacting 为 true 时表示 /compact 命令正在异步执行中。
 	// 此期间在输入框上方显示 spinner 进度条，完成后插入压缩通知并恢复为 false。
 	compacting bool
@@ -334,6 +344,8 @@ func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager
 		subAgentTracker:   tracker,
 		subAgentReg:       reg,
 		subAgentRunner:    runner,
+		autoWakeEnabled:   os.Getenv("HARNESS9_AUTOWAKE") != "false",
+		autoWakeBudget:    autoWakeBudgetMax,
 		sandboxCh:         sandboxCh,
 		mcpCh:             mcpCh,
 		mcpConfigPath:     filepath.Join(workDir, ".mcp.json"),

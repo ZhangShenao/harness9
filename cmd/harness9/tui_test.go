@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/harness9/internal/engine"
@@ -1320,4 +1321,69 @@ func TestRenderSandboxBar_Degraded(t *testing.T) {
 	if !strings.Contains(bar, "本地") {
 		t.Errorf("降级状态栏应提示本地执行，得到: %q", bar)
 	}
+}
+
+// minimalTUIModel 构造带后台任务跟踪器的最小可用 tuiModel（无 engine），
+// 供自动唤醒测试使用：handleSubAgentNotify → maybeAutoWake → dispatch(eng==nil) 路径
+// 只依赖 tracker / outerCtx / 自动唤醒字段，无需完整引擎装配。
+func minimalTUIModel(t *testing.T) tuiModel {
+	t.Helper()
+	m := tuiModel{
+		subAgentTracker: subagent.NewTaskTracker(),
+		outerCtx:        context.Background(),
+		autoWakeEnabled: true,
+	}
+	m.input = textinput.New()
+	m.input.Focus()
+	return m
+}
+
+// TestAutoWakeDispatchesWhenIdle 验证空闲时后台任务完成 → 自动唤醒 dispatch。
+func TestAutoWakeDispatchesWhenIdle(t *testing.T) {
+	m := minimalTUIModel(t) // 既有辅助：构造带 tracker 的可用 model；无 eng
+	m.autoWakeEnabled = true
+	m.autoWakeBudget = 10
+
+	m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Finish("task-explorer-1", "探索完成的结果", false)
+
+	m2, _ := m.handleSubAgentNotify() // 模拟 subAgentNotifyMsg 处理路径
+	if !m2.running {
+		t.Fatal("空闲时应自动唤醒（running=true）")
+	}
+	if len(m2.pendingSubAgentInject) != 0 {
+		t.Fatal("注入缓冲应已随 dispatch 消费")
+	}
+	if m2.autoWakeBudget != 9 {
+		t.Fatalf("预算应递减: %d", m2.autoWakeBudget)
+	}
+}
+
+// TestAutoWakeSkippedWhenRunning 验证主 agent 运行中不打断（结果留注入缓冲）。
+func TestAutoWakeSkippedWhenRunning(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.autoWakeEnabled = true
+	m.autoWakeBudget = 10
+	m.running = true
+
+	m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Finish("task-explorer-1", "结果", false)
+	m2, _ := m.handleSubAgentNotify()
+	if m2.autoWakeBudget != 10 {
+		t.Fatal("运行中不应消耗预算")
+	}
+}
+
+// TestAutoWakeBudgetExhaustion 验证预算耗尽提示一次并停止自动唤醒；用户输入重置。
+func TestAutoWakeBudgetExhaustion(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.autoWakeEnabled = true
+	m.autoWakeBudget = 0
+	m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Finish("task-explorer-1", "结果", false)
+	m2, _ := m.handleSubAgentNotify()
+	if m2.running || m2.autoWakeExhausted != true {
+		t.Fatal("预算耗尽不应唤醒，且应提示一次")
+	}
+	m2.autoWakeBudget = autoWakeBudgetMax // 模拟用户输入重置
 }

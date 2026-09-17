@@ -303,6 +303,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if raw == "" {
 				return m, nil
 			}
+			// 任何真实用户输入重置自动唤醒预算。统一收敛在此（Enter 提交分支顶部）而非
+			// dispatch 本体：普通 prompt、/命令、@mention、Shell 模式等提交路径均经此进入，
+			// 且自动唤醒自身也走 dispatch——若在 dispatch 内重置会导致预算自我续满、链式跑飞。
+			m.autoWakeBudget = autoWakeBudgetMax
 			m.phase = phaseChat
 			m.input.Reset()
 			m.shellMode = false
@@ -468,9 +472,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	case subAgentNotifyMsg:
-		// 后台子代理完成：即时将结果显示到对话区（用户立即可见），并缓存待下次注入 LLM。
-		m = m.harvestSubAgentResults()
-		return m, nil
+		// 后台子代理完成：即时将结果显示到对话区（用户立即可见），并缓存待下次注入 LLM；
+		// 若主 agent 空闲且有预算，随后自动唤醒消费结果（异步闭环，spec §5.7）。
+		return m.handleSubAgentNotify()
 
 	case sandboxUpdateMsg:
 		m.sandboxes = msg.infos
@@ -1253,6 +1257,42 @@ func (m tuiModel) harvestSubAgentResults() tuiModel {
 			fmt.Sprintf("[后台子代理 %s %s]\n%s", ct.AgentName, status, ct.FinalText))
 	}
 	return m
+}
+
+// maybeAutoWake 实现异步闭环（spec §5.7）：主 agent 空闲且有预算时，
+// 把注入缓冲合成为自动唤醒 prompt 走正常 dispatch；预算耗尽提示一次后停用。
+func (m tuiModel) maybeAutoWake() (tuiModel, tea.Cmd) {
+	if !m.autoWakeEnabled || m.running || len(m.pendingSubAgentInject) == 0 {
+		return m, nil
+	}
+	if m.autoWakeBudget <= 0 {
+		if !m.autoWakeExhausted {
+			m.autoWakeExhausted = true
+			m.lines = append(m.lines, subAgentLineStyle.Render(
+				"⚠ 自动唤醒已达上限，后台结果将在你下次发送消息时注入"))
+		}
+		return m, nil
+	}
+	m.autoWakeBudget--
+	// 先取走注入缓冲再 dispatch：dispatch 内部会兜底 harvest 并前置拼接
+	// pendingSubAgentInject，若不先清空会导致同一批结果被双重前缀注入。
+	blocks := m.pendingSubAgentInject
+	m.pendingSubAgentInject = nil
+	m.lines = append(m.lines, subAgentLineStyle.Render("⟳ 后台子代理任务完成，自动唤醒主代理"))
+	var sb strings.Builder
+	sb.WriteString("[系统自动唤醒] 以下后台子代理任务已结束，请处理其结果并继续推进整体任务；" +
+		"若所有子任务已结束，向用户汇报总结。\n\n")
+	for _, b := range blocks {
+		sb.WriteString(b)
+		sb.WriteString("\n")
+	}
+	return m.dispatch(sb.String())
+}
+
+// handleSubAgentNotify 供 Update 与测试共用的 notify 处理路径。
+func (m tuiModel) handleSubAgentNotify() (tuiModel, tea.Cmd) {
+	m = m.harvestSubAgentResults()
+	return m.maybeAutoWake()
 }
 
 // dispatchMention 解析 @<name> <task> 并前台直跑指定子代理（绕过主 LLM）。
