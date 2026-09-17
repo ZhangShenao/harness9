@@ -119,6 +119,9 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 			case ctl.State() == TaskCancelled:
 				t.tracker.Cancel(taskID, "已被主代理取消"+suffixIfSet(ctl.CancelReason()))
 			case err != nil:
+				// ctl 与 tracker 双状态机同步进入 Failed（ctl 不再停留 Running）；
+				// 已终态时 Finish 为无操作，不会覆写 Cancelled
+				ctl.Finish(err)
 				t.tracker.Finish(taskID, err.Error(), true)
 			default:
 				t.tracker.Finish(taskID, res.FinalText, false)

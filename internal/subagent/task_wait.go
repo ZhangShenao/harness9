@@ -80,6 +80,14 @@ func (t *TaskWaitTool) Execute(ctx context.Context, args json.RawMessage) (strin
 		if len(targets) == 0 {
 			return "当前没有正在运行的后台子代理任务。", nil
 		}
+	} else {
+		// 显式 id 逐个校验存在性（与 task_status 同语义）：未命中直接报错，
+		// 而非静默跳过——typo 的 id 否则会把等待变成对空集合的空转。
+		for _, id := range targets {
+			if _, ok := t.tracker.Get(id); !ok {
+				return "", fmt.Errorf("任务 %q 不存在", id)
+			}
+		}
 	}
 
 	waitCtx, cancel := context.WithTimeout(t.baseCtx, time.Duration(timeout)*time.Second)
@@ -125,11 +133,16 @@ func (t *TaskWaitTool) formatResult(ids []string, timedOut bool) string {
 		}
 		if isTerminalTaskState(d.State) {
 			doneIDs = append(doneIDs, id)
-			status := "完成"
-			// TaskDetail 无 IsError 字段（tracker 内部 isError 未随 Get 导出），
-			// 以状态等价替代：Failed/Cancelled 在 tracker 内部均置 isError=true。
-			if d.State == TaskFailed || d.State == TaskCancelled {
+			// 终态按 State 三分渲染：Cancelled（主代理主动取消）必须与 Failed
+			// （子代理出错）区分——两者的后续处置不同（重跑 vs 读原因排查）。
+			var status string
+			switch d.State {
+			case TaskDone:
+				status = "完成"
+			case TaskFailed:
 				status = "失败"
+			default: // TaskCancelled
+				status = "已取消"
 			}
 			fmt.Fprintf(&sb, "[%s %s %s]\n%s\n", d.AgentName, status, id, truncateRunes(d.FinalText, 2048))
 		} else {

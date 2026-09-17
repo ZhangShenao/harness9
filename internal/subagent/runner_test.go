@@ -17,6 +17,34 @@ import (
 	"github.com/harness9/internal/tools"
 )
 
+// TestDenyTaskHookBeforeExecute 表驱动验证纵深防御 hook：task 家族四工具
+// （task/task_status/task_wait/task_control）一律 Deny，其余工具 Allow——
+// 即使 ResolveTools 白名单被绕过，运行期 hook 仍拦截子代理递归委派与越权操纵主 tracker。
+func TestDenyTaskHookBeforeExecute(t *testing.T) {
+	h := denyTaskHook{}
+	cases := []struct {
+		name string
+		want hooks.HookAction
+	}{
+		{"task", hooks.HookActionDeny},
+		{"task_status", hooks.HookActionDeny},
+		{"task_wait", hooks.HookActionDeny},
+		{"task_control", hooks.HookActionDeny},
+		{"bash", hooks.HookActionAllow},
+		{"read_file", hooks.HookActionAllow},
+		{"plan_write", hooks.HookActionAllow},
+	}
+	for _, c := range cases {
+		_, d, err := h.BeforeExecute(context.Background(), schema.ToolCall{Name: c.name})
+		if err != nil {
+			t.Fatalf("%s: 意外 error: %v", c.name, err)
+		}
+		if d.Action != c.want {
+			t.Fatalf("%s: 决策应为 %v，得 %v", c.name, c.want, d.Action)
+		}
+	}
+}
+
 // TestRunnerForegroundOutlivesParentToolTimeout 回归测试：前台子代理不应被父引擎的
 // "工具执行超时"（默认 60s）杀死——子代理本身是多轮 agent，整轮可能远超单个工具的时限。
 // 修复前：前台 execCtx 直接复用调用方 ctx（带 toolTimeout），子代理在该超时处 context deadline exceeded。
