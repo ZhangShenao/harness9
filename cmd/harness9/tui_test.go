@@ -1091,8 +1091,8 @@ func TestFlushPendingThinking_UpdatesPendingReplyStart(t *testing.T) {
 // ↑↓ 光标夹紧、Enter 进详情、Esc 列表态关闭/详情态返回。
 func TestHandleTaskPanelKeyNavigation(t *testing.T) {
 	tr := subagent.NewTaskTracker()
-	id1 := tr.Start("a", "p1")
-	_ = tr.Start("b", "p2")
+	id1 := tr.Start("a", "", "p1")
+	_ = tr.Start("b", "", "p2")
 
 	m := newTestModel()
 	m.subAgentTracker = tr

@@ -94,7 +94,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	if a.Background {
-		taskID := t.tracker.Start(def.Name, a.Prompt)
+		taskID := t.tracker.Start(def.Name, a.Description, a.Prompt)
 		go func() {
 			defer func() {
 				if rec := recover(); rec != nil {
