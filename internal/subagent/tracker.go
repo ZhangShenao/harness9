@@ -26,10 +26,14 @@ type TaskState int
 const (
 	// TaskRunning 运行中。
 	TaskRunning TaskState = iota
+	// TaskPaused 已暂停（Turn 边界门控）。
+	TaskPaused
 	// TaskDone 正常完成。
 	TaskDone
 	// TaskFailed 出错结束。
 	TaskFailed
+	// TaskCancelled 被主代理取消。
+	TaskCancelled
 )
 
 // String 返回状态可读名（用于 TUI 展示）。
@@ -37,10 +41,14 @@ func (s TaskState) String() string {
 	switch s {
 	case TaskRunning:
 		return "运行中"
+	case TaskPaused:
+		return "已暂停"
 	case TaskDone:
 		return "完成"
 	case TaskFailed:
 		return "失败"
+	case TaskCancelled:
+		return "已取消"
 	default:
 		return "未知"
 	}
