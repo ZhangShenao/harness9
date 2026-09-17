@@ -37,8 +37,21 @@ func TestTaskStatusToolListAndSingle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "调用工具") && !strings.Contains(out, id1) {
+	if !strings.Contains(out, id1) {
 		t.Fatalf("单任务输出不符:\n%s", out)
+	}
+
+	// 回归（Important-1）：运行中任务被单查不得 MarkInjected——
+	// Finish 后 DrainCompleted 仍须送达结果，自动注入通道不被切断。
+	tr.Finish(id1, "梳理结论 XYZ", false)
+	found := false
+	for _, c := range tr.DrainCompleted() {
+		if c.TaskID == id1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("运行中任务被单查后，Finish 的结果不应被切断自动注入")
 	}
 }
 

@@ -56,7 +56,12 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args json.RawMessage) (str
 		if !ok {
 			return "", fmt.Errorf("任务 %q 不存在", a.TaskID)
 		}
-		t.tracker.MarkInjected(a.TaskID)
+		// 仅终态任务标记已注入：终态 ⇒ FinalText 已包含在本次返回文本中，标记前提成立；
+		// 运行中任务不得标记——否则 Finish 后 DrainCompleted 永久跳过，
+		// 切断自动注入通道（spec §5.3），同时消除 Get→Finish→MarkInjected 的输出竞态。
+		if isTerminalTaskState(d.State) {
+			t.tracker.MarkInjected(a.TaskID)
+		}
 		return formatTaskDetailStatus(d), nil
 	}
 	snaps := t.tracker.List()
