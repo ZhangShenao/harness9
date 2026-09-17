@@ -201,6 +201,7 @@ harness9/
 │   │   ├── observer.go              # EngineObserver 接口 + noopObserver（可观测层无侵入接入点）
 │   │   ├── permission.go            # PermissionMode 枚举（Default/AutoApprove/ReadOnly/BypassAll）+ WithPermissionMode
 │   │   ├── stream.go                # 流式入口 RunStream + engine.Event 事件类型 + ToolResultData
+│   │   ├── task_gate.go             # TaskGate 接口：轮边界控制门（AwaitTurn 暂停时阻塞，放行返回排队 steer 消息）+ WithTaskGate 注入（不设置 = 零开销）
 │   │   ├── agent_loop_test.go       # 主循环单元测试（重试/终止保障/Plan 检查点与恢复注入/nudge）
 │   │   ├── loop_phases_test.go      # 阶段方法单元测试（退避计算/空响应防护/压缩视图隔离/Observation 注入）
 │   │   ├── compact_test.go          # Compact 单元测试
@@ -224,8 +225,13 @@ harness9/
 │   │   ├── loader.go                # Registry.LoadFromDir：扫描 .harness9/agents/*.md
 │   │   ├── prompt.go                # promptBuilder：子代理 system prompt + Skills 预加载 + workDir 注入
 │   │   ├── tracker.go               # TaskTracker：后台任务单一事实源（日志缓冲 + 结果注入）
+│   │   ├── control.go               # TaskController：后台任务控制平面（实现 engine.TaskGate；Pause/Resume/Cancel/Steer，轮边界门控 + execCtx 立即中断）
 │   │   ├── runner.go                # Runner：构建隔离子引擎 + RunStream + 桥接审批与进度
 │   │   ├── task_tool.go             # TaskTool：主代理委派入口（task 工具，前台/后台）
+│   │   ├── task_status.go           # TaskStatusTool：task_status 工具（主代理查询任务状态；终态结果随查询返回并 MarkInjected）
+│   │   ├── task_wait.go             # TaskWaitTool：task_wait 工具（join 等待原语；baseCtx 派生等待 ctx，超时返回快照非 error）
+│   │   ├── task_control.go          # TaskControlTool：task_control 工具（四动作路由 tracker.Control；状态机错误以文本返回供 LLM 自行调整）
+│   │   ├── builtin.go               # RegisterBuiltins：六内置子代理注册（探索/调研/实现/审查/规划/兜底；.harness9/agents/ 同名文件可覆盖内置）
 │   │   └── *_test.go                # 各组件单元测试
 │   ├── skills/                      # Agent Skills — Progressive Disclosure 技能系统
 │   │   ├── skill.go                 # Skill 结构体 + parseFrontmatter（YAML frontmatter 解析）
@@ -292,6 +298,8 @@ harness9/
 │   │   ├── read_file.go             # read_file 工具（沙箱保护，offset/limit 分页，8192 字节默认上限）
 │   │   ├── write_file.go            # write_file 工具（沙箱保护，Auto-Mkdir）
 │   │   ├── edit_file.go             # edit_file 工具（多级模糊匹配文件编辑，沙箱保护）
+│   │   ├── glob.go                  # glob 工具（跨目录文件名模式匹配：WalkDir + 分段 ** 匹配，mtime 降序，≤200 条 + 总数标注）
+│   │   ├── grep.go                  # grep 工具（跨文件正则内容搜索：跳过二进制与超大文件，单行 500 runes 截断，max_results clamp 500）
 │   │   ├── plan_write.go            # plan_write 工具（读写 PlanStore + 防作弊状态校验 + WithPlanWriter 注入）
 │   │   ├── plan_write_test.go       # plan_write 工具单元测试（含防作弊校验测试）
 │   │   ├── memory_write.go          # memory_write 工具（add/update[merge]/remove 三动作 + Precis 重建）
@@ -455,7 +463,7 @@ harness9/
 | **engine** | 标准 ReAct 主循环（按职责拆分：agent_loop.go 编排器 + loop_phases.go 阶段方法 + options/retry/history/nudge/tools_exec 子模块），阻塞 + 流式双模式，并发工具调度，Session/Compactor 集成，EventTokenUpdate / EventCompaction / EventToolResult（ToolResultData）/ EventThinkingDelta 事件，WithContextWindow 选项，双档 LLM 重试（默认/网络预算），原生规划集成（PlanStore 跨会话持久化 + plan_write 写时检查点 + 每轮活跃 Plan 原样注入发送视图，Compactor 零改动），Compact 写回失败自动回滚，WithMemoryNudge（每 N 轮向防御性副本注入长期记忆提示，不持久化），WithStallNudge（连续 N 轮无进展工具（edit_file/write_file）调用时注入一次停滞提示打断空转，防御性副本，不持久化），WithDelegationNudge（连续 N 轮只读探索（read_file/glob/grep/web_search/web_fetch）且无进展工具时注入一次委派提示保护主上下文，单次交互至多 2 次，防御性副本，不持久化），TaskGate 轮边界控制门（接口定义于 task_gate.go，runLoop 每轮开始前 AwaitTurn：暂停不耗 MaxTurns 配额，steer 消息以 user 角色持久化到历史，主引擎路径 nil 零开销），provider 空响应防御（转为可重试错误而非 panic） | ✅ |
 | **hooks** | 文件系统能力：ToolHook 接口 + HookRegistry（洋葱模型）；OffloadHook（超大输出 offload 到 `~/.harness9/tool_results/`，fail-open）；FilePlanWriter（执行计划持久化为 markdown，git 项目写入 workDir/.harness9/plans/） | ✅ |
 | **planning** | Plan 是 Agent 原生能力：PlanStore（Session 级，线程安全，全量替换）、PlanItem/PlanStatus 状态机（pending/in_progress/completed/cancelled）、FormatPlan（活跃条目原样注入文本）、PlanWriter 接口（解耦 PlanWriteTool 与 FilePlanWriter）；plan_write 工具（tools 包）承担防作弊校验 | ✅ |
-| **subagent** | Sub-Agent 子代理委派：SubAgentDefinition（ResolveTools 白名单∩全集-黑名单-task 家族四工具 alwaysDeniedTools）、Registry（RegisterBuiltins 六内置 + `.harness9/agents/*.md` 文件式定义，同名文件覆盖内置）、Runner（构建隔离子引擎 + RunStream + 桥接审批与进度 + WithTaskGate/bindExec 控制门接线）、TaskTool（task 工具，前台/后台双模式，后台路径创建 TaskController 并 Attach）、TaskTracker（后台任务单一事实源 + Control 控制路由 + injected 标志三方共用保证结果恰好注入一次）、TaskController（控制平面，实现 engine.TaskGate：Pause/Resume/Cancel/Steer 并发安全幂等 + AwaitTurn 轮边界门控，暂停不耗 MaxTurns，steer 入信箱下一轮以 user 消息持久化且不自动恢复，cancel 经 execCtx 立即中断并堵 lost-cancel）、协调三工具（task_status 观察（终态结果随查询 MarkInjected）/ task_wait join 等待（baseCtx 派生等待 ctx，超时返回快照非 error，终态三分渲染完成/失败/已取消）/ task_control 控制（pause/resume/cancel/steer，状态机错误以文本返回供 LLM 自行调整））；内置六子代理（general-purpose 兜底继承全部工具与模型 / explorer / researcher / implementer / reviewer / planner，只读角色 bash 限只读命令）；防递归 + 防越权操纵 + 权限不扩权 + 上下文隔离 + Plan 双向隔离（每次委派构造独立 PlanStore + 独立 plan_write 实例，子代理拥有原生规划能力） | ✅ |
+| **subagent** | Sub-Agent 子代理委派：SubAgentDefinition（ResolveTools 白名单∩全集-黑名单-task 家族四工具 alwaysDeniedTools）、Registry（RegisterBuiltins 六内置 + `.harness9/agents/*.md` 文件式定义，同名文件覆盖内置）、Runner（构建隔离子引擎 + RunStream + 桥接审批与进度 + WithTaskGate/bindExec 控制门接线）、TaskTool（task 工具，前台/后台双模式，后台路径创建 TaskController 并 Attach）、TaskTracker（后台任务单一事实源 + Control 控制路由 + injected 标志三方共用保证结果恰好注入一次）、TaskController（控制平面，实现 engine.TaskGate：Pause/Resume/Cancel/Steer 并发安全幂等 + AwaitTurn 轮边界门控，暂停不耗 MaxTurns，steer 入信箱下一轮以 user 消息持久化且不自动恢复，cancel 经 execCtx 立即中断并堵 lost-cancel）、协调三工具（task_status 观察（终态结果随查询 MarkInjected）/ task_wait join 等待（baseCtx 派生等待 ctx，超时返回快照非 error，终态三分渲染完成/失败/已取消）/ task_control 控制（pause/resume/cancel/steer，状态机错误以文本返回供 LLM 自行调整））；内置六子代理（general-purpose 兜底继承全部工具与模型 / explorer / researcher / implementer / reviewer / planner，explorer/reviewer 的 bash 限只读命令，planner 不配 bash）；防递归 + 防越权操纵 + 权限不扩权 + 上下文隔离 + Plan 双向隔离（每次委派构造独立 PlanStore + 独立 plan_write 实例，子代理拥有原生规划能力） | ✅ |
 | **skills** | Progressive Disclosure 技能系统：`Skill` 结构体（YAML frontmatter 解析）、`Index`（技能集合 + Summary/GetFullContent/Names）、`LoadSkills`（扫描 `skills/<name>/SKILL.md` → Index，目录不存在静默跳过）、`UseSkillTool`（`use_skill` 工具，LLM 按需按名称加载 skill 全文，避免启动时整体注入 context）；结构类型隐式满足 `tools.BaseTool` 接口，无循环依赖 | ✅ |
 | **memory** | Context Engineering：Session 接口、Manager（SQLite CRUD + WithToolResultsDir + DeleteSession 级联 GC + DB() 访问器）、SQLiteSession（WAL + 事务）、SummarizationCompactor（默认，LLM 摘要压缩 + 增量更新 + 错误回退）、TokenBudgetCompactor（回退，80% 阈值 + 孤立工具对双向修复）、SlidingWindowCompactor（回退方案）、token 估算工具；MemoryExtractor 接口 + WithMemoryExtractor（压缩前提取钩子） | ✅ |
 | **ltm** | Long-Term Memory：Store（`long_term_memories` 表 + standalone FTS5 `memories_fts`，复用 `state.db`，Add 签名去重 / Search FTS5 强化 / SoftDelete signature=NULL / List top-N / PurgeExpired / StaleCandidates）、Precis（MEMORY.md 物化视图，top-30 渲染 + 5KB 截断）、Extractor（LLM 压缩前事实提取，fail-open，实现 MemoryExtractor 接口）、Phase 3 接缝（Provider/Embedder/Consolidator + noopProvider） | ✅ |

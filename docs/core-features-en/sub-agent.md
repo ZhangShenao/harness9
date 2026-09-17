@@ -300,6 +300,8 @@ The status bar automatically shows a task count segment when background tasks ex
 
 Populated by `renderStatusBar()` calling `TaskTracker.RunningCount()` and `DoneCount()` in real time; shown only when at least one task exists (running or completed), taking up no status bar space when there are zero tasks.
 
+A separate live segment, "Tasks N▸M", tracks active tasks in real time: N counts active tasks (running plus paused), and when any task is paused a `▸M` suffix breaks out the paused count (making pause states produced by the `p` key visible at a glance); the segment is hidden when there are no active tasks.
+
 ### Opening the Panel
 
 Two equivalent methods:
@@ -316,10 +318,10 @@ The panel is a **modal view**: while active, `taskPanelMode = true`, and `View()
 The panel shows the task list by default when opened, with each line formatted as:
 
 ```
-{● running/⏸ paused/✓ done/✗ failed/· cancelled}  {id} [{state}]  {agent}  "{description}"  {elapsed}; last: {activity}
+{icon}  {id} [{state}]  {agent}  "{description}"  {elapsed}; last: {activity}
 ```
 
-The state label is color-coded per the five states (running green / paused yellow / cancelled gray / done blue / failed red); the line format mirrors the `task_status` tool's single-line summary. The currently selected row is highlighted with `▶`. Key bindings:
+The icon takes only three values: the default `●` (shared by running / paused / cancelled), `✓` for done, and `✗` for failed — paused and cancelled tasks do not switch icons and are told apart by the color of the `[{state}]` label. The state label is color-coded per the five states (running green / paused yellow / cancelled gray / done blue / failed red); the line format mirrors the `task_status` tool's single-line summary. The currently selected row is highlighted with `▶`. Key bindings:
 
 | Key | Action |
 |------|------|
@@ -549,7 +551,7 @@ The six built-ins cover the full spectrum of "explore / research / implement / r
 | `reviewer` | `read_file` / `glob` / `grep` / `bash` | Read-only code review: bugs, security, concurrency; findings graded by severity (never modifies code) |
 | `planner` | `read_file` / `glob` / `grep` | Read-only implementation planning: step breakdown, change surface, dependency order, risks, and verification |
 
-Shared constraints at the system-prompt level: the `bash` tool of `explorer` / `reviewer` / `planner` is read-only commands only — never modify / create / delete files; `researcher` must separate facts from speculation and cross-verify key conclusions.
+Shared constraints at the system-prompt level: the `bash` tool of `explorer` / `reviewer` is read-only commands only — `explorer` is limited to `ls` / `find` / `wc` and the like with no builds or installs, while `reviewer` may run tests / static checks but never modifies anything; `planner` is not given `bash` at all — its whitelist is `read_file` / `glob` / `grep` only, ruling out modifications at the tool level; `researcher` must separate facts from speculation and cross-verify key conclusions.
 
 Two companions nudge the main agent toward delegation: the **delegation guide** (`internal/context/builder.go`, injected into the main agent's system prompt once the task-family tools are registered) and the **delegation nudge** (`engine.WithDelegationNudge`, injected once after 3 consecutive turns of "exploration without progress", at most twice per interaction) steer the main agent toward delegating bulk exploration to `explorer` to protect the main context.
 

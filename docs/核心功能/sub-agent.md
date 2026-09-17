@@ -300,6 +300,8 @@ task 工具立即返回 <task id="task-general-purpose-1" state="running"/>
 
 由 `renderStatusBar()` 调用 `TaskTracker.RunningCount()` 和 `DoneCount()` 实时读取，仅在至少有一个任务（运行中或已完成）时展示，零任务时不占用状态栏空间。
 
+状态栏还有一个活跃任务实时段「任务 N▸M」：N 为活跃任务数（含暂停），存在暂停任务时以 `▸M` 后缀单独提示暂停数（`p` 键产生的暂停态一目了然）；无活跃任务时该段隐藏。
+
 ### 打开面板
 
 两种等价方式：
@@ -316,10 +318,10 @@ task 工具立即返回 <task id="task-general-purpose-1" state="running"/>
 面板打开时默认展示任务列表，每行格式：
 
 ```
-{● 运行/⏸ 已暂停/✓ 完成/✗ 失败/· 已取消}  {id} [{状态}]  {agent}  "{描述}"  {耗时}；最近：{活动}
+{图标}  {id} [{状态}]  {agent}  "{描述}"  {耗时}；最近：{活动}
 ```
 
-状态字样按五状态着色（运行绿 / 暂停黄 / 取消灰 / 完成蓝 / 失败红），行格式与 `task_status` 工具的单行摘要保持一致。当前选中行以 `▶` 高亮。按键说明：
+图标仅三值：默认 `●`（运行 / 暂停 / 取消共用），完成 `✓`，失败 `✗`——暂停与取消不更换图标，靠 `[{状态}]` 文字着色区分。状态字样按五状态着色（运行绿 / 暂停黄 / 取消灰 / 完成蓝 / 失败红），行格式与 `task_status` 工具的单行摘要保持一致。当前选中行以 `▶` 高亮。按键说明：
 
 | 按键 | 行为 |
 |------|------|
@@ -548,7 +550,7 @@ handleSubAgentNotify()
 | `reviewer` | `read_file` / `glob` / `grep` / `bash` | 只读代码审查：bug、安全、并发，按严重度分级输出（不修改代码） |
 | `planner` | `read_file` / `glob` / `grep` | 只读产出实施计划：步骤分解、改动面、依赖顺序、风险与验证方式 |
 
-系统提示词层的共同约束：`explorer` / `reviewer` / `planner` 的 `bash` 仅限只读命令，绝不修改 / 创建 / 删除文件；`researcher` 要求事实与推测分开陈述、关键结论交叉验证。
+系统提示词层的共同约束：`explorer` / `reviewer` 的 `bash` 仅限只读命令——`explorer` 限 `ls` / `find` / `wc` 等且不运行构建安装，`reviewer` 允许跑测试 / 静态检查但修改一律禁止；`planner` 则干脆不配 `bash`，白名单仅 `read_file` / `glob` / `grep`，从工具层面杜绝修改；`researcher` 要求事实与推测分开陈述、关键结论交叉验证。
 
 配套的**委派准则**（`internal/context/builder.go`，`task` 系工具注册后注入主代理 system prompt）与**委派 nudge**（`engine.WithDelegationNudge`，连续 3 轮「有探索无进展」时注入一次提示，单次交互至多 2 次）引导主代理把批量探索委派给 `explorer` 以保护主上下文。
 
