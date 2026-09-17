@@ -33,7 +33,7 @@ func TestRunnerForegroundOutlivesParentToolTimeout(t *testing.T) {
 	parentToolCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	res, err := r.Run(parentToolCtx, def, "go", false)
+	res, err := r.Run(parentToolCtx, def, "go", false, nil)
 	if err != nil {
 		t.Fatalf("前台子代理不应被父工具超时杀死，得 err: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestRunnerToolIsolation(t *testing.T) {
 	r := newTestRunner(t, base, mock)
 
 	def := SubAgentDefinition{Name: "ro", Description: "d", SystemPrompt: "p", Tools: []string{"read_file"}}
-	_, err := r.Run(context.Background(), def, "task", false)
+	_, err := r.Run(context.Background(), def, "task", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestRunnerContextIsolation(t *testing.T) {
 	})
 	r := newTestRunner(t, nil, mock)
 	def := SubAgentDefinition{Name: "x", Description: "d", SystemPrompt: "SUBAGENT-SYS-PROMPT"}
-	_, err := r.Run(context.Background(), def, "USER-TASK", false)
+	_, err := r.Run(context.Background(), def, "USER-TASK", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestRunnerReturnsFinalText(t *testing.T) {
 	})
 	r := newTestRunner(t, nil, mock)
 	def := SubAgentDefinition{Name: "x", Description: "d", SystemPrompt: "p"}
-	res, err := r.Run(context.Background(), def, "go", false)
+	res, err := r.Run(context.Background(), def, "go", false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestRunnerForwardsProgress(t *testing.T) {
 		updates = append(updates, u)
 	})
 	def := SubAgentDefinition{Name: "reviewer", Description: "d", SystemPrompt: "p"}
-	if _, err := r.Run(ctx, def, "go", false); err != nil {
+	if _, err := r.Run(ctx, def, "go", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	var sawStart, sawDone bool
@@ -211,7 +211,7 @@ func TestRunnerForegroundApprovalBridge(t *testing.T) {
 		})
 
 	def := SubAgentDefinition{Name: "fg", Description: "d", SystemPrompt: "p", Tools: []string{"read_file"}}
-	if _, err := r.Run(ctx, def, "go", false); err != nil {
+	if _, err := r.Run(ctx, def, "go", false, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -243,7 +243,7 @@ func TestRunnerBackgroundFailClosed(t *testing.T) {
 		})
 
 	def := SubAgentDefinition{Name: "bg", Description: "d", SystemPrompt: "p", Tools: []string{"read_file"}}
-	if _, err := r.Run(ctx, def, "go", true); err != nil {
+	if _, err := r.Run(ctx, def, "go", true, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -267,7 +267,7 @@ func TestRunnerBackgroundUsesCtxSink(t *testing.T) {
 		kinds = append(kinds, u.Kind)
 	})
 	def := SubAgentDefinition{Name: "bg", Description: "d", SystemPrompt: "p"}
-	if _, err := r.Run(ctx, def, "go", true); err != nil { // background=true
+	if _, err := r.Run(ctx, def, "go", true, nil); err != nil { // background=true
 		t.Fatal(err)
 	}
 	var sawStart, sawDone bool
@@ -313,7 +313,7 @@ func TestRunnerErrorPropagation(t *testing.T) {
 		})
 
 	def := SubAgentDefinition{Name: "loop", Description: "d", SystemPrompt: "p", Tools: []string{"read_file"}}
-	_, err := r.Run(ctx, def, "go", false)
+	_, err := r.Run(ctx, def, "go", false, nil)
 	if err == nil {
 		t.Fatal("子代理触及 max-turns 应返回非 nil error")
 	}
@@ -364,7 +364,7 @@ func TestRun_ChildPlanIsolation(t *testing.T) {
 	// Tools 白名单显式含 plan_write：子代理通过自己的独立实例执行该工具。
 	def := SubAgentDefinition{Name: "iso", Description: "d", SystemPrompt: "p",
 		Tools: []string{"read_file", "plan_write"}}
-	res, err := r.Run(context.Background(), def, "写子代理计划", false)
+	res, err := r.Run(context.Background(), def, "写子代理计划", false, nil)
 	if err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
@@ -375,5 +375,108 @@ func TestRun_ChildPlanIsolation(t *testing.T) {
 	items := parentStore.Read()
 	if len(items) != 1 || items[0].ID != "p1" {
 		t.Errorf("父 PlanStore 必须不受子代理影响，got %+v", items)
+	}
+}
+
+// TestRunnerControllerBindsGateAndFinish 验证：ctl 注入后子引擎受门控——
+// 暂停期间子代理停在第 2 轮门前不结束（不消耗 Turn、Run 不返回），
+// Steer + Resume 后完成（转向消息进入第 2 轮历史），Run 返回后 ctl 进入 Done 终态。
+//
+// 时序设计（确定性，无竞态）：两轮脚本（turn1 read_file 工具调用、turn2 纯文本收尾），
+// mock 第 1 轮回调先阻塞在 turn1Proceed（此刻引擎已通过第 1 轮门控、正处于第 1 轮
+// LLM 调用中），测试侧完成 Pause 后才放行——保证 Pause 严格先于引擎抵达第 2 轮门控，
+// 子代理必然停在第 2 轮门前。
+func TestRunnerControllerBindsGateAndFinish(t *testing.T) {
+	turn1Entered := make(chan struct{}) // 引擎已进入第 1 轮 LLM 调用
+	turn1Proceed := make(chan struct{}) // 测试侧完成 Pause 后放行第 1 轮
+
+	var mu sync.Mutex
+	turn := 0
+	var turn2Msgs []schema.Message // 第 2 轮 LLM 调用收到的完整历史（channel close 同步，无竞态）
+	mock := providertest.NewMockWithCallback(func(msgs []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		mu.Lock()
+		turn++
+		n := turn
+		mu.Unlock()
+		if n == 1 {
+			close(turn1Entered)
+			<-turn1Proceed
+			return schema.Message{
+				Role: schema.RoleAssistant,
+				ToolCalls: []schema.ToolCall{
+					{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{}`)},
+				},
+			}
+		}
+		turn2Msgs = msgs
+		return schema.Message{Role: schema.RoleAssistant, Content: "STEERED-FINAL"}
+	})
+	base := []tools.BaseTool{&fakeTool{"read_file"}}
+	r := newTestRunner(t, base, mock)
+
+	def := SubAgentDefinition{Name: "bg", Description: "d", SystemPrompt: "p", Tools: []string{"read_file"}}
+	ctl := NewTaskController(nil)
+	runDone := make(chan struct{})
+	var res SubAgentResult
+	var runErr error
+	go func() {
+		defer close(runDone)
+		res, runErr = r.Run(context.Background(), def, "go", true, ctl)
+	}()
+
+	// 等引擎进入第 1 轮 LLM 调用后暂停，再放行第 1 轮——暂停必然先于第 2 轮门控生效。
+	select {
+	case <-turn1Entered:
+	case <-runDone:
+		t.Fatalf("子代理不应在第 1 轮前结束: err=%v", runErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("等待第 1 轮 LLM 调用超时")
+	}
+	if err := ctl.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	close(turn1Proceed)
+
+	// 暂停期间：子代理停在第 2 轮门前，Run 不得返回，状态保持 Paused。
+	select {
+	case <-runDone:
+		t.Fatal("暂停期间子代理应停在第 2 轮门前，Run 不应返回")
+	case <-time.After(150 * time.Millisecond):
+	}
+	if ctl.State() != TaskPaused {
+		t.Fatalf("暂停期间状态应为 Paused，得 %v", ctl.State())
+	}
+
+	// Steer + Resume：转向消息应进入第 2 轮的子代理历史，随后任务完成。
+	if err := ctl.Steer("改用单元测试验证"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctl.Resume(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Resume 后子代理应完成，Run 超时未返回")
+	}
+	if runErr != nil {
+		t.Fatalf("Run error: %v", runErr)
+	}
+	if res.FinalText != "STEERED-FINAL" {
+		t.Fatalf("FinalText=%q, want STEERED-FINAL", res.FinalText)
+	}
+	if ctl.State() != TaskDone {
+		t.Fatalf("Run 返回后 ctl.State()=%v, want TaskDone", ctl.State())
+	}
+	sawSteer := false
+	for _, m := range turn2Msgs {
+		if m.Role == schema.RoleUser && strings.Contains(m.Content, "[主代理转向指令]") &&
+			strings.Contains(m.Content, "改用单元测试验证") {
+			sawSteer = true
+		}
+	}
+	if !sawSteer {
+		t.Fatalf("第 2 轮历史应含转向消息: %+v", turn2Msgs)
 	}
 }

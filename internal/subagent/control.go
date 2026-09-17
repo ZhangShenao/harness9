@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/harness9/internal/engine"
 	"github.com/harness9/internal/schema"
 )
 
@@ -33,6 +34,10 @@ type TaskController struct {
 func NewTaskController(emit func(schema.SubAgentUpdate)) *TaskController {
 	return &TaskController{state: TaskRunning, emit: emit}
 }
+
+// 编译期断言：TaskController 实现 engine.TaskGate（Runner 经 engine.WithTaskGate
+// 注入子引擎），防止接口漂移。
+var _ engine.TaskGate = (*TaskController)(nil)
 
 // bindExec 绑定子代理执行 ctx 的 cancel 函数（Runner.Run 派生 execCtx 后调用，
 // 包内契约：仅 Runner 与本包测试使用）。

@@ -110,7 +110,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 			// （其 channel 会在父 turn 结束后关闭，写入即 panic / goroutine 阻塞）。
 			sink := func(u schema.SubAgentUpdate) { t.tracker.AppendLog(taskID, u) }
 			bgCtx := hooks.WithSubAgentProgress(context.Background(), sink)
-			res, err := t.runner.Run(bgCtx, def, a.Prompt, true)
+			res, err := t.runner.Run(bgCtx, def, a.Prompt, true, nil) // ctl 待控制路由（Task 5）接入，暂传 nil
 			if err != nil {
 				t.tracker.Finish(taskID, err.Error(), true)
 			} else {
@@ -120,7 +120,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return fmt.Sprintf(`<task id=%q state="running"/>`, taskID), nil
 	}
 
-	res, err := t.runner.Run(ctx, def, a.Prompt, false)
+	res, err := t.runner.Run(ctx, def, a.Prompt, false, nil) // 前台阻塞执行，无控制门
 	if err != nil {
 		return fmt.Sprintf(`<task state="error">%s</task>`, err.Error()), nil
 	}

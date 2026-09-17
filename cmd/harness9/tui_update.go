@@ -1296,7 +1296,7 @@ func (m tuiModel) dispatchMention(raw string) (tuiModel, tea.Cmd) {
 			}
 		}
 		cctx := hooks.WithSubAgentProgress(ctx, sink)
-		res, err := m.subAgentRunner.Run(cctx, def2, task, false)
+		res, err := m.subAgentRunner.Run(cctx, def2, task, false, nil) // @agent 前台直跑，无控制门
 		select {
 		case ch <- subAgentDirectMsg{done: true, result: res.FinalText, err: err}:
 		case <-ctx.Done():
