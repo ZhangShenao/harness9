@@ -146,6 +146,26 @@ func TestTrackerControlRouting(t *testing.T) {
 	}
 }
 
+// TestTrackerControlControllerTerminalWindow 验证 Control 终态判定双源：
+// ctl.Cancel 先行、tracker.Cancel 由 TaskTool goroutine 异步落账的窗口期内，
+// 控制请求按 controller 实时终态拒绝——而非误路由到 ctl 的幂等 no-op 并报成功。
+func TestTrackerControlControllerTerminalWindow(t *testing.T) {
+	tr := NewTaskTracker()
+	ctl := NewTaskController(nil)
+	id := tr.Start("explorer", "探索", "p")
+	tr.Attach(id, ctl)
+
+	if err := ctl.Cancel("方向错了"); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := tr.Get(id); d.State != TaskRunning {
+		t.Fatalf("前置条件：tracker 尚未落账终态，得 %v", d.State)
+	}
+	if err := tr.Control(id, "pause", ""); err == nil {
+		t.Fatal("controller 已终态的窗口期内，Control 应拒绝而非报成功")
+	}
+}
+
 // TestTrackerCancelDistinctFromFinish 验证 Cancel 标记 TaskCancelled 并触发
 // DrainCompleted（isError=true），与 Finish 的 Failed 区分；且 Cancel 后 Finish
 // 不得覆写终态（防 Cancel→panic-recover-Finish 竞态把 Cancelled 改写为 Done/Failed）。

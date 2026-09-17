@@ -406,6 +406,19 @@ Flags:
 	if err := registry.Register(taskTool); err != nil {
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("注册 task 工具失败: %v", err)))
 	}
+
+	// 协调平面三工具（spec §5.4）：主 agent 观察/等待/控制后台子代理任务。
+	// task_wait 的 baseCtx 用会话级 ctx（与 RunnerConfig.BaseCtx 同源）——
+	// 绕过父 Turn 的 60s 工具超时，Ctrl+C 仍可传播。
+	for _, ct := range []tools.BaseTool{
+		subagent.NewTaskStatusTool(subAgentTracker),
+		subagent.NewTaskWaitTool(subAgentTracker, ctx),
+		subagent.NewTaskControlTool(subAgentTracker),
+	} {
+		if err := registry.Register(ct); err != nil {
+			log.Print(logfmt.FormatMsg("main", fmt.Sprintf("注册协调工具 %s 失败: %v", ct.Name(), err)))
+		}
+	}
 	// ---- Sub-Agent 接线结束 ----
 
 	// Hook 执行顺序：PermissionHook（配置规则）→ DangerHook（内置模式）→ OffloadHook（大输出）→ ObservabilityHook（OTEL Span）

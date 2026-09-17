@@ -175,6 +175,10 @@ func (t *TaskTracker) Attach(id string, c *TaskController) {
 
 // Control 是主 agent（task_control 工具）与 TUI 面板操作后台任务的唯一入口：
 // 校验任务存在与终态后路由到 controller。action ∈ pause/resume/cancel/steer。
+// 终态判定双源：bgTask 已落账状态优先，controller 实时终态兜底——ctl.Cancel/Finish
+// 先行、tracker 随后异步落账（TaskTool goroutine）的窗口期内，控制请求不得被
+// 误路由到 ctl 的幂等 no-op 而向 LLM 报成功。锁序恒为 tracker.mu → ctl.mu
+// （controller 不回调 tracker），无死锁风险。
 func (t *TaskTracker) Control(id, action, message string) error {
 	t.mu.Lock()
 	task := t.find(id)
@@ -182,8 +186,14 @@ func (t *TaskTracker) Control(id, action, message string) error {
 		t.mu.Unlock()
 		return fmt.Errorf("任务 %q 不存在", id)
 	}
-	if isTerminalTaskState(task.state) {
-		err := fmt.Errorf("任务 %s 已结束（%s），无法执行 %s", id, task.state, action)
+	state := task.state
+	if !isTerminalTaskState(state) && task.controller != nil {
+		if cs := task.controller.State(); isTerminalTaskState(cs) {
+			state = cs
+		}
+	}
+	if isTerminalTaskState(state) {
+		err := fmt.Errorf("任务 %s 已结束（%s），无法执行 %s", id, state, action)
 		t.mu.Unlock()
 		return err
 	}
