@@ -1219,3 +1219,45 @@ func TestTaskGatePauseDoesNotConsumeMaxTurns(t *testing.T) {
 		t.Fatalf("暂停不应消耗 MaxTurns 配额: %v", err)
 	}
 }
+
+// TestDelegationNudge 验证连续 N 轮只读探索后注入一次委派提示（≤2 次/交互），
+// 进展工具调用重置计数；bash 轮不计数（无法判定读写）。
+func TestDelegationNudge(t *testing.T) {
+	toolTurn := func() func(tools []schema.ToolDefinition) *schema.Message {
+		return func(tools []schema.ToolDefinition) *schema.Message {
+			return &schema.Message{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{{
+				ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"path":"a.go"}`),
+			}}}
+		}
+	}
+	p := &countingProvider{responses: []func(tools []schema.ToolDefinition) *schema.Message{
+		toolTurn(), toolTurn(), toolTurn(), // 3 轮探索 → 触发
+		toolTurn(), toolTurn(), toolTurn(), // 再 3 轮 → 第二次触发
+		toolTurn(), toolTurn(), toolTurn(), // 第三次不触发（上限 2）
+		func(_ []schema.ToolDefinition) *schema.Message {
+			return &schema.Message{Role: schema.RoleAssistant, Content: "done"}
+		},
+	}}
+	r := tools.NewRegistry()
+	if err := r.Register(&stubTool{name: "read_file"}); err != nil {
+		t.Fatal(err)
+	}
+	eng := NewAgentEngine(p, r, "/test",
+		WithDelegationNudge(3, "考虑把批量探索委派给 explorer 子代理"))
+
+	if err := eng.Run(context.Background(), "start"); err != nil {
+		t.Fatal(err)
+	}
+	nudged := 0
+	for _, call := range p.calls {
+		for _, msg := range call.messages {
+			if msg.Role == schema.RoleUser && strings.Contains(msg.Content, "委派给 explorer") {
+				nudged++
+				break
+			}
+		}
+	}
+	if nudged != 2 {
+		t.Fatalf("委派 nudge 注入 %d 次, want 2", nudged)
+	}
+}

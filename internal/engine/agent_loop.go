@@ -36,33 +36,35 @@ import (
 // AgentEngine 是 harness9 agent loop 的核心编排器，将 LLM Provider（"大脑"）
 // 与 Tool Registry（"双手"）组合在一起，执行多轮 ReAct 循环直到任务完成。
 type AgentEngine struct {
-	provider           provider.LLMProvider
-	registry           tools.Registry
-	workDir            string
-	maxTurns           int
-	toolTimeout        time.Duration
-	maxConcurrentTools int
-	contextWindow      int // 模型 context window（tokens），用于 TUI 展示，0 表示未知
-	promptBuilder      PromptBuilder
-	mu                 sync.RWMutex        // protects session and compactor
-	session            memory.Session      // 可选，nil 表示无持久化
-	compactor          memory.Compactor    // 可选，nil 表示不压缩
-	planStore          *planning.PlanStore // 可选，nil 表示无 planning
-	permissionMode     PermissionMode      // 全局权限策略，影响审批行为
-	nudgeInterval      int                 // >0 时每隔该轮数注入一次记忆 nudge
-	nudgeText          string              // nudge 提示文本
-	stallWindow        int                 // >0 时连续该轮数无进展工具调用则注入一次停滞 nudge
-	stallText          string              // 停滞 nudge 提示文本
-	closingThreshold   int                 // >0 且配置 maxTurns 时，剩余该数量的 Turn 内注入一次收尾 nudge（P1-4）
-	closingText        string              // 收尾 nudge 提示文本
-	planningGateBudget int                 // >0 时连续该轮数"无进展工具且无 plan_write"则注入一次规划 nudge（P1-1）
-	planningGateText   string              // 规划 nudge 提示文本
-	taskGate           TaskGate            // 可选，轮边界控制门（后台子代理暂停/转向挂接点）
-	observer           EngineObserver      // 可选，nil 时自动退化为 noopObserver
-	generateRetries    int                 // LLM 生成调用最大尝试次数（默认 3）
-	generateRetryBase  time.Duration       // 重试退避基准（默认 1s）
-	networkRetries     int                 // 网络传输层错误的独立最大尝试次数（默认 6）
-	networkRetryBase   time.Duration       // 网络传输层错误的重试退避基准（默认 5s）
+	provider            provider.LLMProvider
+	registry            tools.Registry
+	workDir             string
+	maxTurns            int
+	toolTimeout         time.Duration
+	maxConcurrentTools  int
+	contextWindow       int // 模型 context window（tokens），用于 TUI 展示，0 表示未知
+	promptBuilder       PromptBuilder
+	mu                  sync.RWMutex        // protects session and compactor
+	session             memory.Session      // 可选，nil 表示无持久化
+	compactor           memory.Compactor    // 可选，nil 表示不压缩
+	planStore           *planning.PlanStore // 可选，nil 表示无 planning
+	permissionMode      PermissionMode      // 全局权限策略，影响审批行为
+	nudgeInterval       int                 // >0 时每隔该轮数注入一次记忆 nudge
+	nudgeText           string              // nudge 提示文本
+	stallWindow         int                 // >0 时连续该轮数无进展工具调用则注入一次停滞 nudge
+	stallText           string              // 停滞 nudge 提示文本
+	closingThreshold    int                 // >0 且配置 maxTurns 时，剩余该数量的 Turn 内注入一次收尾 nudge（P1-4）
+	closingText         string              // 收尾 nudge 提示文本
+	planningGateBudget  int                 // >0 时连续该轮数"无进展工具且无 plan_write"则注入一次规划 nudge（P1-1）
+	planningGateText    string              // 规划 nudge 提示文本
+	delegationThreshold int                 // >0 时连续该轮数"有探索无进展"注入一次委派 nudge
+	delegationText      string              // 委派 nudge 提示文本
+	taskGate            TaskGate            // 可选，轮边界控制门（后台子代理暂停/转向挂接点）
+	observer            EngineObserver      // 可选，nil 时自动退化为 noopObserver
+	generateRetries     int                 // LLM 生成调用最大尝试次数（默认 3）
+	generateRetryBase   time.Duration       // 重试退避基准（默认 1s）
+	networkRetries      int                 // 网络传输层错误的独立最大尝试次数（默认 6）
+	networkRetryBase    time.Duration       // 网络传输层错误的重试退避基准（默认 5s）
 }
 
 // NewAgentEngine 创建新的 AgentEngine。默认值：maxTurns=500, toolTimeout=60s,
@@ -219,6 +221,7 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 
 		lc.trackStall(responseMsg.ToolCalls)
 		lc.trackPlanningWork(responseMsg.ToolCalls)
+		lc.trackDelegation(responseMsg.ToolCalls)
 
 		toolStart := time.Now()
 		results := e.executeTools(turnCtx, lc.turns, responseMsg.ToolCalls, logPrefix, em)
