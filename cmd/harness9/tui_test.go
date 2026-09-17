@@ -1372,9 +1372,33 @@ func TestAutoWakeSkippedWhenRunning(t *testing.T) {
 	if m2.autoWakeBudget != 10 {
 		t.Fatal("运行中不应消耗预算")
 	}
+	if len(m2.pendingSubAgentInject) == 0 {
+		t.Fatal("运行中结果应留在注入缓冲，由下次 dispatch 消费")
+	}
 }
 
-// TestAutoWakeBudgetExhaustion 验证预算耗尽提示一次并停止自动唤醒；用户输入重置。
+// TestAutoWakeSkippedWhenCompacting 验证 /compact 压缩窗口中不自动唤醒：
+// Compact 要求空闲（!running）且 LLM 摘要耗时数秒，期间唤醒 dispatch 的落盘
+// 会与 Compact 的 Clear+AddMessages 写回竞态（互抹历史）。
+func TestAutoWakeSkippedWhenCompacting(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.autoWakeEnabled = true
+	m.autoWakeBudget = 10
+	m.compacting = true
+
+	m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Finish("task-explorer-1", "结果", false)
+	m2, _ := m.handleSubAgentNotify()
+	if m2.running || m2.autoWakeBudget != 10 {
+		t.Fatal("压缩窗口中不应唤醒、不应消耗预算")
+	}
+	if len(m2.pendingSubAgentInject) == 0 {
+		t.Fatal("压缩窗口中结果应留在注入缓冲，由压缩后的下次 dispatch 兜底消费")
+	}
+}
+
+// TestAutoWakeBudgetExhaustion 验证预算耗尽提示一次并停止自动唤醒；
+// 用户输入重置行为由 TestAutoWakeUserInputResetsCycle 驱动真实 Enter 路径锁定。
 func TestAutoWakeBudgetExhaustion(t *testing.T) {
 	m := minimalTUIModel(t)
 	m.autoWakeEnabled = true
@@ -1385,5 +1409,34 @@ func TestAutoWakeBudgetExhaustion(t *testing.T) {
 	if m2.running || m2.autoWakeExhausted != true {
 		t.Fatal("预算耗尽不应唤醒，且应提示一次")
 	}
-	m2.autoWakeBudget = autoWakeBudgetMax // 模拟用户输入重置
+}
+
+// TestAutoWakeUserInputResetsCycle 驱动真实 Enter 提交路径，验证用户输入
+// 重置预算并开启新的提示周期：exhausted 复位后，新周期内再次耗尽应重新提示，
+// 而非从第二次耗尽起静默（自动唤醒"时灵时不灵"）。
+func TestAutoWakeUserInputResetsCycle(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.autoWakeEnabled = true
+	m.autoWakeBudget = 0
+	m.autoWakeExhausted = true // 模拟上一周期已耗尽并提示过
+
+	m.input.SetValue("继续处理结果")
+	m2 := applyUpdate(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m2.autoWakeBudget != autoWakeBudgetMax {
+		t.Fatalf("用户输入应重置预算: got %d", m2.autoWakeBudget)
+	}
+	if m2.autoWakeExhausted {
+		t.Fatal("用户输入应复位耗尽标记（开启新周期）")
+	}
+
+	// 模拟本轮运行结束（EventDone 置 running=false）+ 新周期内预算再次耗尽：
+	// 应重新提示（exhausted 重新置位）且不唤醒。
+	m2.running = false
+	m2.autoWakeBudget = 0
+	id := m2.subAgentTracker.Start("explorer", "再次探索", "p")
+	m2.subAgentTracker.Finish(id, "结果2", false)
+	m3, _ := m2.handleSubAgentNotify()
+	if m3.running || !m3.autoWakeExhausted {
+		t.Fatal("新周期耗尽应再次提示（exhausted 重新置位）且不唤醒")
+	}
 }

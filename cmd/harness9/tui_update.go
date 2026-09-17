@@ -306,7 +306,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 任何真实用户输入重置自动唤醒预算。统一收敛在此（Enter 提交分支顶部）而非
 			// dispatch 本体：普通 prompt、/命令、@mention、Shell 模式等提交路径均经此进入，
 			// 且自动唤醒自身也走 dispatch——若在 dispatch 内重置会导致预算自我续满、链式跑飞。
+			// exhausted 随预算一起复位（按周期）：用户输入即开启新周期，
+			// 新周期耗尽应再次提示，否则从第二次耗尽起静默、唤醒"时灵时不灵"。
 			m.autoWakeBudget = autoWakeBudgetMax
+			m.autoWakeExhausted = false
 			m.phase = phaseChat
 			m.input.Reset()
 			m.shellMode = false
@@ -1262,7 +1265,10 @@ func (m tuiModel) harvestSubAgentResults() tuiModel {
 // maybeAutoWake 实现异步闭环（spec §5.7）：主 agent 空闲且有预算时，
 // 把注入缓冲合成为自动唤醒 prompt 走正常 dispatch；预算耗尽提示一次后停用。
 func (m tuiModel) maybeAutoWake() (tuiModel, tea.Cmd) {
-	if !m.autoWakeEnabled || m.running || len(m.pendingSubAgentInject) == 0 {
+	// m.compacting：/compact 压缩窗口同样要求空闲（LLM 摘要耗时数秒），期间唤醒
+	// dispatch 的历史落盘会与 Compact 的 Clear+AddMessages 写回竞态（互抹），
+	// 故跳过唤醒，结果留注入缓冲由压缩后的下次 dispatch 兜底消费。
+	if !m.autoWakeEnabled || m.running || m.compacting || len(m.pendingSubAgentInject) == 0 {
 		return m, nil
 	}
 	if m.autoWakeBudget <= 0 {
