@@ -166,6 +166,50 @@ func TestTrackerControlControllerTerminalWindow(t *testing.T) {
 	}
 }
 
+// TestTrackerControlPauseResumeSync 验证 Control(pause/resume) 成功后把非终态
+// 同步落账到快照——TUI 面板状态色（暂停黄/运行绿）与 task_status 的 [已暂停]
+// 输出均依赖 List/Get 快照状态，此前仅 controller 持有 Paused、快照恒为 Running。
+func TestTrackerControlPauseResumeSync(t *testing.T) {
+	tr := NewTaskTracker()
+	ctl := NewTaskController(nil)
+	id := tr.Start("explorer", "探索", "p")
+	tr.Attach(id, ctl)
+
+	if err := tr.Control(id, "pause", ""); err != nil {
+		t.Fatal(err)
+	}
+	if s := tr.List()[0].State; s != TaskPaused {
+		t.Fatalf("pause 后快照状态 = %v, 期望 TaskPaused", s)
+	}
+	if err := tr.Control(id, "resume", ""); err != nil {
+		t.Fatal(err)
+	}
+	if s := tr.List()[0].State; s != TaskRunning {
+		t.Fatalf("resume 后快照状态 = %v, 期望 TaskRunning", s)
+	}
+}
+
+// TestTrackerControlPauseCancelRaceGuard 验证 Cancel 竞态守卫：ctl.Cancel 先行、
+// tracker 未落账的窗口期内 Control(pause) 被双源终态判定拒绝，且不把任何状态
+// 写入快照——终态必须留给 TaskTool goroutine 的 tracker.Cancel 异步落账
+// （含 finalText/finishedAt），不得在此处提前终态。
+func TestTrackerControlPauseCancelRaceGuard(t *testing.T) {
+	tr := NewTaskTracker()
+	ctl := NewTaskController(nil)
+	id := tr.Start("explorer", "探索", "p")
+	tr.Attach(id, ctl)
+
+	if err := ctl.Cancel("竞态窗口"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Control(id, "pause", ""); err == nil {
+		t.Fatal("ctl 已终态（tracker 未落账）时 Control(pause) 应返回错误")
+	}
+	if s := tr.List()[0].State; s != TaskRunning {
+		t.Fatalf("竞态守卫不应写状态（留给 TaskTool goroutine 落账终态）: %v", s)
+	}
+}
+
 // TestTrackerCancelDistinctFromFinish 验证 Cancel 标记 TaskCancelled 并触发
 // DrainCompleted（isError=true），与 Finish 的 Failed 区分；且 Cancel 后 Finish
 // 不得覆写终态（防 Cancel→panic-recover-Finish 竞态把 Cancelled 改写为 Done/Failed）。

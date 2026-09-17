@@ -175,6 +175,9 @@ func (t *TaskTracker) Attach(id string, c *TaskController) {
 
 // Control 是主 agent（task_control 工具）与 TUI 面板操作后台任务的唯一入口：
 // 校验任务存在与终态后路由到 controller。action ∈ pause/resume/cancel/steer。
+// pause/resume 成功后同步把非终态落账到 bgTask.state（syncNonTerminalState），
+// 使 List/Get 快照立即反映暂停/恢复——面板状态色与 task_status 的 [已暂停]
+// 输出依赖快照状态；cancel/终态仍由 TaskTool goroutine 异步落账（含收尾字段）。
 // 终态判定双源：bgTask 已落账状态优先，controller 实时终态兜底——ctl.Cancel/Finish
 // 先行、tracker 随后异步落账（TaskTool goroutine）的窗口期内，控制请求不得被
 // 误路由到 ctl 的幂等 no-op 而向 LLM 报成功。锁序恒为 tracker.mu → ctl.mu
@@ -204,9 +207,17 @@ func (t *TaskTracker) Control(id, action, message string) error {
 	}
 	switch action {
 	case "pause":
-		return ctl.Pause()
+		if err := ctl.Pause(); err != nil {
+			return err
+		}
+		t.syncNonTerminalState(id, ctl)
+		return nil
 	case "resume":
-		return ctl.Resume()
+		if err := ctl.Resume(); err != nil {
+			return err
+		}
+		t.syncNonTerminalState(id, ctl)
+		return nil
 	case "cancel":
 		return ctl.Cancel(message)
 	case "steer":
@@ -216,6 +227,22 @@ func (t *TaskTracker) Control(id, action, message string) error {
 		return ctl.Steer(message)
 	default:
 		return fmt.Errorf("未知 action %q（可用: pause/resume/cancel/steer）", action)
+	}
+}
+
+// syncNonTerminalState 把 controller 的非终态（Running/Paused）同步落账到
+// bgTask.state。仅接受非终态 ctl 状态——Cancel 竞态窗口内（ctl.Pause 成功后、
+// 本函数读取前 ctl 被并发 Cancel/Finish）ctl 已终态则跳过，留给 TaskTool
+// goroutine 的 tracker.Cancel/Finish 异步落账，避免提前终态且丢失 finalText/
+// finishedAt 收尾字段。锁序：ctl.State()（ctl.mu 短暂持有后释放）→ tracker.mu，
+// 两次独立获取不构成嵌套（controller 不回调 tracker），无死锁风险。
+func (t *TaskTracker) syncNonTerminalState(id string, ctl *TaskController) {
+	if ns := ctl.State(); ns == TaskRunning || ns == TaskPaused {
+		t.mu.Lock()
+		if task := t.find(id); task != nil && !isTerminalTaskState(task.state) {
+			task.state = ns
+		}
+		t.mu.Unlock()
 	}
 }
 
@@ -315,8 +342,20 @@ func (t *TaskTracker) Get(id string) (TaskDetail, bool) {
 	}, true
 }
 
-// RunningCount 返回运行中任务数。
-func (t *TaskTracker) RunningCount() int { return t.countState(TaskRunning) }
+// RunningCount 返回活跃（非终态）任务数：运行中 + 已暂停。
+// 暂停仍属运行语义（TestTrackerPausedNotDrained 锁定"暂停任务仍计入运行计数"），
+// 且按非终态计数避免"唯一任务暂停 → N=0 → 状态栏任务段整段隐藏"的展示缺口。
+func (t *TaskTracker) RunningCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := 0
+	for _, task := range t.tasks {
+		if !isTerminalTaskState(task.state) {
+			n++
+		}
+	}
+	return n
+}
 
 // DoneCount 返回已结束（完成 + 失败 + 取消）任务数。
 // 终态判定——Paused 任务不计入（仍属运行语义，供状态栏区分展示）。
@@ -326,18 +365,6 @@ func (t *TaskTracker) DoneCount() int {
 	n := 0
 	for _, task := range t.tasks {
 		if isTerminalTaskState(task.state) {
-			n++
-		}
-	}
-	return n
-}
-
-func (t *TaskTracker) countState(s TaskState) int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	n := 0
-	for _, task := range t.tasks {
-		if task.state == s {
 			n++
 		}
 	}
