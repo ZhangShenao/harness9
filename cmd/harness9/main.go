@@ -214,6 +214,7 @@ Flags:
 	// 构建 System Prompt（基础 prompt + AGENTS.md + skills 索引），现已可访问 sandboxEnv
 	promptBuilder := harctx.NewPromptBuilder(workDir, skillsIndex).
 		WithPlanEnabled(true).
+		WithDelegationGuide(true).
 		WithOffloadEnabled(true)
 	// Sandbox 环境说明三态：运行中 → 容器说明；降级 → 如实的本地执行说明；
 	// 未启用 → 不注入（与引入 Sandbox 前行为一致）。
@@ -457,6 +458,9 @@ Flags:
 		engine.WithContextWindow(modelLimits.ContextTokens),
 		engine.WithPlanStore(planStore),
 		engine.WithMemoryNudge(10, "如果本轮对话中出现了值得跨会话长期保留的信息（用户偏好、稳定的项目知识、关键决策、可复用技能），请调用 memory_write 工具记录；否则忽略此提示。"),
+		engine.WithDelegationNudge(3,
+			"已连续多轮只读探索。如果还需要更多轮，考虑把批量探索委派给 explorer 子代理"+
+				"（task 工具，background=true），只回传结论以保护主上下文。"),
 	}
 	if engineObserver != nil {
 		engOpts = append(engOpts, engine.WithEngineObserver(engineObserver))
