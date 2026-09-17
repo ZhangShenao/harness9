@@ -1139,6 +1139,72 @@ func TestHandleTaskPanelKeyNavigation(t *testing.T) {
 	}
 }
 
+// TestTaskPanelControlKeys 验证面板 p/r 键路由 tracker.Control，
+// s 进入转向输入态、Enter 提交 steer。
+//
+// 实现注记：brief 原序在按 r 恢复之前调用 ctl.AwaitTurn——暂停期间门控阻塞
+// （resumeCh 未关闭，control_test.go 的 TestTaskControllerPauseResumeGate 已锁定
+// "暂停中 AwaitTurn 不应返回"），原序会永久死锁。此处将 r 恢复前移一行组，
+// AwaitTurn 在恢复后验证转向消息无错取出；全部断言与验证意图保持不变。
+func TestTaskPanelControlKeys(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.taskPanelMode = true
+	ctl := subagent.NewTaskController(nil)
+	id := m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Attach(id, ctl)
+
+	// p → 暂停
+	mp, _ := m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m2 := mp.(tuiModel)
+	if ctl.State() != subagent.TaskPaused {
+		t.Fatal("p 键应暂停选中任务")
+	}
+	// s → 转向输入态
+	ms, _ := m2.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	m3 := ms.(tuiModel)
+	if m3.taskSteerID != id {
+		t.Fatalf("s 键应进入转向输入态: %q", m3.taskSteerID)
+	}
+	// 输入 + Enter → steer 提交并退出输入态
+	m3.taskSteerInput.SetValue("只看 engine 包")
+	me, _ := m3.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m4 := me.(tuiModel)
+	if m4.taskSteerID != "" {
+		t.Fatal("Enter 后应退出转向输入态")
+	}
+	// r → 恢复
+	mr, _ := m4.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m5 := mr.(tuiModel)
+	_ = m5
+	if ctl.State() != subagent.TaskRunning {
+		t.Fatal("r 键应恢复任务")
+	}
+	if _, err := ctl.AwaitTurn(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTaskPanelCancelDoublePress 验证 x 键两段确认取消。
+func TestTaskPanelCancelDoublePress(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.taskPanelMode = true
+	ctl := subagent.NewTaskController(nil)
+	id := m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Attach(id, ctl)
+
+	mx1, _ := m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m2 := mx1.(tuiModel)
+	if ctl.State() != subagent.TaskRunning {
+		t.Fatal("首次 x 只应武装确认，不立即取消")
+	}
+	mx2, _ := m2.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m3 := mx2.(tuiModel)
+	_ = m3
+	if ctl.State() != subagent.TaskCancelled {
+		t.Fatal("二次 x 应确认取消")
+	}
+}
+
 // TestBuildMentionHint 验证 @ 前缀的子代理建议提示：前缀匹配、全列出、无匹配。
 func TestBuildMentionHint(t *testing.T) {
 	reg := subagent.NewRegistry()
@@ -1335,6 +1401,9 @@ func minimalTUIModel(t *testing.T) tuiModel {
 	}
 	m.input = textinput.New()
 	m.input.Focus()
+	// 面板转向输入框：生产路径由 newTUIModel 初始化；此处补齐是因为零值
+	// textinput 的内部 cursor.blinkCtx 为 nil，s 键 Focus() 会 panic。
+	m.taskSteerInput = textinput.New()
 	return m
 }
 

@@ -1528,14 +1528,47 @@ func (m tuiModel) handleResumeSelection(raw string) (tea.Model, tea.Cmd) {
 	return m, textinput.Blink
 }
 
-// handleTaskPanelKey 处理任务面板模态按键：列表态 ↑↓ 选择 / Enter 进详情 / Esc 关闭；
-// 详情态 ↑↓ 滚动 / Esc 回列表 / Ctrl+T 关闭。
+// handleTaskPanelKey 处理任务面板模态按键：列表态 ↑↓ 选择 / Enter 进详情 / Esc 关闭
+// + 操作键 p 暂停 / r 恢复 / x 取消（两段确认）/ s 转向（spec §5.11）；
+// 详情态 ↑↓ 滚动 / Esc 回列表 / Ctrl+T 关闭；
+// 转向输入态（taskSteerID 非空）优先拦截：Enter 提交 / Esc 取消 / 其余键进输入框。
 func (m tuiModel) handleTaskPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 转向输入态优先拦截：Enter 提交 / Esc 取消 / 其余键交给输入框。
+	if m.taskSteerID != "" {
+		switch msg.Type {
+		case tea.KeyEnter:
+			text := strings.TrimSpace(m.taskSteerInput.Value())
+			if text != "" && m.subAgentTracker != nil {
+				if err := m.subAgentTracker.Control(m.taskSteerID, "steer", text); err != nil {
+					m.lines = append(m.lines, errorStyle.Render("转向失败: "+err.Error()))
+				} else {
+					m.lines = append(m.lines, subAgentLineStyle.Render("↪ 已注入转向指令 "+m.taskSteerID))
+				}
+			}
+			m.taskSteerID = ""
+			m.taskSteerInput.SetValue("")
+			m.taskSteerInput.Blur()
+		case tea.KeyEsc:
+			m.taskSteerID = ""
+			m.taskSteerInput.SetValue("")
+			m.taskSteerInput.Blur()
+		default:
+			var cmd tea.Cmd
+			m.taskSteerInput, cmd = m.taskSteerInput.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+	}
 	var list []subagent.TaskSnapshot
 	if m.subAgentTracker != nil {
 		list = m.subAgentTracker.List()
 	}
 	if m.taskDetailID == "" {
+		// x 两段确认防误触：除 x 本身外任何按键（含 ↑↓ 移动、Esc 关闭、p/r/s 操作）
+		// 都解除武装——x → ↑ → x 的第二次 x 指向的是移动后的另一任务，不应直接取消。
+		if msg.String() != "x" {
+			m.taskCancelArmed = false
+		}
 		switch msg.Type {
 		case tea.KeyUp:
 			if m.taskPanelCursor > 0 {
@@ -1552,6 +1585,27 @@ func (m tuiModel) handleTaskPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case tea.KeyEsc, tea.KeyCtrlT:
 			m.taskPanelMode = false
+		default:
+			// 操作键（列表态）：p 暂停 / r 恢复 / x 取消（两段确认）/ s 转向。
+			if len(list) > 0 && m.taskPanelCursor >= 0 && m.taskPanelCursor < len(list) {
+				id := list[m.taskPanelCursor].ID
+				switch msg.String() {
+				case "p":
+					m = m.controlTask(id, "pause", "")
+				case "r":
+					m = m.controlTask(id, "resume", "")
+				case "x":
+					if m.taskCancelArmed {
+						m = m.controlTask(id, "cancel", "用户在面板取消")
+						m.taskCancelArmed = false
+					} else {
+						m.taskCancelArmed = true
+					}
+				case "s":
+					m.taskSteerID = id
+					m.taskSteerInput.Focus()
+				}
+			}
 		}
 		return m, nil
 	}
@@ -1576,6 +1630,23 @@ func (m tuiModel) handleTaskPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.taskDetailID = ""
 	}
 	return m, nil
+}
+
+// controlTask 面板操作统一入口：路由 tracker.Control 并把结果显示到对话区。
+// 值接收者返回新 model（与 tuiModel 值语义一致），调用处 m = m.controlTask(...)。
+func (m tuiModel) controlTask(id, action, message string) tuiModel {
+	if m.subAgentTracker == nil {
+		return m
+	}
+	if err := m.subAgentTracker.Control(id, action, message); err != nil {
+		m.lines = append(m.lines, errorStyle.Render(fmt.Sprintf("任务控制失败: %v", err)))
+		return m
+	}
+	verb := map[string]string{
+		"pause": "已暂停", "resume": "已恢复", "cancel": "已取消",
+	}[action]
+	m.lines = append(m.lines, subAgentLineStyle.Render(fmt.Sprintf("⏸ %s %s", id, verb)))
+	return m
 }
 
 // truncateUTF8 按字节截断 s 到 maxBytes 以内，同时保证不在多字节 UTF-8 字符中间截断。

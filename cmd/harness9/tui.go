@@ -294,6 +294,11 @@ type tuiModel struct {
 	taskDetailID     string // 非空=在看某任务详情；空=看列表
 	taskDetailScroll int    // 详情日志滚动偏移
 
+	// 面板操作态（spec §5.11）：p/r/x/s 操作键的辅助状态。
+	taskSteerID     string          // 非空=正在为该任务输入转向指令（面板内单行输入模态）
+	taskSteerInput  textinput.Model // 面板内转向指令单行输入
+	taskCancelArmed bool            // x 键两段确认的武装标记（首次 x 武装、二次 x 确认）
+
 	// Sandbox 状态展示（SandboxBar）
 	sandboxes []sandbox.SandboxInfo        // 当前所有活跃 Sandbox 快照
 	sandboxCh <-chan []sandbox.SandboxInfo // Manager 状态变更通知 channel（nil = 无 Sandbox）
@@ -326,11 +331,16 @@ func newTUIModel(eng *engine.AgentEngine, idx *skills.Index, mgr *memory.Manager
 	ti.CharLimit = 0
 	ti.Focus()
 
+	// 任务面板内的转向指令输入框：默认不聚焦，按 s 激活（Focus）进入输入态。
+	steerTi := textinput.New()
+	steerTi.Placeholder = "转向指令（Enter 提交 / Esc 取消）"
+
 	m := tuiModel{
 		workDir:           workDir,
 		modelName:         modelName,
 		spinner:           sp,
 		input:             ti,
+		taskSteerInput:    steerTi,
 		outerCtx:          outerCtx,
 		eng:               eng,
 		skillsIndex:       idx,
