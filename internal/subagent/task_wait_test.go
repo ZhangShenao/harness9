@@ -115,3 +115,42 @@ func TestTaskWaitToolUnknownExplicitID(t *testing.T) {
 		t.Fatal("混合列表含未知 id 应返回 error")
 	}
 }
+
+// TestTaskWaitToolSkipsAlreadyInjected 验证双重投递竞态防护（spec §7.8"恰好注入一次"）：
+// 任务 Finish 同步 notify 后，TUI harvest 经 DrainCompleted 先把结果写入注入缓冲
+// （LLM 下次 dispatch 收到）；阻塞中的 task_wait 随后轮询到终态时不得把同一
+// FinalText 再放进工具结果（LLM 本 Turn 收到）——同一结果两次进入上下文。
+// 竞态序：task_wait 阻塞期间 A Finish → Drain（模拟 harvest 消费）→ B Finish →
+// task_wait 返回。断言 A 只报状态行 + 省略提示；对照 B 未被 Drain，照旧附文本。
+func TestTaskWaitToolSkipsAlreadyInjected(t *testing.T) {
+	tr := NewTaskTracker()
+	idA := tr.Start("explorer", "收割A", "p1")
+	idB := tr.Start("builder", "收割B", "p2")
+
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		tr.Finish(idA, "已被 harvest 的结果", false)
+		tr.DrainCompleted() // 模拟 TUI harvest：A 的结果进入注入缓冲并标记 injected
+		tr.Finish(idB, "未被收割的结果", false)
+	}()
+
+	tool := NewTaskWaitTool(tr, context.Background())
+	out, err := tool.Execute(context.Background(),
+		json.RawMessage(`{"task_ids":["`+idA+`","`+idB+`"],"timeout_sec":5}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "已被 harvest 的结果") {
+		t.Fatalf("已注入结果不得重复附 FinalText:\n%s", out)
+	}
+	if !strings.Contains(out, "已注入上下文") {
+		t.Fatalf("已注入任务应输出省略提示:\n%s", out)
+	}
+	if !strings.Contains(out, idA) {
+		t.Fatalf("已注入任务仍应输出状态行:\n%s", out)
+	}
+	// 对照：B 未被 Drain，task_wait 正常附文本
+	if !strings.Contains(out, "未被收割的结果") {
+		t.Fatalf("未收割结果应照旧附文本:\n%s", out)
+	}
+}

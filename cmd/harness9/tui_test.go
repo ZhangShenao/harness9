@@ -1509,3 +1509,33 @@ func TestAutoWakeUserInputResetsCycle(t *testing.T) {
 		t.Fatal("新周期耗尽应再次提示（exhausted 重新置位）且不唤醒")
 	}
 }
+
+// TestHarvestRendersCancelledState 验证 harvest 三分渲染：Cancelled 任务
+// （tracker.Cancel 置 IsError=true）不得被旧的 IsError 判定误渲为"失败"，
+// 对话区显示与注入块文案均应为"已取消"。
+func TestHarvestRendersCancelledState(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.autoWakeEnabled = false
+	m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Cancel("task-explorer-1", "方向错了")
+
+	m2 := m.harvestSubAgentResults()
+	var all strings.Builder
+	for _, ln := range m2.lines {
+		all.WriteString(ln)
+		all.WriteString("\n")
+	}
+	joined := all.String()
+	if !strings.Contains(joined, "已取消") {
+		t.Fatalf("Cancelled 任务应渲染为\"已取消\":\n%s", joined)
+	}
+	if strings.Contains(joined, "失败") {
+		t.Fatalf("Cancelled 任务不得渲染为\"失败\":\n%s", joined)
+	}
+	if len(m2.pendingSubAgentInject) != 1 {
+		t.Fatalf("注入块应有 1 个: %q", m2.pendingSubAgentInject)
+	}
+	if !strings.Contains(m2.pendingSubAgentInject[0], "已取消") {
+		t.Fatalf("注入块文案应为\"已取消\": %q", m2.pendingSubAgentInject[0])
+	}
+}

@@ -1236,14 +1236,19 @@ func summarizeTool(name string, args json.RawMessage) string {
 // 用户立即可见），并写入 pendingSubAgentInject 以便下次 dispatch 注入 LLM 上下文。
 // 从 subAgentNotifyMsg（即时显示）与 dispatch（兜底）两处调用——DrainCompleted 幂等，已注入结果
 // 后续调用不再返回，从而实现"显示一次 + 注入一次"，二者不重复消费。
+// 状态词按 CompletedTask.State 三分：Done→完成 / Failed→失败 / Cancelled→已取消——
+// 主动取消（主代理决策）与出错（子代理失败）的后续处置不同，不得混渲为"失败"。
 func (m tuiModel) harvestSubAgentResults() tuiModel {
 	if m.subAgentTracker == nil {
 		return m
 	}
 	for _, ct := range m.subAgentTracker.DrainCompleted() {
 		status := "完成"
-		if ct.IsError {
+		switch ct.State {
+		case subagent.TaskFailed:
 			status = "失败"
+		case subagent.TaskCancelled:
+			status = "已取消"
 		}
 		// 显示到对话区，用户即时可见。
 		// 注意：仅在非流式时追加——流式回复进行中（running）时，EventActionDelta 会以

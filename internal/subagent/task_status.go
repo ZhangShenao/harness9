@@ -56,10 +56,12 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args json.RawMessage) (str
 		if !ok {
 			return "", fmt.Errorf("任务 %q 不存在", a.TaskID)
 		}
-		// 仅终态任务标记已注入：终态 ⇒ FinalText 已包含在本次返回文本中，标记前提成立；
-		// 运行中任务不得标记——否则 Finish 后 DrainCompleted 永久跳过，
-		// 切断自动注入通道（spec §5.3），同时消除 Get→Finish→MarkInjected 的输出竞态。
-		if isTerminalTaskState(d.State) {
+		// 仅终态且未注入的任务标记已注入：终态且 !Injected ⇒ FinalText 已包含在
+		// 本次返回文本中，标记前提成立；运行中任务不得标记——否则 Finish 后
+		// DrainCompleted 永久跳过，切断自动注入通道（spec §5.3），同时消除
+		// Get→Finish→MarkInjected 的输出竞态；d.Injected 已为 true 则本次未附
+		// 文本（见 formatTaskDetailStatus），无需重复标记。
+		if isTerminalTaskState(d.State) && !d.Injected {
 			t.tracker.MarkInjected(a.TaskID)
 		}
 		return formatTaskDetailStatus(d), nil
@@ -73,12 +75,20 @@ func (t *TaskStatusTool) Execute(ctx context.Context, args json.RawMessage) (str
 	for _, s := range snaps {
 		sb.WriteString(formatTaskSnapshotStatus(s))
 		sb.WriteString("\n")
-		if isTerminalTaskState(s.State) {
-			doneIDs = append(doneIDs, s.ID)
-			if d, ok := t.tracker.Get(s.ID); ok {
-				sb.WriteString(truncateRunes(d.FinalText, 2048))
-				sb.WriteString("\n")
-			}
+		if !isTerminalTaskState(s.State) {
+			continue
+		}
+		// 已注入感知（spec §7.8）：结果可能已被 TUI harvest（DrainCompleted）或
+		// task_wait 消费（LLM 已/将在别的通道收到），此处只报状态行 + 提示，
+		// 不重复附 FinalText，保证恰好注入一次。
+		if s.Injected {
+			sb.WriteString("（结果此前已注入上下文）\n")
+			continue
+		}
+		doneIDs = append(doneIDs, s.ID)
+		if d, ok := t.tracker.Get(s.ID); ok {
+			sb.WriteString(truncateRunes(d.FinalText, 2048))
+			sb.WriteString("\n")
 		}
 	}
 	t.tracker.MarkInjected(doneIDs...)
@@ -99,13 +109,19 @@ func formatTaskSnapshotStatus(s TaskSnapshot) string {
 }
 
 // formatTaskDetailStatus 生成单任务详情（状态行 + 结果文本）。
+// 已注入的终态任务只附省略提示，不重复附 FinalText（恰好注入一次，spec §7.8）。
 func formatTaskDetailStatus(d TaskDetail) string {
 	line := formatTaskSnapshotStatus(TaskSnapshot{
 		ID: d.ID, AgentName: d.AgentName, Description: d.Description,
 		State: d.State, Elapsed: d.Elapsed, LastActivity: "详见任务面板",
 	})
-	if isTerminalTaskState(d.State) && d.FinalText != "" {
-		return line + "\n" + truncateRunes(d.FinalText, 2048)
+	if isTerminalTaskState(d.State) {
+		if d.Injected {
+			return line + "\n（结果此前已注入上下文）"
+		}
+		if d.FinalText != "" {
+			return line + "\n" + truncateRunes(d.FinalText, 2048)
+		}
 	}
 	return line
 }

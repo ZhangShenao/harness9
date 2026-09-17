@@ -123,6 +123,13 @@ func (t *TaskWaitTool) allDone(ids []string) bool {
 
 // formatResult 汇总目标状态：完成的输出结果（截断 2KB）并 MarkInjected；
 // 未完成的标注"仍在运行"。
+//
+// 已注入感知（spec §7.8"恰好注入一次"）：任务 Finish 同步 notify 后，TUI
+// harvest 可能经 DrainCompleted 抢先把结果写入 pendingSubAgentInject（LLM 下次
+// dispatch 收到）；阻塞中的本工具随后轮询到终态时若不检查 injected 标志，
+// 会把同一 FinalText 无条件再放进工具结果（LLM 本 Turn 收到）——同一结果两次
+// 进入上下文。故终态任务若 d.Injected 已为 true，只输出状态行 + 省略提示，
+// 不重复附 FinalText；!Injected 时照旧附文本并 MarkInjected。
 func (t *TaskWaitTool) formatResult(ids []string, timedOut bool) string {
 	var doneIDs []string
 	var sb strings.Builder
@@ -132,7 +139,6 @@ func (t *TaskWaitTool) formatResult(ids []string, timedOut bool) string {
 			continue
 		}
 		if isTerminalTaskState(d.State) {
-			doneIDs = append(doneIDs, id)
 			// 终态按 State 三分渲染：Cancelled（主代理主动取消）必须与 Failed
 			// （子代理出错）区分——两者的后续处置不同（重跑 vs 读原因排查）。
 			var status string
@@ -144,7 +150,12 @@ func (t *TaskWaitTool) formatResult(ids []string, timedOut bool) string {
 			default: // TaskCancelled
 				status = "已取消"
 			}
-			fmt.Fprintf(&sb, "[%s %s %s]\n%s\n", d.AgentName, status, id, truncateRunes(d.FinalText, 2048))
+			if d.Injected {
+				fmt.Fprintf(&sb, "[%s %s %s]（结果此前已注入上下文，此处省略）\n", d.AgentName, status, id)
+			} else {
+				doneIDs = append(doneIDs, id)
+				fmt.Fprintf(&sb, "[%s %s %s]\n%s\n", d.AgentName, status, id, truncateRunes(d.FinalText, 2048))
+			}
 		} else {
 			fmt.Fprintf(&sb, "[%s 仍在运行 %s]（%s）\n", d.AgentName, id, d.State)
 		}

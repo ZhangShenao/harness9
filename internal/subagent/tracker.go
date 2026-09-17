@@ -15,11 +15,14 @@ import (
 )
 
 // CompletedTask 是一个已完成后台子代理任务的结果（供 DrainCompleted 注入 LLM）。
+// State 携带终态（Done/Failed/Cancelled）——Cancelled（主代理主动取消）必须与
+// Failed（子代理出错）在展示与注入文案中区分，两者的后续处置不同（重跑 vs 读原因排查）。
 type CompletedTask struct {
 	TaskID    string
 	AgentName string
 	FinalText string
 	IsError   bool
+	State     TaskState
 }
 
 // TaskState 后台子代理任务状态。
@@ -57,18 +60,21 @@ func (s TaskState) String() string {
 }
 
 // TaskSnapshot 是面板列表用的只读快照。
+// Injected 表示结果是否已被消费（DrainCompleted 或 task_status/task_wait）——
+// 消费方据此避免把 FinalText 重复投递进 LLM 上下文（恰好注入一次，spec §7.8）。
 type TaskSnapshot struct {
 	ID           string
 	AgentName    string
 	Description  string
 	Prompt       string
 	State        TaskState
+	Injected     bool
 	LogLines     int
 	Elapsed      time.Duration
 	LastActivity string
 }
 
-// TaskDetail 是详情视图用的只读快照（含全过程日志拷贝）。
+// TaskDetail 是详情视图用的只读快照（含全过程日志拷贝）。Injected 语义同 TaskSnapshot。
 type TaskDetail struct {
 	ID          string
 	AgentName   string
@@ -76,6 +82,7 @@ type TaskDetail struct {
 	Prompt      string
 	FinalText   string
 	State       TaskState
+	Injected    bool
 	Elapsed     time.Duration
 	Log         []schema.SubAgentUpdate
 }
@@ -284,6 +291,7 @@ func (t *TaskTracker) DrainCompleted() []CompletedTask {
 				AgentName: task.agentName,
 				FinalText: task.finalText,
 				IsError:   task.isError,
+				State:     task.state,
 			})
 		}
 	}
@@ -314,7 +322,7 @@ func (t *TaskTracker) List() []TaskSnapshot {
 		}
 		out[i] = TaskSnapshot{
 			ID: task.id, AgentName: task.agentName, Description: task.description,
-			Prompt: task.prompt, State: task.state, LogLines: len(task.log),
+			Prompt: task.prompt, State: task.state, Injected: task.injected, LogLines: len(task.log),
 			Elapsed: elapsed, LastActivity: task.lastActivity,
 		}
 	}
@@ -338,7 +346,7 @@ func (t *TaskTracker) Get(id string) (TaskDetail, bool) {
 	return TaskDetail{
 		ID: task.id, AgentName: task.agentName, Description: task.description,
 		Prompt: task.prompt, FinalText: task.finalText, State: task.state,
-		Elapsed: elapsed, Log: logCopy,
+		Injected: task.injected, Elapsed: elapsed, Log: logCopy,
 	}, true
 }
 
