@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func writeGrepFixture(t *testing.T) string {
@@ -91,9 +92,12 @@ func TestGrepToolTruncationAndLimits(t *testing.T) {
 	}
 }
 
+// Task 14 移交修复：needle 前置到行首（前 7 runes），保证命中行输出真实触发
+// 500-rune 截断——原 fixture 把 needle 放在 rune 1001+，截断后命中内容整体
+// 被裁掉，断言恒不触发（空转）。
 func TestGrepToolLineTruncateUTF8(t *testing.T) {
 	root := t.TempDir()
-	long := strings.Repeat("界", 1000) + " needle"
+	long := "needle " + strings.Repeat("界", 1000) // needle 在前 7 runes
 	if err := os.WriteFile(filepath.Join(root, "long.txt"), []byte(long), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -102,11 +106,27 @@ func TestGrepToolLineTruncateUTF8(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, ln := range strings.Split(out, "\n") {
-		if strings.Contains(ln, "needle") && len([]rune(ln)) > 510 {
-			t.Fatal("命中行应按 runes 截断")
-		}
+	line := strings.Split(out, "\n")[0]
+	if !strings.HasPrefix(line, "long.txt:1: needle ") {
+		t.Fatalf("首行应为命中行 long.txt:1: needle …，实际: %q", truncateForLog(line))
 	}
+	content := strings.TrimPrefix(line, "long.txt:1: ")
+	r := []rune(content)
+	if len(r) != 501 || r[500] != '…' {
+		t.Fatalf("应截断为 500 runes + …，实际 %d runes", len(r))
+	}
+	if !utf8.ValidString(line) {
+		t.Fatal("截断后应保持 UTF-8 有效")
+	}
+}
+
+// truncateForLog 输出断言消息用的短预览（避免整行打爆测试输出）。
+func truncateForLog(s string) string {
+	r := []rune(s)
+	if len(r) <= 40 {
+		return s
+	}
+	return string(r[:40]) + "…"
 }
 
 // I1：root 不存在时 WalkDir fail-open 会吞掉根级错误、误报"没有命中"，
