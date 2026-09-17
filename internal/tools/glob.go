@@ -74,6 +74,15 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		}
 		root = p
 	}
+	// I1：遍历前校验 root——不存在或非目录时 WalkDir 的 fail-open 会吞掉根级错误，
+	// 导致误报"没有匹配的文件"；此处显式返回 Go error。
+	if info, serr := os.Stat(root); serr != nil || !info.IsDir() {
+		shown := a.Path
+		if shown == "" {
+			shown = t.workDir
+		}
+		return "", fmt.Errorf("搜索路径 %q 不存在或不是目录", shown)
+	}
 
 	type entry struct {
 		rel   string

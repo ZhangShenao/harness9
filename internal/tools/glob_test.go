@@ -77,6 +77,10 @@ func TestGlobToolExecute(t *testing.T) {
 			t.Fatalf("输出应含 %s:\n%s", want, out)
 		}
 	}
+	// M1：默认 mtime 排序——fixture 已用 fakeGlobTime 保证 a.go 最新，应排首行。
+	if first := strings.Split(strings.TrimSpace(out), "\n")[0]; first != "a.go" {
+		t.Fatalf("默认 mtime 排序首行应为 a.go，实际 %q:\n%s", first, out)
+	}
 	if strings.Contains(out, ".git") {
 		t.Fatal("不应匹配 .git 目录")
 	}
@@ -109,5 +113,15 @@ func TestGlobToolPathEscape(t *testing.T) {
 	}
 	if _, err := tool.Execute(context.Background(), json.RawMessage(`{}`)); err == nil {
 		t.Fatal("缺 pattern 应报错")
+	}
+}
+
+// I1：root 不存在时 WalkDir fail-open 会吞掉根级错误、误报"没有匹配"，
+// 应在遍历前显式校验并返回 Go error。
+func TestGlobToolRootNotExist(t *testing.T) {
+	tool := NewGlobTool(t.TempDir())
+	if _, err := tool.Execute(context.Background(),
+		json.RawMessage(`{"pattern":"*.go","path":"no/such/dir"}`)); err == nil {
+		t.Fatal("root 不存在应报错")
 	}
 }
