@@ -277,6 +277,7 @@ Flags:
 		tools.NewWriteFileTool(workDir, tools.WriteFileWithEnvironment(sandboxEnv)),
 		tools.NewBashTool(workDir, tools.WithEnvironment(sandboxEnv)),
 		tools.NewEditFileTool(workDir, tools.EditFileWithEnvironment(sandboxEnv)),
+		tools.NewGlobTool(workDir),
 		skills.NewUseSkillTool(skillsIndex),
 		tools.NewPlanWriteTool(planStore, tools.WithPlanWriter(planWriter)),
 		tools.NewMemoryWriteTool(ltmStore, ltmPrecis),
