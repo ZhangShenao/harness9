@@ -45,12 +45,13 @@ type SubAgentResult struct {
 	FinalText string
 }
 
-// denyTaskHook 是纵深防御 hook：始终拒绝子代理调用 task 工具（防递归）。
+// denyTaskHook 是纵深防御 hook：始终拒绝子代理调用 task 家族四工具
+// （防递归 + 防越权操纵主 tracker——即使 ResolveTools 被绕过）。
 type denyTaskHook struct{}
 
 func (denyTaskHook) BeforeExecute(ctx context.Context, tc schema.ToolCall) (context.Context, hooks.HookDecision, error) {
-	if tc.Name == "task" {
-		return ctx, hooks.Deny("子代理不允许再派生子代理"), nil
+	if alwaysDeniedTools[tc.Name] {
+		return ctx, hooks.Deny("子代理不允许调用主代理的协调工具（" + tc.Name + "）"), nil
 	}
 	return ctx, hooks.Allow(), nil
 }
@@ -60,7 +61,8 @@ func (denyTaskHook) AfterExecute(_ context.Context, _ schema.ToolCall, r schema.
 }
 
 // buildChildRegistry 构造子代理的隔离工具注册表：仅注册定义允许的基础工具
-// （永不含 task），再包权限派生 hook + denyTaskHook + sharedHooks（danger/offload）。
+// （永不含 task 家族四工具，见 alwaysDeniedTools），再包权限派生 hook +
+// denyTaskHook + sharedHooks（danger/offload）。
 // baseTools 参数允许调用方传入经 sandbox 包装后的工具集（Sandbox 模式），
 // 或直接传入 r.baseTools（无 Sandbox 模式），实现解耦。
 func (r *Runner) buildChildRegistry(def SubAgentDefinition, baseTools []tools.BaseTool) (tools.Registry, error) {

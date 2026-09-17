@@ -147,7 +147,8 @@ func TestTrackerControlRouting(t *testing.T) {
 }
 
 // TestTrackerCancelDistinctFromFinish 验证 Cancel 标记 TaskCancelled 并触发
-// DrainCompleted（isError=true），与 Finish 的 Failed 区分。
+// DrainCompleted（isError=true），与 Finish 的 Failed 区分；且 Cancel 后 Finish
+// 不得覆写终态（防 Cancel→panic-recover-Finish 竞态把 Cancelled 改写为 Done/Failed）。
 func TestTrackerCancelDistinctFromFinish(t *testing.T) {
 	tr := NewTaskTracker()
 	id := tr.Start("explorer", "探索", "prompt")
@@ -158,6 +159,12 @@ func TestTrackerCancelDistinctFromFinish(t *testing.T) {
 	}
 	if d, ok := tr.Get(id); !ok || d.State != TaskCancelled {
 		t.Fatal("状态应为 TaskCancelled")
+	}
+	// 已终态的任务再 Finish 不覆写（终态守卫）
+	tr.Finish(id, "迟到的完成", false)
+	d, _ := tr.Get(id)
+	if d.State != TaskCancelled || d.FinalText != "方向错误" {
+		t.Fatalf("Cancel 后 Finish 不应覆写终态: State=%v FinalText=%q", d.State, d.FinalText)
 	}
 }
 

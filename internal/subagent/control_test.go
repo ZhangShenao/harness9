@@ -142,3 +142,18 @@ func TestTaskControllerEmitAndFinish(t *testing.T) {
 		t.Fatal("Finish(nil) 应为 Done")
 	}
 }
+
+// TestTaskControllerCancelBeforeBindExecReplayed 验证 lost-cancel 硬化：
+// Cancel 早于 bindExec 到达（sandbox 创建等窗口可达 10s+）时，bindExec 应补发
+// 取消（调用新绑定的 cancel），而非吞掉取消请求。
+func TestTaskControllerCancelBeforeBindExecReplayed(t *testing.T) {
+	c := NewTaskController(nil)
+	if err := c.Cancel("x"); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	c.bindExec(func() { called = true })
+	if !called {
+		t.Fatal("bindExec 应补发早到的 Cancel（调用绑定的 cancel）")
+	}
+}

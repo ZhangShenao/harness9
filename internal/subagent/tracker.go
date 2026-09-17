@@ -139,17 +139,23 @@ func (t *TaskTracker) AppendLog(id string, u schema.SubAgentUpdate) {
 }
 
 // Finish 标记任务完成（isErr 决定 Done/Failed），记录最终文本，并触发完成通知。
+// 已终态（Done/Failed/Cancelled）的任务不可覆写——防 Cancel→panic-recover-Finish
+// 竞态窗口把 Cancelled 终态改写。
 func (t *TaskTracker) Finish(id, finalText string, isErr bool) {
 	t.mu.Lock()
 	if task := t.find(id); task != nil {
-		task.finalText = finalText
-		task.isError = isErr
-		if isErr {
-			task.state = TaskFailed
+		if isTerminalTaskState(task.state) {
+			// 已终态不可覆写（如 Cancel 后迟到的 Finish）
 		} else {
-			task.state = TaskDone
+			task.finalText = finalText
+			task.isError = isErr
+			if isErr {
+				task.state = TaskFailed
+			} else {
+				task.state = TaskDone
+			}
+			task.finishedAt = time.Now()
 		}
-		task.finishedAt = time.Now()
 	}
 	notify := t.notify
 	t.mu.Unlock()

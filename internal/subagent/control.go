@@ -44,7 +44,12 @@ var _ engine.TaskGate = (*TaskController)(nil)
 func (c *TaskController) bindExec(cancel context.CancelFunc) {
 	c.mu.Lock()
 	c.cancelExec = cancel
+	alreadyCancelled := c.state == TaskCancelled
 	c.mu.Unlock()
+	// Cancel 早于 bindExec 到达（sandbox 创建等窗口）：补发取消，防止 lost-cancel
+	if alreadyCancelled {
+		cancel()
+	}
 }
 
 // Pause 暂停任务（Turn 边界门控）。非 Running 状态（含终态）无操作。
@@ -136,8 +141,9 @@ func (c *TaskController) CancelReason() string {
 	return c.cancelReason
 }
 
-// Finish 由 TaskTool 在子代理 Run 返回后调用，标记终态（err==nil → Done，
-// 否则 Failed）。已处于终态（如 Cancelled）时无操作——终态不可迁移。
+// Finish 标记终态（err==nil → Done，否则 Failed）。Runner 是第一调用方
+// （RunStream 错误路径与正常完成两个标记点），TaskTool 为兜底调用方。
+// 已处于终态（如 Cancelled）时无操作——终态不可迁移。
 func (c *TaskController) Finish(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
