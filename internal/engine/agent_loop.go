@@ -57,6 +57,7 @@ type AgentEngine struct {
 	closingText        string              // 收尾 nudge 提示文本
 	planningGateBudget int                 // >0 时连续该轮数"无进展工具且无 plan_write"则注入一次规划 nudge（P1-1）
 	planningGateText   string              // 规划 nudge 提示文本
+	taskGate           TaskGate            // 可选，轮边界控制门（后台子代理暂停/转向挂接点）
 	observer           EngineObserver      // 可选，nil 时自动退化为 noopObserver
 	generateRetries    int                 // LLM 生成调用最大尝试次数（默认 3）
 	generateRetryBase  time.Duration       // 重试退避基准（默认 1s）
@@ -150,6 +151,7 @@ func (e *AgentEngine) Run(ctx context.Context, userPrompt string) error {
 //
 //	beginInteraction → 初始化（observer / 快照 / Todo 恢复 / Plan 前缀 / 历史加载）
 //	for {
+//	    TaskGate 轮边界门控 → 暂停/转向挂接点（beginTurn 之前，暂停不消耗 MaxTurns 配额）
 //	    beginTurn         → Turn 计数 + 双重终止判定（MaxTurns / ctx 取消）
 //	    prepareTurnInput  → 工具过滤 + 压缩检查 + token 估算 + nudge 注入
 //	    generateTurn      → 带重试 LLM 调用 + 实际用量上报
@@ -175,6 +177,23 @@ func (e *AgentEngine) runLoop(ctx context.Context, userPrompt string, logPrefix 
 	defer lc.savePlan(lc.obsCtx)
 
 	for {
+		// 轮边界控制门：后台子代理的暂停/转向挂接点。位于 beginTurn 之前，
+		// 暂停区间不消耗 MaxTurns 配额；steer 消息以 user 角色持久化到历史
+		//（区别于 nudge 的防御性副本——转向是子代理对话的一部分）。
+		if e.taskGate != nil {
+			steer, err := e.taskGate.AwaitTurn(lc.obsCtx)
+			if err != nil {
+				lc.interactionErr = err
+				return err
+			}
+			for _, s := range steer {
+				lc.history = append(lc.history, schema.Message{
+					Role:    schema.RoleUser,
+					Content: "[主代理转向指令]\n" + s,
+				})
+			}
+		}
+
 		turnCtx, err := lc.beginTurn(lc.obsCtx)
 		if err != nil {
 			return err
