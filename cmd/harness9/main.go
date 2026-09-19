@@ -48,19 +48,6 @@ import (
 // version 由 goreleaser ldflags 在发布构建时注入；本地开发构建显示 "dev"。
 var version = "dev"
 
-// generalPurposeSystemPrompt 是内置 general-purpose 子代理的 system prompt。
-//
-// 设计对标 Claude Code / DeepAgents 的通用子代理：强调「上下文隔离 + 自包含结论」——
-// 子代理在独立 context 中自主探索与执行，最终仅把结构化结论回传给主代理，避免冗长的
-// 中间过程污染主代理上下文。
-const generalPurposeSystemPrompt = `你是一个通用型子代理（general-purpose sub-agent），在与主代理隔离的独立上下文中完成被委派的任务。
-
-工作原则：
-1. 你看不到主代理的对话历史，完成任务所需的全部信息都在传入的 prompt 中。若信息不足，基于合理假设继续推进，并在最终结论中显式说明你做出的假设。
-2. 你拥有与主代理相同的工具集（读写文件、执行命令、调用 skill 等），可自主决定如何分解并完成任务。优先用工具去探索与验证，不要把未经核实的猜测当作结论。
-3. 你的最终回复是返回给主代理的唯一结果，因此必须自包含、结构清晰、聚焦结论：说明你做了什么、得到的关键结果、以及主代理需要据此采取的后续动作。省略无价值的中间过程，但保留关键的文件路径、命令输出与证据引用。
-4. 完成任务后立即停止，不要做与任务无关的额外操作，也不要反复确认。`
-
 func main() {
 	// upgrade 子命令在 flag 解析前处理，避免与 flag 系统冲突。
 	if len(os.Args) > 1 && os.Args[1] == "upgrade" {
@@ -214,6 +201,7 @@ Flags:
 	// 构建 System Prompt（基础 prompt + AGENTS.md + skills 索引），现已可访问 sandboxEnv
 	promptBuilder := harctx.NewPromptBuilder(workDir, skillsIndex).
 		WithPlanEnabled(true).
+		WithDelegationGuide(true).
 		WithOffloadEnabled(true)
 	// Sandbox 环境说明三态：运行中 → 容器说明；降级 → 如实的本地执行说明；
 	// 未启用 → 不注入（与引入 Sandbox 前行为一致）。
@@ -276,6 +264,8 @@ Flags:
 		tools.NewWriteFileTool(workDir, tools.WriteFileWithEnvironment(sandboxEnv)),
 		tools.NewBashTool(workDir, tools.WithEnvironment(sandboxEnv)),
 		tools.NewEditFileTool(workDir, tools.EditFileWithEnvironment(sandboxEnv)),
+		tools.NewGlobTool(workDir),
+		tools.NewGrepTool(workDir),
 		skills.NewUseSkillTool(skillsIndex),
 		tools.NewPlanWriteTool(planStore, tools.WithPlanWriter(planWriter)),
 		tools.NewMemoryWriteTool(ltmStore, ltmPrecis),
@@ -350,24 +340,17 @@ Flags:
 		tools.NewWriteFileTool(workDir),
 		tools.NewBashTool(workDir),
 		tools.NewEditFileTool(workDir),
+		tools.NewGlobTool(workDir),
+		tools.NewGrepTool(workDir),
 		skills.NewUseSkillTool(skillsIndex),
 		tools.NewWebFetchTool(),
 		tools.NewWebSearchTool(),
 	}
 
 	// 子代理定义注册表：先注册内置，再加载文件式定义（文件可覆盖同名内置）。
-	//
-	// 内置 general-purpose 子代理：对标 Claude Code 与 DeepAgents 的「通用子代理」设计。
-	// 不限定工具白名单（Tools 为空 = 继承父全部可用工具），不覆盖模型（Model 为空 = 继承父模型），
-	// 用于需要兼顾探索与修改、复杂推理或多步依赖、且希望隔离上下文（只回传结论、不污染主上下文）
-	// 的通用任务。它是「没有更专门子代理时」的兜底选择。
 	subAgentReg := subagent.NewRegistry()
-	if err := subAgentReg.Register(subagent.SubAgentDefinition{
-		Name:         "general-purpose",
-		Description:  "通用子代理，处理需要兼顾探索与修改、复杂推理或多步依赖的任务。当任务边界清晰、可独立完成、且希望隔离上下文（仅回传最终结论而非冗长中间过程）时使用；在没有更专门的子代理可用时，它是默认兜底选择。继承父代理可用的全部工具与模型。",
-		SystemPrompt: generalPurposeSystemPrompt,
-		Source:       "builtin", // Tools/Model/MaxTurns 均留空：工具与模型继承父代理，轮数继承引擎默认
-	}); err != nil {
+	// 内置子代理库（六内置，spec §5.10）；.harness9/agents 文件可覆盖同名内置。
+	if err := subagent.RegisterBuiltins(subAgentReg); err != nil {
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("注册内置子代理失败: %v", err)))
 	}
 	if err := subAgentReg.LoadFromDir(filepath.Join(workDir, ".harness9", "agents")); err != nil {
@@ -405,6 +388,19 @@ Flags:
 	taskTool := subagent.NewTaskTool(subAgentReg, subAgentRunner, subAgentTracker)
 	if err := registry.Register(taskTool); err != nil {
 		log.Print(logfmt.FormatMsg("main", fmt.Sprintf("注册 task 工具失败: %v", err)))
+	}
+
+	// 协调平面三工具（spec §5.4）：主 agent 观察/等待/控制后台子代理任务。
+	// task_wait 的 baseCtx 用会话级 ctx（与 RunnerConfig.BaseCtx 同源）——
+	// 绕过父 Turn 的 60s 工具超时，Ctrl+C 仍可传播。
+	for _, ct := range []tools.BaseTool{
+		subagent.NewTaskStatusTool(subAgentTracker),
+		subagent.NewTaskWaitTool(subAgentTracker, ctx),
+		subagent.NewTaskControlTool(subAgentTracker),
+	} {
+		if err := registry.Register(ct); err != nil {
+			log.Print(logfmt.FormatMsg("main", fmt.Sprintf("注册协调工具 %s 失败: %v", ct.Name(), err)))
+		}
 	}
 	// ---- Sub-Agent 接线结束 ----
 
@@ -444,6 +440,9 @@ Flags:
 		engine.WithContextWindow(modelLimits.ContextTokens),
 		engine.WithPlanStore(planStore),
 		engine.WithMemoryNudge(10, "如果本轮对话中出现了值得跨会话长期保留的信息（用户偏好、稳定的项目知识、关键决策、可复用技能），请调用 memory_write 工具记录；否则忽略此提示。"),
+		engine.WithDelegationNudge(3,
+			"已连续多轮只读探索。如果还需要更多轮，考虑把批量探索委派给 explorer 子代理"+
+				"（task 工具，background=true），只回传结论以保护主上下文。"),
 	}
 	if engineObserver != nil {
 		engOpts = append(engOpts, engine.WithEngineObserver(engineObserver))

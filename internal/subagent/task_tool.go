@@ -4,7 +4,8 @@
 //   - 前台：阻塞当前 Turn，消费子代理事件流，最终回传完整结论文本
 //   - 后台：立即返回 task id，子代理在后台 goroutine 中运行，结果经 TaskTracker 注入后续 Turn
 //
-// 安全保障：denyTaskHook 在子代理工具注册表层面强制禁止递归委派（task 工具永不出现在子代理工具集中）。
+// 安全保障：denyTaskHook 在子代理工具注册表层面强制禁止递归委派（task 家族四工具
+// 永不出现在子代理工具集中，且运行期 hook 二次拦截——见 alwaysDeniedTools）。
 package subagent
 
 import (
@@ -42,6 +43,12 @@ func (t *TaskTool) Definition() schema.ToolDefinition {
 		names = append(names, d.Name)
 		fmt.Fprintf(&sb, "- %s: %s\n", d.Name, d.Description)
 	}
+	sb.WriteString(`
+使用模式：
+- 并行委派：同一回复中发起多个 background=true 任务可并行执行，随后用 task_wait 聚合结果
+- 观察/等待：task_status 查询后台任务状态，task_wait 阻塞等待完成
+- 调整方向：后台任务方向偏差时用 task_control 的 steer 注入转向指令（下一轮生效），而非取消重跑
+- 控制：task_control 支持 pause/resume/cancel/steer`)
 	return schema.ToolDefinition{
 		Name:        "task",
 		Description: sb.String(),
@@ -94,33 +101,36 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	if a.Background {
-		taskID := t.tracker.Start(def.Name, a.Prompt)
+		taskID := t.tracker.Start(def.Name, a.Description, a.Prompt)
+		sink := func(u schema.SubAgentUpdate) { t.tracker.AppendLog(taskID, u) }
+		ctl := NewTaskController(sink)
+		t.tracker.Attach(taskID, ctl)
 		go func() {
 			defer func() {
 				if rec := recover(); rec != nil {
 					t.tracker.Finish(taskID, fmt.Sprintf("子代理后台执行 panic: %v", rec), true)
 				}
 			}()
-			// 关键安全点 1：从 context.Background() 构造 bgCtx，而非复用 t.runner.baseCtx。
-			// 背景：后台子代理的生命周期可能超过整个会话（用户退出 TUI 后仍在运行）。
-			// 若用 baseCtx，用户 Ctrl+C 会取消 baseCtx 进而强制中止后台子代理；
-			// context.Background() 使后台任务完全独立，持久到自然结束。
-			//
-			// 关键安全点 2：只注入"写 tracker"的 sink，绝不复用父 ctx 的 progress sink
-			// （其 channel 会在父 turn 结束后关闭，写入即 panic / goroutine 阻塞）。
-			sink := func(u schema.SubAgentUpdate) { t.tracker.AppendLog(taskID, u) }
+			// 关键安全点（沿用既有设计）：bgCtx 从 context.Background() 构造，
+			// 后台任务生命周期独立于会话 ctx；只注入"写 tracker"的 sink。
 			bgCtx := hooks.WithSubAgentProgress(context.Background(), sink)
-			res, err := t.runner.Run(bgCtx, def, a.Prompt, true)
-			if err != nil {
+			res, err := t.runner.Run(bgCtx, def, a.Prompt, true, ctl)
+			switch {
+			case ctl.State() == TaskCancelled:
+				t.tracker.Cancel(taskID, "已被主代理取消"+suffixIfSet(ctl.CancelReason()))
+			case err != nil:
+				// ctl 与 tracker 双状态机同步进入 Failed（ctl 不再停留 Running）；
+				// 已终态时 Finish 为无操作，不会覆写 Cancelled
+				ctl.Finish(err)
 				t.tracker.Finish(taskID, err.Error(), true)
-			} else {
+			default:
 				t.tracker.Finish(taskID, res.FinalText, false)
 			}
 		}()
 		return fmt.Sprintf(`<task id=%q state="running"/>`, taskID), nil
 	}
 
-	res, err := t.runner.Run(ctx, def, a.Prompt, false)
+	res, err := t.runner.Run(ctx, def, a.Prompt, false, nil) // 前台阻塞执行，无控制门
 	if err != nil {
 		return fmt.Sprintf(`<task state="error">%s</task>`, err.Error()), nil
 	}
@@ -134,4 +144,12 @@ func (t *TaskTool) agentNames() string {
 		names[i] = d.Name
 	}
 	return strings.Join(names, ", ")
+}
+
+// suffixIfSet 为取消原因拼接 "：原因" 后缀（原因为空则返回空串）。
+func suffixIfSet(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return "：" + reason
 }
