@@ -12,24 +12,32 @@ internal/subagent/
 ├── registry.go     # Registry: Register / Get / List (registered at startup, read-only at runtime)
 ├── frontmatter.go  # parseAgentFile: YAML frontmatter + body -> SubAgentDefinition
 ├── loader.go       # Registry.LoadFromDir: scans .harness9/agents/*.md file-based definitions
+├── builtin.go      # RegisterBuiltins: six built-in Sub-Agents (compiled into the binary, overridable by same-name files)
 ├── prompt.go       # promptBuilder: Sub-Agent system prompt + Skills preloading + workDir injection
-├── tracker.go      # TaskTracker: single source of truth for background tasks (Start/AppendLog/Finish/DrainCompleted/List/Get)
+├── tracker.go      # TaskTracker: single source of truth for background tasks (Start/AppendLog/Finish/Control/List/Get)
+├── control.go      # TaskController: the control plane for one background task (implements engine.TaskGate)
 ├── runner.go       # Runner: builds an isolated sub-engine + runs RunStream + bridges approval and progress
-└── task_tool.go    # TaskTool: the sole delegation entry point called by the main agent (tools.BaseTool)
+├── task_tool.go    # TaskTool: the sole delegation entry point called by the main agent (tools.BaseTool)
+├── task_status.go  # TaskStatusTool: observe background tasks (the task_status tool)
+├── task_wait.go    # TaskWaitTool: wait for background tasks to finish (the task_wait join primitive)
+└── task_control.go # TaskControlTool: control background tasks (the task_control tool)
+
+internal/engine/
+└── task_gate.go    # TaskGate interface: turn-boundary control gate (interface defined on the consumer side, injected via WithTaskGate)
 
 cmd/harness9/
-├── main.go         # Wiring: registers built-in general-purpose, LoadFromDir, NewRunner, NewTaskTool
-├── tui_update.go   # EventSubAgent rendering + TaskTracker.DrainCompleted injection in dispatch() + @agent direct run + task panel keybindings
-└── tui_view.go     # renderSubAgentProgress(), renderTaskPanel(), background task status segment in renderStatusBar()
+├── main.go         # Wiring: RegisterBuiltins, LoadFromDir, NewRunner, task + the three coordination tools
+├── tui_update.go   # EventSubAgent rendering + DrainCompleted injection + auto-wake (maybeAutoWake) + @agent direct run + task panel keybindings
+└── tui_view.go     # renderSubAgentProgress(), renderTaskPanel() (five-state coloring), background task status segment in renderStatusBar()
 ```
 
 ---
 
 ## Sub-Agent Definitions
 
-### Built-in general-purpose Sub-Agent
+### Built-in Sub-Agent Library (Six)
 
-harness9 ships a built-in **`general-purpose` Sub-Agent**, deliberately designed to match the same-named capability in two mainstream frameworks:
+harness9 ships **six built-in Sub-Agents** (`general-purpose` / `explorer` / `researcher` / `implementer` / `reviewer` / `planner`), compiled into the binary and available out of the box — the complete roster is in the built-in table of the [Async Scheduling and Coordination Control](#async-scheduling-and-coordination-control) chapter. Among them, `general-purpose` is the fallback delegation target, deliberately designed to match the same-named capability in two mainstream frameworks:
 
 - **Claude Code**'s [general-purpose subagent](https://code.claude.com/docs/en/sub-agents#general-purpose): "A capable agent for complex, multi-step tasks that require both exploration and action", inheriting all tools and the model of the main conversation — the fallback delegation target for when "no more specialized Sub-Agent" exists.
 - **DeepAgents**' [general-purpose subagent](https://docs.langchain.com/oss/python/deepagents/subagents#the-general-purpose-subagent): every deep agent carries one by default, for scenarios that need "context isolation without specialized behavior" — the main agent delegates a whole multi-step task and gets back only a concise conclusion, avoiding polluting the main context with intermediate steps.
@@ -47,15 +55,15 @@ Both share the same design core, which harness9 fully inherits:
 
 ### Programmatic Definition
 
-The built-in `general-purpose` is constructed directly in `main.go` and registered into `subagent.Registry`:
+The six built-in Sub-Agents are defined and registered centrally in `RegisterBuiltins(reg)` in `internal/subagent/builtin.go` (called once at startup from `main.go`; returns an error on invalid or duplicate definitions). Taking `general-purpose` as an example:
 
 ```go
-subAgentReg.Register(subagent.SubAgentDefinition{
+subagent.SubAgentDefinition{
     Name:         "general-purpose",
-    Description:  "General-purpose Sub-Agent for tasks requiring both exploration and modification, complex reasoning, or multi-step dependencies. Use when the task boundary is clear, can be completed independently, and you want context isolation (only the final conclusion returned instead of the verbose intermediate process); it is the default fallback choice when no more specialized Sub-Agent is available. Inherits all tools and the model available to the parent agent.",
+    Description:  "General-purpose Sub-Agent for tasks requiring both exploration and modification, complex reasoning, or multi-step dependencies. ... Inherits all tools and the model available to the parent agent.",
     SystemPrompt: generalPurposeSystemPrompt, // Emphasizes "context isolation + self-contained conclusion"
     Source:       "builtin", // Tools/Model/MaxTurns all left empty: tools and model inherit from parent, turn count inherits engine default
-})
+}
 ```
 
 > When more specialized capabilities are needed (e.g. security auditing, documentation writing), prefer adding a new Sub-Agent via the **file-based definition** described below, instead of stacking more programmatic built-ins — keep the core minimal and leave specialized roles to the project side.
@@ -129,7 +137,13 @@ Do not modify files; only output the review report.
 Delegate a clearly bounded task to a specialized Sub-Agent. The Sub-Agent has independent context and a restricted toolset.
 Available Sub-Agents:
 - general-purpose: General-purpose Sub-Agent for tasks requiring both exploration and modification, complex reasoning, or multi-step dependencies. Use when the task is clearly bounded, can be completed independently, and context isolation is desired; it is the default fallback choice when no more specialized Sub-Agent is available. Inherits all tools and the model available to the parent agent.
-- security-auditor: Security audit expert. ... (file-based definition)
+- explorer: Read-only deep exploration expert: understand project structure, locate implementations, trace call relationships. …
+- security-auditor: Security audit expert. … (file-based definition)
+Usage patterns:
+- Parallel delegation: issue multiple background=true tasks in one reply to run in parallel, then aggregate results with task_wait
+- Observe/wait: query background task state with task_status, block for completion with task_wait
+- Course-correct: when a background task drifts, inject a steer instruction via task_control (effective next turn) instead of cancelling and rerunning
+- Control: task_control supports pause/resume/cancel/steer
 ```
 
 ### Foreground Execution (`background=false`, default)
@@ -229,13 +243,15 @@ Progress data flow: `Runner.emit(SubAgentUpdate)` → `hooks.SubAgentProgressFun
 
 | Security layer | Mechanism | Description |
 |--------|------|------|
-| Anti-recursion | The child registry never includes the `task` tool | `ResolveTools` hardcodes `denied["task"]=true` |
-| Anti-recursion (defense in depth) | `denyTaskHook.BeforeExecute` | Double defense: even if future code introduces `task`, the hook will still deny it |
+| Anti-recursion | The child registry never includes the task family of four tools | `ResolveTools` hardcodes the removal of `task` / `task_status` / `task_wait` / `task_control` (`alwaysDeniedTools`, regardless of how the allowlist/denylist is declared) |
+| Anti-recursion (defense in depth) | `denyTaskHook.BeforeExecute` | Double defense: even if future code introduces a task-family tool, the hook will still deny it at runtime |
+| No cross-task manipulation | Same `alwaysDeniedTools` | A Sub-Agent must not manipulate sibling tasks or probe/control the main agent's TaskTracker (the coordination plane is main-agent-exclusive) |
 | No privilege escalation | Inherits the same `.harness9/settings.json` | `permission.NewFileHook(settingsPath)` reuses the same rules file |
 | Permissions only additively stricter | Sub-Agent additionally layers on DisallowedTools + denyTaskHook | Can only be more restricted than the parent, never more permissive |
 | Context isolation | Independent `MemorySession` (in-memory only) | Contains neither the parent's conversation history nor the parent's system prompt — no data leak path |
-| Tool isolation | `ResolveTools` (allowlist ∩ full set - denylist - task) | Only explicitly allowed tool instances are registered |
+| Tool isolation | `ResolveTools` (allowlist ∩ full set - denylist - task family) | Only explicitly allowed tool instances are registered |
 | Background approval fail-closed | Background Sub-Agent approvals are always denied | Without a TUI channel, dangerous operations are denied rather than auto-approved |
+| Exactly-once result injection | `injected` flag shared by three paths | `DrainCompleted` (auto injection) / `task_status` / `task_wait` share the same flag — the same result never enters the context twice |
 | Sensitive paths | sharedHooks includes `dangerHook` | 19 high-risk patterns (`~/.ssh`, `~/.aws`, etc.) protect Sub-Agents as well |
 
 ---
@@ -248,14 +264,18 @@ Progress data flow: `Runner.emit(SubAgentUpdate)` → `hooks.SubAgentProgressFun
 
 | Method | Caller | Description |
 |------|--------|------|
-| `Start(agentName, prompt) string` | When a background goroutine starts | Registers a Running task, returns a unique `id` (format `task-{agent}-{seq}`) |
+| `Start(agentName, description, prompt) string` | When a background goroutine starts | Registers a Running task, returns a unique `id` (format `task-{agent}-{seq}`) |
 | `AppendLog(id, SubAgentUpdate)` | While the background goroutine streams progress | Appends the progress event to the in-memory buffer (locked), not routed through any channel |
-| `Finish(id, finalText, isErr)` | When the background goroutine completes | Marks Done/Failed, triggers the `SetNotify` callback (called outside the lock) |
-| `DrainCompleted() []CompletedTask` | Before TUI `dispatch()` | Returns completed-but-not-yet-injected results, marking them as injected (idempotent) |
+| `Finish(id, finalText, isErr)` | When the background goroutine completes | Marks Done/Failed, triggers the `SetNotify` callback (called outside the lock); a terminal task cannot be overwritten |
+| `Attach(id, *TaskController)` | Before the TaskTool background path starts | Attaches the control plane to the task record for Control routing |
+| `Control(id, action, message)` | The `task_control` tool / TUI panel | The single control entry: validates existence and terminal state, then routes to the controller, `action ∈ pause/resume/cancel/steer`; pause/resume synchronously write the snapshot state back on success |
+| `Cancel(id, reason)` | The TaskTool background goroutine | Marks TaskCancelled (distinct from Failed), writes the reason into finalText and notifies |
+| `MarkInjected(ids...)` | `task_status` / `task_wait` | Marks results as consumed, sharing the `injected` flag with `DrainCompleted` (exactly-once injection) |
+| `DrainCompleted() []CompletedTask` | Before TUI `dispatch()` | Returns completed-but-not-yet-injected results, marking them as injected (idempotent); only terminal states (Done/Failed/Cancelled) are drained — Paused is not |
 | `List() []TaskSnapshot` | TUI task panel | Full snapshot, in creation order |
 | `Get(id) (TaskDetail, bool)` | TUI task detail | Returns a `TaskDetail` with a deep copy of the full-process log |
-| `RunningCount() int` | TUI status bar | Number of running tasks |
-| `DoneCount() int` | TUI status bar | Number of finished (completed + failed) tasks |
+| `RunningCount() int` | TUI status bar | Count of active (non-terminal) tasks: running + paused |
+| `DoneCount() int` | TUI status bar | Count of finished (completed + failed + cancelled) tasks |
 | `SetNotify(fn func())` | At TUI initialization | Registers the completion notification callback |
 
 ### Two Independent Paths
@@ -280,6 +300,8 @@ The status bar automatically shows a task count segment when background tasks ex
 
 Populated by `renderStatusBar()` calling `TaskTracker.RunningCount()` and `DoneCount()` in real time; shown only when at least one task exists (running or completed), taking up no status bar space when there are zero tasks.
 
+A separate live segment, "Tasks N▸M", tracks active tasks in real time: N counts active tasks (running plus paused), and when any task is paused a `▸M` suffix breaks out the paused count (making pause states produced by the `p` key visible at a glance); the segment is hidden when there are no active tasks.
+
 ### Opening the Panel
 
 Two equivalent methods:
@@ -296,16 +318,18 @@ The panel is a **modal view**: while active, `taskPanelMode = true`, and `View()
 The panel shows the task list by default when opened, with each line formatted as:
 
 ```
-{● running/✓ done/✗ failed}  {agent}  {status text}  "{first 48 bytes of prompt}"
+{icon}  {id} [{state}]  {agent}  "{description}"  {elapsed}; last: {activity}
 ```
 
-The currently selected row is highlighted with `▶`. Key bindings:
+The icon takes only three values: the default `●` (shared by running / paused / cancelled), `✓` for done, and `✗` for failed — paused and cancelled tasks do not switch icons and are told apart by the color of the `[{state}]` label. The state label is color-coded per the five states (running green / paused yellow / cancelled gray / done blue / failed red); the line format mirrors the `task_status` tool's single-line summary. The currently selected row is highlighted with `▶`. Key bindings:
 
 | Key | Action |
 |------|------|
 | `↑` / `↓` | Move the cursor |
 | `Enter` | Enter the detail view for the selected task |
 | `Esc` or `Ctrl+T` | Close the panel, return to normal input mode |
+
+The four control actions — pause / resume / cancel / steer — can also be issued directly from the list view with keys (`p` / `r` / `x` / `s`); see the ["TUI Panel Control" section](#tui-panel-control) in the Async Scheduling and Coordination Control chapter below.
 
 ### Detail View
 
@@ -335,6 +359,214 @@ Log rendering is done by `formatTaskLog`, covering five event kinds: `SubAgentSt
 ### Live Refresh
 
 Running tasks read the `TaskTracker` snapshot directly (`List()` / `Get()`) on every panel render, requiring no subscription to notifications — the TUI main loop alone keeps the log line count (`LogLines`) updated in real time.
+
+---
+
+## Async Scheduling and Coordination Control
+
+A `background=true` task is not fire-and-forget — harness9 builds a complete loop of control, observation, and result back-flow around it: the main agent can pause, resume, cancel, or steer a running background Sub-Agent at any time, wait on and aggregate multiple parallel tasks, and is automatically woken when a task finishes. Three planes cooperate to deliver this.
+
+### Three-Plane Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ Control Plane                                                     │
+│   TaskController (internal/subagent/control.go, one per task)     │
+│   implements engine.TaskGate (internal/engine/task_gate.go)       │
+│   Pause / Resume / Cancel / Steer — turn-boundary gate + execCtx  │
+└───────────────▲──────────────────────────────────┬───────────────┘
+                │ tracker.Control(id, action, msg) │ WithTaskGate(ctl) injected into the sub-engine
+┌───────────────┴──────────────────────────────────▼───────────────┐
+│ Coordination Plane — main-agent-exclusive tools                   │
+│   task_status (observe)  task_wait (join)  task_control (control) │
+│   all routed through TaskTracker (single source of truth)         │
+└───────────────┬──────────────────────────────────────────────────┘
+                │ TaskTracker.Start / Attach / Finish / DrainCompleted
+┌───────────────▼──────────────────────────────────────────────────┐
+│ Data Plane                                                       │
+│   Runner: builds an isolated sub-engine (own registry +           │
+│   MemorySession + PlanStore), runs RunStream; progress buffered   │
+│   via AppendLog, terminal state booked via Finish / Cancel        │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+- **Control plane**: `TaskController` is the control handle for one background task — concurrency-safe, with `Pause` / `Resume` / `Cancel` idempotent on non-target states. It implements the `engine.TaskGate` interface (defined on the consumer side, in the engine package) and is injected into the sub-engine by `Runner` via `engine.WithTaskGate(ctl)`; the main engine path injects nothing (nil) at zero cost.
+- **Coordination plane**: the three tools `task_status` / `task_wait` / `task_control` are registered **only** in the main agent's registry — the sole window through which the main agent's LLM observes, waits on, and controls background tasks. They all route through `TaskTracker.Control` and friends and never touch the sub-engine directly.
+- **Data plane**: `Runner` builds a fully isolated sub-engine per delegation and runs `RunStream`; progress is buffered via `AppendLog` and terminal state is booked into `TaskTracker` via `Finish` / `Cancel`.
+
+### Turn-Boundary Gating Semantics
+
+When a control action takes effect is decided by the insertion point of `engine.TaskGate`: the sub-engine's `runLoop` calls `AwaitTurn` **before every turn** (before `beginTurn`) — it blocks while paused, and on release returns the queued steer messages.
+
+| Action | Effective | Semantics |
+|------|---------|------|
+| `pause` | After the current turn | In-flight LLM calls and tool executions **run to the end of the current turn**, then halt at the turn boundary; `AwaitTurn` blocks while paused and **consumes no MaxTurns quota** |
+| `resume` | Immediately | Closes the blocking channel, releases the gate, and continues with the next turn |
+| `cancel` | Immediately | Cancels the Sub-Agent's execCtx — in-flight LLM calls and tool executions are **interrupted on the spot** (same semantics as the user's Ctrl+C), and a gate blocked in pause is woken as well |
+| `steer` | At the start of the next turn | The steer message enters a mailbox (steerBox); when the gate releases, all queued messages are taken in one shot and **persisted into the Sub-Agent's history as user-role messages** (prefixed `[主代理转向指令]`, "main-agent steering instruction") before the loop continues |
+
+Three key semantic boundaries:
+
+1. **Pause does not consume MaxTurns**: the paused interval sits before `beginTurn` counting, so a Sub-Agent can never "run out of turns by being paused too long". This is the core trade of turn-boundary gating over mid-turn preemption — it never corrupts in-flight calls, at the cost of at most one turn of delay before a pause takes effect.
+2. **Steer persists as a user message**: steering is part of the Sub-Agent's conversation (unlike nudges, which are defensive copies) — persisted with the history and visible to every subsequent turn of reasoning. Steer does **not** auto-resume a paused task (resuming is the main agent's explicit call — separation of responsibilities); if the task ends before the mailbox is drained, the messages are dropped (best-effort).
+3. **Cancel interrupts immediately**: after deriving execCtx, `Runner` binds the cancel function via `ctl.bindExec(cancel)`; if `Cancel` arrives first (during the sandbox-creation window), `bindExec` replays the cancellation — closing the lost-cancel window. Terminal states (Done / Failed / Cancelled) cannot migrate: a late `Finish` after cancellation is a no-op and never overwrites.
+
+### The Three Coordination Tools
+
+#### task_status — Observe
+
+| Parameter | Type | Required | Description |
+|------|------|:----:|------|
+| `task_id` | string | No | The task id to query; **omitted = all tasks** |
+
+Single-task output (terminal tasks append the final result, truncated to 2048 runes):
+
+```
+task-general-purpose-1 [done] general-purpose "survey timeout handling" 1m32s; last: see task panel
+Fix the following two spots…
+```
+
+The all-tasks output is one summary line per task, with result text appended for terminal tasks. **A finished task's result is returned with the query and marked injected** (`MarkInjected`, sharing the flag with `DrainCompleted` / `task_wait`) — the auto-injection channel will not deliver it again. Running tasks are **not** marked (otherwise `DrainCompleted` would skip them forever after `Finish`, severing the auto-injection channel).
+
+#### task_wait — Wait (join primitive)
+
+| Parameter | Type | Required | Description |
+|------|------|:----:|------|
+| `task_ids` | string[] | No | Task ids to wait for (each validated for existence — a typo'd id errors out instead of silently waiting on nothing) |
+| `all` | bool | No | Wait for all running tasks (the default semantics when `task_ids` is omitted) |
+| `timeout_sec` | int | No | Wait cap in seconds (default 60, clamped to 600) |
+
+Key semantics:
+
+- **The wait ctx derives from the session-level baseCtx with its own timeout**, deliberately ignoring the parent Turn's 60s tool timeout (the same technique as `Runner.Run`'s execCtx derivation); the user's Ctrl+C propagates through baseCtx to end the wait.
+- **A timeout is not an error**: it returns a status snapshot of the still-running tasks, letting the LLM decide whether to keep waiting or do something else first:
+
+```
+[general-purpose still running task-explorer-2] (running)
+[general-purpose done task-researcher-3]
+Research conclusion: …
+Wait timed out; the tasks above are still running. You can task_wait again, or handle other matters first.
+```
+
+- Terminal states render three ways: **done / failed / cancelled** — an agent-cancelled task (re-run it) and a failed one (read the cause and investigate) demand different follow-ups and must not be conflated. Finished results are likewise `MarkInjected` (exactly-once injection).
+
+#### task_control — Control
+
+| Parameter | Type | Required | Description |
+|------|------|:----:|------|
+| `task_id` | string | Yes | The target task id |
+| `action` | string (enum) | Yes | `pause` / `resume` / `cancel` / `steer` |
+| `message` | string | No | The steer instruction content (required for `steer`); the reason for `cancel` |
+
+State-machine errors (operating on a terminal task, `steer` without a message, etc.) are **returned as normal text results rather than Go errors** — the LLM can read the reason and adjust, e.g.:
+
+```
+Operation failed: task task-explorer-2 has ended (done); cannot steer
+```
+
+Success outputs (one confirmation line per action):
+
+```
+task-explorer-2 paused (halts after the current turn; resume to continue)
+task-explorer-2 steering instruction injected; takes effect at the Sub-Agent's next turn
+```
+
+### The Auto-Wake Loop
+
+When a background task finishes, its result does not sit quietly in the TaskTracker waiting for the user's next message — the TUI builds an async loop of "notify → harvest → idle with budget → synthesized dispatch":
+
+```
+tracker.Finish(id, ...)
+    │ triggers the SetNotify callback
+    ▼
+tea.Program.Send(subAgentNotifyMsg)          # instant: result shown in the conversation (user sees it immediately)
+    ▼
+handleSubAgentNotify()
+    ├─ harvestSubAgentResults()               # DrainCompleted: display once + write to the pendingSubAgentInject buffer
+    └─ maybeAutoWake()                        # auto-wake decision
+         │ conditions: enabled && main agent idle (not running) && not compacting && buffer non-empty && budget > 0
+         ├─ budget -1
+         ├─ take the injection buffer (prevents double-prefix injection from dispatch's fallback harvest)
+         ├─ append "⟳ background Sub-Agent task finished, auto-waking the main agent" to the conversation
+         └─ dispatch("[System auto-wake] The following background Sub-Agent tasks have ended; process their results and keep driving the overall task; …\n\n{result blocks}")
+```
+
+Budget and switches:
+
+| Item | Value | Description |
+|----|----|------|
+| Session-level budget | `autoWakeBudgetMax = 10` | Prevents a chain of completing background tasks from sending the main agent into a runaway loop |
+| Budget reset | Any real user input | The reset lives in the Enter-submit branch (plain prompts, `/` commands, `@mentions`, and Shell mode all pass through it); it cannot live inside dispatch — auto-wake itself goes through dispatch and would refill its own budget |
+| Exhaustion | Prompt once, then stand down | "⚠ auto-wake budget exhausted; background results will be injected when you next send a message"; `exhausted` resets with the budget per cycle (user input opens a new cycle) |
+| Compaction window skip | Skip while `compacting` | During a `/compact` (the LLM summarization takes seconds), a waking dispatch's history persistence would race and mutually erase with Compact's Clear+AddMessages write-back; results stay in the injection buffer and are consumed by the first dispatch after compaction |
+| Off switch | `HARNESS9_AUTOWAKE=false` | Enabled by default |
+
+### Background Task Lifecycle Sequence
+
+```
+Main agent LLM                  TaskTool                     Runner / sub-engine                TaskTracker
+    │ task(background=true)       │                              │                            │
+    ├────────────────────────────►│ Start(def, desc, prompt) ────┼───────────────────────────►│ register Running, returns id
+    │                             │ NewTaskController(sink)      │                            │
+    │                             │ Attach(id, ctl) ─────────────┼───────────────────────────►│ control plane attached
+    │ <task id state="running"/>  │ go func(){ Runner.Run(bgCtx, def, prompt, true, ctl) }    │
+    │ (returns immediately;       │                              │ Sandbox + PlanStore + isolated registry
+    │  the Turn goes on)          │                              │ engine.WithTaskGate(ctl)    │
+    │                             │                              │ execCtx ← derived from baseCtx
+    │                             │                              │ ctl.bindExec(cancel)       │
+    │                             │                              ▼                            │
+    │                             │                    ┌─ per turn: AwaitTurn (the gate)        │
+    │                             │                    │    ├─ paused → block (no MaxTurns cost)│
+    │                             │                    │    └─ released → drain the steer mailbox│
+    │                             │                    │        → persist as user messages [main-agent steering]
+    │                             │                    │  beginTurn → LLM → tools → Observation │
+    │                             │                    └─ natural end / error / cancelled        │
+    │                             │                              │                            │
+    │ task_control(cancel) ───────┼─ Control(id,"cancel",reason) │                            │
+    │                             ├─────────────────────────────►│ ctl.Cancel: cancelExec()   │
+    │                             │                              │ (in-flight interrupted)    │
+    │                             │                              ▼                            │
+    │                             │          RunStream returns err; ctl.State()==TaskCancelled   │
+    │                             │          tracker.Cancel(id, "cancelled by main agent: reason") ► Cancelled terminal
+    │                             │                              │                            │
+    │                             │          normal end: ctl.Finish(nil) → emit Done             │
+    │                             │          tracker.Finish(id, finalText, false) ───────────►│ Done terminal + notify
+    │                             │                              │                            │
+    │                             │                              │            notify → subAgentNotifyMsg
+    │ ◄── instant display + pendingSubAgentInject buffer + maybeAutoWake synthesized dispatch ───┤
+```
+
+Highlights: **cancel propagation** follows `cancelExec → execCtx.Done() → RunStream exits → the TaskTool goroutine recognizes TaskCancelled → tracker.Cancel books it` (terminal states cannot migrate; a late Finish never overwrites); **steer injection** goes mailbox → gate release → a user message in the Sub-Agent's history, treated like any ordinary conversation message by compaction and persistence.
+
+### Built-In Sub-Agents and Delegation Guidance
+
+The six built-ins cover the full spectrum of "explore / research / implement / review / plan / fallback" (`internal/subagent/builtin.go`, registered by `RegisterBuiltins`; a same-name file under `.harness9/agents/` overrides a built-in):
+
+| Name | Tool allowlist | Positioning |
+|------|-----------|------|
+| `general-purpose` | Empty (inherits all tools and the model of the parent) | Fallback: general tasks mixing exploration and modification, complex reasoning, multi-step dependencies |
+| `explorer` | `read_file` / `glob` / `grep` / `bash` | Read-only deep exploration: understand project structure, locate implementations; returns conclusions with `file:line` references |
+| `researcher` | `web_search` / `web_fetch` / `read_file` | Web multi-source research: technology selection, API usage, best practices; returns conclusions with URL references |
+| `implementer` | `read_file` / `write_file` / `edit_file` / `bash` / `glob` / `grep` | Clearly bounded implementation: auto build/test verification after changes; returns a change list and verification results |
+| `reviewer` | `read_file` / `glob` / `grep` / `bash` | Read-only code review: bugs, security, concurrency; findings graded by severity (never modifies code) |
+| `planner` | `read_file` / `glob` / `grep` | Read-only implementation planning: step breakdown, change surface, dependency order, risks, and verification |
+
+Shared constraints at the system-prompt level: the `bash` tool of `explorer` / `reviewer` is read-only commands only — `explorer` is limited to `ls` / `find` / `wc` and the like with no builds or installs, while `reviewer` may run tests / static checks but never modifies anything; `planner` is not given `bash` at all — its whitelist is `read_file` / `glob` / `grep` only, ruling out modifications at the tool level; `researcher` must separate facts from speculation and cross-verify key conclusions.
+
+Two companions nudge the main agent toward delegation: the **delegation guide** (`internal/context/builder.go`, injected into the main agent's system prompt once the task-family tools are registered) and the **delegation nudge** (`engine.WithDelegationNudge`, injected once after 3 consecutive turns of "exploration without progress", at most twice per interaction) steer the main agent toward delegating bulk exploration to `explorer` to protect the main context.
+
+### TUI Panel Control
+
+The background task panel (`Ctrl+T` or `/tasks`) supports four control keys in the list view, routed through the same `tracker.Control` entry as the `task_control` tool:
+
+| Key | Action | Description |
+|------|------|------|
+| `p` | Pause | Halts after the current turn (the panel state instantly turns yellow "paused") |
+| `r` | Resume | Continues from the pause |
+| `x` | Cancel | **Two-stage confirm against misfires**: the first press arms it (a "⚠ press x again to confirm cancel" hint appears at the bottom), the second executes; any other key in between (including `↑↓` movement) disarms it |
+| `s` | Steer | Expands a one-line input at the bottom of the panel; `Enter` submits (injects the steering instruction, effective at the Sub-Agent's next turn), `Esc` cancels, other keys go to the input box |
+
+Feedback is instant in the conversation area (e.g. "⏸ task-explorer-2 paused", "↪ steering instruction injected"); the panel re-reads the `TaskTracker` snapshot every frame — pause/resume are synchronously booked on success, so the state color lights up immediately.
 
 ---
 
@@ -437,15 +669,14 @@ subAgentBaseTools := []tools.BaseTool{
     tools.NewWriteFileTool(workDir),
     tools.NewBashTool(workDir),
     tools.NewEditFileTool(workDir),
+    tools.NewGlobTool(workDir),
+    tools.NewGrepTool(workDir),
     skills.NewUseSkillTool(skillsIndex),
 }
 
-// 2. Definition registry: register the built-in general-purpose first, then load file-based definitions
+// 2. Definition registry: register the six built-ins first, then load file-based definitions (files override same-name built-ins)
 subAgentReg := subagent.NewRegistry()
-subAgentReg.Register(subagent.SubAgentDefinition{
-    Name: "general-purpose", Description: "General-purpose Sub-Agent…", SystemPrompt: generalPurposeSystemPrompt,
-    Source: "builtin", // Tools/Model left empty -> inherits all tools and the model available to the parent agent
-})
+if err := subagent.RegisterBuiltins(subAgentReg); err != nil { /* … */ }
 subAgentReg.LoadFromDir(filepath.Join(workDir, ".harness9", "agents"))
 
 // 3. Runner: hold a single global instance, read-only at runtime
@@ -456,16 +687,25 @@ subAgentRunner := subagent.NewRunner(subagent.RunnerConfig{
     SettingsPath:    settingsPath,
     SkillsIndex:     skillsIndex,
     WorkDir:         workDir,
-    DefaultMaxTurns: agentMaxTurns, // = main agent's 50, Sub-Agent matches the main agent
+    DefaultMaxTurns: agentMaxTurns, // = main agent's 500, Sub-Agent matches the main agent
     ToolTimeout:     60 * time.Second,
     ProviderFor:     func(model string) (provider.LLMProvider, int, error) { ... },
     CompactorFor:    func(p provider.LLMProvider, ctxWin int) memory.Compactor { ... },
     BaseCtx:         ctx,
 })
 
-// 4. Register the task tool into the parent agent's registry
+// 4. Register the task tool + the three coordination tools into the parent agent's registry
+//    (task_wait's baseCtx uses the session-level ctx — bypassing the parent Turn's 60s tool
+//     timeout, while Ctrl+C still propagates)
 taskTool := subagent.NewTaskTool(subAgentReg, subAgentRunner, subAgentTracker)
 registry.Register(taskTool)
+for _, ct := range []tools.BaseTool{
+    subagent.NewTaskStatusTool(subAgentTracker),
+    subagent.NewTaskWaitTool(subAgentTracker, ctx),
+    subagent.NewTaskControlTool(subAgentTracker),
+} {
+    registry.Register(ct)
+}
 ```
 
 ---
@@ -474,17 +714,24 @@ registry.Register(taskTool)
 
 | File | Responsibility |
 |------|------|
-| `internal/subagent/definition.go` | `SubAgentDefinition` struct, `Validate`, `ResolveTools` |
+| `internal/subagent/definition.go` | `SubAgentDefinition` struct, `Validate`, `ResolveTools` (with `alwaysDeniedTools`: the task family of four tools permanently stripped) |
 | `internal/subagent/registry.go` | `Registry`: `Register` / `Get` / `List` |
 | `internal/subagent/frontmatter.go` | `parseAgentFile`: YAML frontmatter parsing |
 | `internal/subagent/loader.go` | `Registry.LoadFromDir`: file-based definition loading |
+| `internal/subagent/builtin.go` | `RegisterBuiltins`: the six built-in Sub-Agent definitions |
 | `internal/subagent/prompt.go` | `promptBuilder`: system prompt + skills + workDir assembly |
-| `internal/subagent/tracker.go` | `TaskTracker`: single source of truth for background tasks (full-process log + result injection) |
-| `internal/subagent/runner.go` | `Runner`: builds the isolated sub-engine + executes + forwards events |
-| `internal/subagent/task_tool.go` | `TaskTool`: `task` tool implementation (foreground / background) |
-| `internal/schema/subagent.go` | `SubAgentUpdate` / `SubAgentUpdateKind` type definitions |
+| `internal/subagent/tracker.go` | `TaskTracker`: single source of truth for background tasks (full-process log + result injection + `Control` routing) |
+| `internal/subagent/control.go` | `TaskController`: the control plane (implements `engine.TaskGate`; Pause/Resume/Cancel/Steer + the `AwaitTurn` gate) |
+| `internal/subagent/runner.go` | `Runner`: builds the isolated sub-engine + executes + forwards events + `WithTaskGate` / `bindExec` wiring |
+| `internal/subagent/task_tool.go` | `TaskTool`: `task` tool implementation (foreground / background; the background path creates and attaches a controller) |
+| `internal/subagent/task_status.go` | `TaskStatusTool`: the `task_status` observation tool |
+| `internal/subagent/task_wait.go` | `TaskWaitTool`: the `task_wait` join primitive (timeout returns a snapshot, not an error) |
+| `internal/subagent/task_control.go` | `TaskControlTool`: the `task_control` tool (state-machine errors returned as text) |
+| `internal/engine/task_gate.go` | `TaskGate` interface + `WithTaskGate`: the turn-boundary control gate (interface defined on the consumer side) |
+| `internal/schema/subagent.go` | `SubAgentUpdate` / `SubAgentUpdateKind` type definitions (incl. Paused / Resumed / Cancelled) |
 | `internal/hooks/subagent_progress.go` | `SubAgentProgressFunc`: context injection/extraction |
 | `internal/engine/stream.go` | `EventSubAgent`, `EventApprovalRequired`, progress sink injection |
-| `cmd/harness9/main.go` | Complete wiring: built-in Sub-Agent registration, Runner construction, task tool registration |
-| `cmd/harness9/tui_update.go` | `EventSubAgent` handling, `TaskTracker.DrainCompleted` injection in `dispatch()`, `dispatchMention` (@ foreground direct run), `handleTaskPanelKey` (task panel key bindings) |
-| `cmd/harness9/tui_view.go` | `renderSubAgentProgress()` (dark-cyan progress block), `renderTaskPanel()` (panel list/detail), background task count in `renderStatusBar()` |
+| `internal/context/builder.go` | `WithDelegationGuide`: delegation guide section injected into the system prompt |
+| `cmd/harness9/main.go` | Complete wiring: `RegisterBuiltins`, Runner construction, task + coordination tool registration, `WithDelegationNudge` |
+| `cmd/harness9/tui_update.go` | `EventSubAgent` handling, `DrainCompleted` injection, `maybeAutoWake` auto-wake, `dispatchMention` (@ foreground direct run), `handleTaskPanelKey` (task panel keys + steer input mode) |
+| `cmd/harness9/tui_view.go` | `renderSubAgentProgress()` (dark-cyan progress block), `renderTaskPanel()` (panel list/detail, five-state coloring), background task count in `renderStatusBar()` |

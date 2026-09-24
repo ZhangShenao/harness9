@@ -303,6 +303,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if raw == "" {
 				return m, nil
 			}
+			// 任何真实用户输入重置自动唤醒预算。统一收敛在此（Enter 提交分支顶部）而非
+			// dispatch 本体：普通 prompt、/命令、@mention、Shell 模式等提交路径均经此进入，
+			// 且自动唤醒自身也走 dispatch——若在 dispatch 内重置会导致预算自我续满、链式跑飞。
+			// exhausted 随预算一起复位（按周期）：用户输入即开启新周期，
+			// 新周期耗尽应再次提示，否则从第二次耗尽起静默、唤醒"时灵时不灵"。
+			m.autoWakeBudget = autoWakeBudgetMax
+			m.autoWakeExhausted = false
 			m.phase = phaseChat
 			m.input.Reset()
 			m.shellMode = false
@@ -468,9 +475,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	case subAgentNotifyMsg:
-		// 后台子代理完成：即时将结果显示到对话区（用户立即可见），并缓存待下次注入 LLM。
-		m = m.harvestSubAgentResults()
-		return m, nil
+		// 后台子代理完成：即时将结果显示到对话区（用户立即可见），并缓存待下次注入 LLM；
+		// 若主 agent 空闲且有预算，随后自动唤醒消费结果（异步闭环，spec §5.7）。
+		return m.handleSubAgentNotify()
 
 	case sandboxUpdateMsg:
 		m.sandboxes = msg.infos
@@ -1229,14 +1236,19 @@ func summarizeTool(name string, args json.RawMessage) string {
 // 用户立即可见），并写入 pendingSubAgentInject 以便下次 dispatch 注入 LLM 上下文。
 // 从 subAgentNotifyMsg（即时显示）与 dispatch（兜底）两处调用——DrainCompleted 幂等，已注入结果
 // 后续调用不再返回，从而实现"显示一次 + 注入一次"，二者不重复消费。
+// 状态词按 CompletedTask.State 三分：Done→完成 / Failed→失败 / Cancelled→已取消——
+// 主动取消（主代理决策）与出错（子代理失败）的后续处置不同，不得混渲为"失败"。
 func (m tuiModel) harvestSubAgentResults() tuiModel {
 	if m.subAgentTracker == nil {
 		return m
 	}
 	for _, ct := range m.subAgentTracker.DrainCompleted() {
 		status := "完成"
-		if ct.IsError {
+		switch ct.State {
+		case subagent.TaskFailed:
 			status = "失败"
+		case subagent.TaskCancelled:
+			status = "已取消"
 		}
 		// 显示到对话区，用户即时可见。
 		// 注意：仅在非流式时追加——流式回复进行中（running）时，EventActionDelta 会以
@@ -1253,6 +1265,45 @@ func (m tuiModel) harvestSubAgentResults() tuiModel {
 			fmt.Sprintf("[后台子代理 %s %s]\n%s", ct.AgentName, status, ct.FinalText))
 	}
 	return m
+}
+
+// maybeAutoWake 实现异步闭环（spec §5.7）：主 agent 空闲且有预算时，
+// 把注入缓冲合成为自动唤醒 prompt 走正常 dispatch；预算耗尽提示一次后停用。
+func (m tuiModel) maybeAutoWake() (tuiModel, tea.Cmd) {
+	// m.compacting：/compact 压缩窗口同样要求空闲（LLM 摘要耗时数秒），期间唤醒
+	// dispatch 的历史落盘会与 Compact 的 Clear+AddMessages 写回竞态（互抹），
+	// 故跳过唤醒，结果留注入缓冲由压缩后的下次 dispatch 兜底消费。
+	if !m.autoWakeEnabled || m.running || m.compacting || len(m.pendingSubAgentInject) == 0 {
+		return m, nil
+	}
+	if m.autoWakeBudget <= 0 {
+		if !m.autoWakeExhausted {
+			m.autoWakeExhausted = true
+			m.lines = append(m.lines, subAgentLineStyle.Render(
+				"⚠ 自动唤醒已达上限，后台结果将在你下次发送消息时注入"))
+		}
+		return m, nil
+	}
+	m.autoWakeBudget--
+	// 先取走注入缓冲再 dispatch：dispatch 内部会兜底 harvest 并前置拼接
+	// pendingSubAgentInject，若不先清空会导致同一批结果被双重前缀注入。
+	blocks := m.pendingSubAgentInject
+	m.pendingSubAgentInject = nil
+	m.lines = append(m.lines, subAgentLineStyle.Render("⟳ 后台子代理任务完成，自动唤醒主代理"))
+	var sb strings.Builder
+	sb.WriteString("[系统自动唤醒] 以下后台子代理任务已结束，请处理其结果并继续推进整体任务；" +
+		"若所有子任务已结束，向用户汇报总结。\n\n")
+	for _, b := range blocks {
+		sb.WriteString(b)
+		sb.WriteString("\n")
+	}
+	return m.dispatch(sb.String())
+}
+
+// handleSubAgentNotify 供 Update 与测试共用的 notify 处理路径。
+func (m tuiModel) handleSubAgentNotify() (tuiModel, tea.Cmd) {
+	m = m.harvestSubAgentResults()
+	return m.maybeAutoWake()
 }
 
 // dispatchMention 解析 @<name> <task> 并前台直跑指定子代理（绕过主 LLM）。
@@ -1296,7 +1347,7 @@ func (m tuiModel) dispatchMention(raw string) (tuiModel, tea.Cmd) {
 			}
 		}
 		cctx := hooks.WithSubAgentProgress(ctx, sink)
-		res, err := m.subAgentRunner.Run(cctx, def2, task, false)
+		res, err := m.subAgentRunner.Run(cctx, def2, task, false, nil) // @agent 前台直跑，无控制门
 		select {
 		case ch <- subAgentDirectMsg{done: true, result: res.FinalText, err: err}:
 		case <-ctx.Done():
@@ -1482,14 +1533,47 @@ func (m tuiModel) handleResumeSelection(raw string) (tea.Model, tea.Cmd) {
 	return m, textinput.Blink
 }
 
-// handleTaskPanelKey 处理任务面板模态按键：列表态 ↑↓ 选择 / Enter 进详情 / Esc 关闭；
-// 详情态 ↑↓ 滚动 / Esc 回列表 / Ctrl+T 关闭。
+// handleTaskPanelKey 处理任务面板模态按键：列表态 ↑↓ 选择 / Enter 进详情 / Esc 关闭
+// + 操作键 p 暂停 / r 恢复 / x 取消（两段确认）/ s 转向（spec §5.11）；
+// 详情态 ↑↓ 滚动 / Esc 回列表 / Ctrl+T 关闭；
+// 转向输入态（taskSteerID 非空）优先拦截：Enter 提交 / Esc 取消 / 其余键进输入框。
 func (m tuiModel) handleTaskPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 转向输入态优先拦截：Enter 提交 / Esc 取消 / 其余键交给输入框。
+	if m.taskSteerID != "" {
+		switch msg.Type {
+		case tea.KeyEnter:
+			text := strings.TrimSpace(m.taskSteerInput.Value())
+			if text != "" && m.subAgentTracker != nil {
+				if err := m.subAgentTracker.Control(m.taskSteerID, "steer", text); err != nil {
+					m.lines = append(m.lines, errorStyle.Render("转向失败: "+err.Error()))
+				} else {
+					m.lines = append(m.lines, subAgentLineStyle.Render("↪ 已注入转向指令 "+m.taskSteerID))
+				}
+			}
+			m.taskSteerID = ""
+			m.taskSteerInput.SetValue("")
+			m.taskSteerInput.Blur()
+		case tea.KeyEsc:
+			m.taskSteerID = ""
+			m.taskSteerInput.SetValue("")
+			m.taskSteerInput.Blur()
+		default:
+			var cmd tea.Cmd
+			m.taskSteerInput, cmd = m.taskSteerInput.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+	}
 	var list []subagent.TaskSnapshot
 	if m.subAgentTracker != nil {
 		list = m.subAgentTracker.List()
 	}
 	if m.taskDetailID == "" {
+		// x 两段确认防误触：除 x 本身外任何按键（含 ↑↓ 移动、Esc 关闭、p/r/s 操作）
+		// 都解除武装——x → ↑ → x 的第二次 x 指向的是移动后的另一任务，不应直接取消。
+		if msg.String() != "x" {
+			m.taskCancelArmed = false
+		}
 		switch msg.Type {
 		case tea.KeyUp:
 			if m.taskPanelCursor > 0 {
@@ -1506,6 +1590,27 @@ func (m tuiModel) handleTaskPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case tea.KeyEsc, tea.KeyCtrlT:
 			m.taskPanelMode = false
+		default:
+			// 操作键（列表态）：p 暂停 / r 恢复 / x 取消（两段确认）/ s 转向。
+			if len(list) > 0 && m.taskPanelCursor >= 0 && m.taskPanelCursor < len(list) {
+				id := list[m.taskPanelCursor].ID
+				switch msg.String() {
+				case "p":
+					m = m.controlTask(id, "pause", "")
+				case "r":
+					m = m.controlTask(id, "resume", "")
+				case "x":
+					if m.taskCancelArmed {
+						m = m.controlTask(id, "cancel", "用户在面板取消")
+						m.taskCancelArmed = false
+					} else {
+						m.taskCancelArmed = true
+					}
+				case "s":
+					m.taskSteerID = id
+					m.taskSteerInput.Focus()
+				}
+			}
 		}
 		return m, nil
 	}
@@ -1530,6 +1635,23 @@ func (m tuiModel) handleTaskPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.taskDetailID = ""
 	}
 	return m, nil
+}
+
+// controlTask 面板操作统一入口：路由 tracker.Control 并把结果显示到对话区。
+// 值接收者返回新 model（与 tuiModel 值语义一致），调用处 m = m.controlTask(...)。
+func (m tuiModel) controlTask(id, action, message string) tuiModel {
+	if m.subAgentTracker == nil {
+		return m
+	}
+	if err := m.subAgentTracker.Control(id, action, message); err != nil {
+		m.lines = append(m.lines, errorStyle.Render(fmt.Sprintf("任务控制失败: %v", err)))
+		return m
+	}
+	verb := map[string]string{
+		"pause": "已暂停", "resume": "已恢复", "cancel": "已取消",
+	}[action]
+	m.lines = append(m.lines, subAgentLineStyle.Render(fmt.Sprintf("⏸ %s %s", id, verb)))
+	return m
 }
 
 // truncateUTF8 按字节截断 s 到 maxBytes 以内，同时保证不在多字节 UTF-8 字符中间截断。

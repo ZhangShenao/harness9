@@ -13,6 +13,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -1088,5 +1089,175 @@ func TestPlanningGate_OnceOnly(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Fatalf("规划提示应恰好出现在 1 次 LLM 调用的历史中，实际 %d 次", hits)
+	}
+}
+
+// stubTool 是最小化的 BaseTool 桩：仅提供名称，Execute 恒返回成功。
+// 供需要走真实 tools.Registry 注册路径的测试使用（TaskGate 转向注入等）。
+type stubTool struct {
+	name string
+}
+
+func (t *stubTool) Name() string { return t.name }
+func (t *stubTool) Definition() schema.ToolDefinition {
+	return schema.ToolDefinition{
+		Name:        t.name,
+		Description: "test stub tool",
+		InputSchema: map[string]any{"type": "object"},
+	}
+}
+
+func (t *stubTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
+	return "ok", nil
+}
+
+// scriptedGate 按 AwaitTurn 调用序号返回预设转向消息（不阻塞）。
+type scriptedGate struct {
+	steerPerCall map[int][]string
+	calls        int
+}
+
+func (g *scriptedGate) AwaitTurn(_ context.Context) ([]string, error) {
+	g.calls++
+	if s, ok := g.steerPerCall[g.calls]; ok {
+		return s, nil
+	}
+	return nil, nil
+}
+
+// TestTaskGateSteerInjectedAsUserMessage 验证 gate 返回的转向消息以 user 角色
+// 持久化到历史（出现在后续 LLM 调用的消息里），前缀为主代理转向指令标记。
+func TestTaskGateSteerInjectedAsUserMessage(t *testing.T) {
+	p := &countingProvider{responses: []func(tools []schema.ToolDefinition) *schema.Message{
+		func(tools []schema.ToolDefinition) *schema.Message {
+			return &schema.Message{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{{
+				ID: "c1", Name: "echo", Arguments: json.RawMessage(`{"text":"hi"}`),
+			}}}
+		},
+		func(_ []schema.ToolDefinition) *schema.Message {
+			return &schema.Message{Role: schema.RoleAssistant, Content: "done"}
+		},
+	}}
+	r := tools.NewRegistry()
+	if err := r.Register(&stubTool{name: "echo"}); err != nil {
+		t.Fatal(err)
+	}
+	gate := &scriptedGate{steerPerCall: map[int][]string{2: {"换个方向，只关注 engine 包"}}}
+	eng := NewAgentEngine(p, r, "/test", WithTaskGate(gate))
+
+	if err := eng.Run(context.Background(), "start"); err != nil {
+		t.Fatal(err)
+	}
+	// 第二次 Generate 的消息中应含转向指令（turn 2 开始前由 gate 返回并注入历史）
+	found := false
+	for _, msg := range p.calls[1].messages {
+		if msg.Role == schema.RoleUser &&
+			strings.Contains(msg.Content, "[主代理转向指令]") &&
+			strings.Contains(msg.Content, "只关注 engine 包") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("转向消息未以 user 角色注入第二次 LLM 调用")
+	}
+	if gate.calls != 2 {
+		t.Fatalf("AwaitTurn 调用次数 = %d，want 2", gate.calls)
+	}
+}
+
+// blockingGate 阻塞直到 release 关闭；用于验证暂停期间 ctx 取消向上传播、
+// 以及暂停不消耗 MaxTurns 配额。
+type blockingGate struct {
+	release chan struct{}
+	entered chan struct{}
+}
+
+func (g *blockingGate) AwaitTurn(ctx context.Context) ([]string, error) {
+	close(g.entered)
+	select {
+	case <-g.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TestTaskGateCancelWhilePaused 验证暂停中取消 ctx：Run 以错误返回。
+func TestTaskGateCancelWhilePaused(t *testing.T) {
+	p := &countingProvider{}
+	r := tools.NewRegistry()
+	gate := &blockingGate{release: make(chan struct{}), entered: make(chan struct{})}
+	eng := NewAgentEngine(p, r, "/test", WithTaskGate(gate))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- eng.Run(ctx, "start") }()
+	<-gate.entered
+	cancel()
+	if err := <-errCh; err == nil {
+		t.Fatal("暂停中取消 ctx 应返回错误")
+	}
+}
+
+// TestTaskGatePauseDoesNotConsumeMaxTurns 验证门控等待发生在 beginTurn 之前：
+// MaxTurns=1 时先暂停再放行，引擎仍能完成整整 1 个 Turn。
+func TestTaskGatePauseDoesNotConsumeMaxTurns(t *testing.T) {
+	p := &countingProvider{responses: []func(tools []schema.ToolDefinition) *schema.Message{
+		func(_ []schema.ToolDefinition) *schema.Message {
+			return &schema.Message{Role: schema.RoleAssistant, Content: "ok"}
+		},
+	}}
+	r := tools.NewRegistry()
+	gate := &blockingGate{release: make(chan struct{}), entered: make(chan struct{})}
+	eng := NewAgentEngine(p, r, "/test", WithMaxTurns(1), WithTaskGate(gate))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- eng.Run(context.Background(), "start") }()
+	<-gate.entered
+	close(gate.release)
+	if err := <-errCh; err != nil {
+		t.Fatalf("暂停不应消耗 MaxTurns 配额: %v", err)
+	}
+}
+
+// TestDelegationNudge 验证连续 N 轮只读探索后注入一次委派提示（≤2 次/交互），
+// 进展工具调用重置计数；bash 轮不计数（无法判定读写）。
+func TestDelegationNudge(t *testing.T) {
+	toolTurn := func() func(tools []schema.ToolDefinition) *schema.Message {
+		return func(tools []schema.ToolDefinition) *schema.Message {
+			return &schema.Message{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{{
+				ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"path":"a.go"}`),
+			}}}
+		}
+	}
+	p := &countingProvider{responses: []func(tools []schema.ToolDefinition) *schema.Message{
+		toolTurn(), toolTurn(), toolTurn(), // 3 轮探索 → 触发
+		toolTurn(), toolTurn(), toolTurn(), // 再 3 轮 → 第二次触发
+		toolTurn(), toolTurn(), toolTurn(), // 第三次不触发（上限 2）
+		func(_ []schema.ToolDefinition) *schema.Message {
+			return &schema.Message{Role: schema.RoleAssistant, Content: "done"}
+		},
+	}}
+	r := tools.NewRegistry()
+	if err := r.Register(&stubTool{name: "read_file"}); err != nil {
+		t.Fatal(err)
+	}
+	eng := NewAgentEngine(p, r, "/test",
+		WithDelegationNudge(3, "考虑把批量探索委派给 explorer 子代理"))
+
+	if err := eng.Run(context.Background(), "start"); err != nil {
+		t.Fatal(err)
+	}
+	nudged := 0
+	for _, call := range p.calls {
+		for _, msg := range call.messages {
+			if msg.Role == schema.RoleUser && strings.Contains(msg.Content, "委派给 explorer") {
+				nudged++
+				break
+			}
+		}
+	}
+	if nudged != 2 {
+		t.Fatalf("委派 nudge 注入 %d 次, want 2", nudged)
 	}
 }
