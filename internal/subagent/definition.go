@@ -13,6 +13,16 @@ import (
 // namePattern 约束子代理名称：小写字母/数字开头，后续可含连字符。
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
+// alwaysDeniedTools 永远从子代理工具集剥离的工具（无论白名单黑名单如何声明）：
+// task 家族四工具是主 agent 的协调平面——子代理不得递归委派（防递归），
+// 也不得操纵兄弟任务或查询主 tracker（防越权，spec §7.1）。
+var alwaysDeniedTools = map[string]bool{
+	"task":         true,
+	"task_status":  true,
+	"task_wait":    true,
+	"task_control": true,
+}
+
 // SubAgentDefinition 描述一个子代理类型。
 type SubAgentDefinition struct {
 	Name            string   // 唯一标识（小写字母、数字、连字符）
@@ -46,7 +56,8 @@ func (d SubAgentDefinition) Validate() error {
 // ResolveTools 给定全部可用工具名集合，返回子代理实际可用的工具名集合：
 //  1. Tools 非空 → 取 Tools∩all；Tools 为空 → 取 all
 //  2. 移除 DisallowedTools
-//  3. 永远移除 "task"（防递归，无论是否在白名单）
+//  3. 永远移除 task 家族四工具（alwaysDeniedTools：防递归 + 防越权操纵主 tracker，
+//     无论是否在白名单，spec §7.1）
 func (d SubAgentDefinition) ResolveTools(all []string) []string {
 	allowed := make(map[string]bool, len(all))
 	for _, t := range all {
@@ -64,7 +75,10 @@ func (d SubAgentDefinition) ResolveTools(all []string) []string {
 		base = append(base, all...)
 	}
 
-	denied := map[string]bool{"task": true}
+	denied := make(map[string]bool, len(alwaysDeniedTools)+len(d.DisallowedTools))
+	for k := range alwaysDeniedTools {
+		denied[k] = true
+	}
 	for _, t := range d.DisallowedTools {
 		denied[t] = true
 	}

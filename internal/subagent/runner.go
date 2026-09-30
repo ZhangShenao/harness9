@@ -45,12 +45,13 @@ type SubAgentResult struct {
 	FinalText string
 }
 
-// denyTaskHook 是纵深防御 hook：始终拒绝子代理调用 task 工具（防递归）。
+// denyTaskHook 是纵深防御 hook：始终拒绝子代理调用 task 家族四工具
+// （防递归 + 防越权操纵主 tracker——即使 ResolveTools 被绕过）。
 type denyTaskHook struct{}
 
 func (denyTaskHook) BeforeExecute(ctx context.Context, tc schema.ToolCall) (context.Context, hooks.HookDecision, error) {
-	if tc.Name == "task" {
-		return ctx, hooks.Deny("子代理不允许再派生子代理"), nil
+	if alwaysDeniedTools[tc.Name] {
+		return ctx, hooks.Deny("子代理不允许调用主代理的协调工具（" + tc.Name + "）"), nil
 	}
 	return ctx, hooks.Allow(), nil
 }
@@ -60,7 +61,8 @@ func (denyTaskHook) AfterExecute(_ context.Context, _ schema.ToolCall, r schema.
 }
 
 // buildChildRegistry 构造子代理的隔离工具注册表：仅注册定义允许的基础工具
-// （永不含 task），再包权限派生 hook + denyTaskHook + sharedHooks（danger/offload）。
+// （永不含 task 家族四工具，见 alwaysDeniedTools），再包权限派生 hook +
+// denyTaskHook + sharedHooks（danger/offload）。
 // baseTools 参数允许调用方传入经 sandbox 包装后的工具集（Sandbox 模式），
 // 或直接传入 r.baseTools（无 Sandbox 模式），实现解耦。
 func (r *Runner) buildChildRegistry(def SubAgentDefinition, baseTools []tools.BaseTool) (tools.Registry, error) {
@@ -87,8 +89,10 @@ func (r *Runner) buildChildRegistry(def SubAgentDefinition, baseTools []tools.Ba
 }
 
 // Run 同步执行一个子代理：构建隔离子引擎，调用 RunStream，消费事件流，
-// 转发进度、桥接审批、累积最终文本。background 控制审批策略与执行 context。
-func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string, background bool) (SubAgentResult, error) {
+// 转发进度、桥接审批、累积最终文本。background 控制审批策略与执行 context；
+// ctl 非 nil 时（后台路径）子引擎启用轮边界门控，execCtx 的 cancel 绑定到
+// controller（供 Cancel 立即中断），结束时标记终态（Done/Failed，Cancelled 不覆盖）。
+func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string, background bool, ctl *TaskController) (SubAgentResult, error) {
 	// 为子代理创建独立 Sandbox（若 Manager 已配置）
 	effectiveBaseTools := r.baseTools
 	if r.sandboxMgr != nil {
@@ -152,6 +156,11 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 	if comp := r.compactorFor(p, ctxWin); comp != nil {
 		opts = append(opts, engine.WithCompactor(comp))
 	}
+	// ctl 非 nil（后台路径）时注入轮边界控制门：子引擎每轮开始前经 AwaitTurn
+	// 阻塞/放行，Pause/Steer/Cancel 由此生效（spec §5.5）。
+	if ctl != nil {
+		opts = append(opts, engine.WithTaskGate(ctl))
+	}
 	sub := engine.NewAgentEngine(p, childReg, r.workDir, opts...)
 
 	// 执行 context 的关键设计：
@@ -164,6 +173,11 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 	//           但忽略 60s 工具超时这一 Cause，使子代理得以跑完多轮。
 	execCtx, cancel := context.WithCancel(r.baseCtx)
 	defer cancel()
+	// 绑定 execCtx 的 cancel 到 controller：Cancel 请求经此立即中断 in-flight 的
+	// LLM 调用与工具执行（与用户 Ctrl+C 同语义），并唤醒暂停中的门控等待。
+	if ctl != nil {
+		ctl.bindExec(cancel)
+	}
 	if !background {
 		go func() {
 			select {
@@ -192,6 +206,9 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 
 	stream, err := sub.RunStream(execCtx, prompt)
 	if err != nil {
+		if ctl != nil {
+			ctl.Finish(err)
+		}
 		return SubAgentResult{}, err
 	}
 
@@ -240,6 +257,11 @@ func (r *Runner) Run(ctx context.Context, def SubAgentDefinition, prompt string,
 		}
 	}
 
+	// 成功收尾：先标记终态再上报 Done——保证订阅方观察到 SubAgentDone 时
+	// controller 已是 Done（终态不可迁移，Cancelled 不会被此处覆盖）。
+	if ctl != nil {
+		ctl.Finish(nil)
+	}
 	emit(schema.SubAgentUpdate{Kind: schema.SubAgentDone, Text: currentTurnText})
 	return SubAgentResult{AgentID: childID, FinalText: currentTurnText}, nil
 }

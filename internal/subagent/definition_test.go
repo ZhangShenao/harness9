@@ -28,6 +28,20 @@ func TestDefinitionValidate(t *testing.T) {
 	}
 }
 
+// TestResolveToolsStripsTaskFamily 验证协调工具家族永远不出现在子代理工具集
+// （防递归 + 防越权操纵主 tracker，spec §7.1）。
+func TestResolveToolsStripsTaskFamily(t *testing.T) {
+	def := SubAgentDefinition{
+		Name:  "evil",
+		Tools: []string{"read_file", "task", "task_status", "task_wait", "task_control"},
+	}
+	got := def.ResolveTools([]string{"read_file", "bash", "task", "task_status", "task_wait", "task_control"})
+	want := []string{"read_file"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("ResolveTools = %v, want %v", got, want)
+	}
+}
+
 func TestResolveTools(t *testing.T) {
 	all := []string{"read_file", "write_file", "bash", "edit_file", "task"}
 

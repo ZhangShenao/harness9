@@ -8,6 +8,8 @@
 //	prepareTurnInput   → 上下文预处理：工具过滤、压缩检查、token 估算上报、nudge 注入
 //	generateTurn       → LLM 调用：带重试生成、实际用量上报、响应追加到完整历史
 //	trackStall         → 停滞检测：进展工具计数维护
+//	trackPlanningWork  → 规划门槛：纯只读探索计数与解除武装（P1-1）
+//	trackDelegation    → 委派门槛：探索/进展工具判定与计数（spec §5.8）
 //	injectObservations → 结果注入：工具执行结果作为 Observation（user 角色）追加
 //	saveHistory        → 收尾：本次 Run 新增消息持久化（仅自然终止路径）
 //	savePlan          → 收尾：PlanStore 持久化（所有退出路径，defer 保证）
@@ -43,18 +45,20 @@ type loopContext struct {
 	comp      memory.Compactor
 	planStore *planning.PlanStore
 
-	obs                EngineObserver   // 非 nil：入口已兜底为 noopObserver
-	obsCtx             context.Context  // interaction span 注入后的 ctx，所有 Turn ctx 的祖先
-	history            []schema.Message // 引擎本地的完整历史（含 system prompt 与本次全部新增消息）
-	startLen           int              // 本次 Run 新增消息在 history 中的起始下标（持久化边界）
-	turns              int              // 已进入的 Turn 计数（含被 MaxTurns 拒绝的那一轮）
-	turnsSinceProgress int              // 自上次进展工具调用以来的轮数（驱动停滞 nudge）
-	turnsSincePlanWork int              // 连续"纯只读探索"的轮数（驱动规划门槛，P1-1）
-	closingNudged      bool             // 收尾 nudge（P1-4）是否已注入——每次 interaction 至多一次
-	planningNudged     bool             // 规划 nudge（P1-1）是否已注入——每次 interaction 至多一次
-	planningDisarmed   bool             // 规划门槛（P1-1）是否已解除武装——出现过 plan_write/进展工具后永久失效
-	interactionErr     error            // 记录导致交互非正常结束的错误，供 OnInteractionEnd 上报
-	overallStart       time.Time
+	obs                  EngineObserver   // 非 nil：入口已兜底为 noopObserver
+	obsCtx               context.Context  // interaction span 注入后的 ctx，所有 Turn ctx 的祖先
+	history              []schema.Message // 引擎本地的完整历史（含 system prompt 与本次全部新增消息）
+	startLen             int              // 本次 Run 新增消息在 history 中的起始下标（持久化边界）
+	turns                int              // 已进入的 Turn 计数（含被 MaxTurns 拒绝的那一轮）
+	turnsSinceProgress   int              // 自上次进展工具调用以来的轮数（驱动停滞 nudge）
+	turnsSincePlanWork   int              // 连续"纯只读探索"的轮数（驱动规划门槛，P1-1）
+	turnsSinceDelegation int              // 连续"有探索无进展"的轮数（驱动委派 nudge）
+	delegationNudges     int              // 委派 nudge 已注入次数（单次交互上限 2）
+	closingNudged        bool             // 收尾 nudge（P1-4）是否已注入——每次 interaction 至多一次
+	planningNudged       bool             // 规划 nudge（P1-1）是否已注入——每次 interaction 至多一次
+	planningDisarmed     bool             // 规划门槛（P1-1）是否已解除武装——出现过 plan_write/进展工具后永久失效
+	interactionErr       error            // 记录导致交互非正常结束的错误，供 OnInteractionEnd 上报
+	overallStart         time.Time
 }
 
 // turnInput 是单次 LLM 调用的完整输入。
@@ -204,6 +208,15 @@ func (lc *loopContext) prepareTurnInput() turnInput {
 		lc.planningNudged = true
 	}
 
+	// 4b'''. 委派 nudge：连续 N 轮只读探索 → 提示委派子代理（保护主上下文）。
+	// 与停滞 nudge 一致：仅注入临时副本，绝不持久化；单次交互 ≤2 次。
+	if e.delegationThreshold > 0 && lc.turnsSinceDelegation >= e.delegationThreshold &&
+		lc.delegationNudges < maxDelegationNudges {
+		lc.delegationNudges++
+		lc.turnsSinceDelegation = 0
+		compactedHistory = appendUserNudge(compactedHistory, e.delegationText)
+	}
+
 	// 4c. Plan 注入：活跃计划原样追加到发送视图末尾（Spec §5.2）。
 	// 覆盖三个场景且为同一条代码路径：压缩后（本视图即压缩产物，无论哪个 Compactor 实现）、
 	// 会话恢复后（beginInteraction 已从 Session 恢复 PlanStore）、运行中（每轮重算，
@@ -264,6 +277,29 @@ func (lc *loopContext) trackPlanningWork(calls []schema.ToolCall) {
 		}
 	}
 	lc.turnsSincePlanWork++
+}
+
+// maxDelegationNudges 是单次交互内委派 nudge 的注入上限（避免持续唠叨）。
+const maxDelegationNudges = 2
+
+// trackDelegation 维护委派 nudge 计数：本轮有探索类工具且无进展类工具 → 计数 +1；
+// 有进展类工具 → 归零；bash 或无工具轮不计数（spec §5.8）。
+func (lc *loopContext) trackDelegation(calls []schema.ToolCall) {
+	hasExplore, hasProgress := false, false
+	for _, tc := range calls {
+		if exploreToolNames[tc.Name] {
+			hasExplore = true
+		}
+		if progressToolNames[tc.Name] || tc.Name == "plan_write" || tc.Name == "task" {
+			hasProgress = true
+		}
+	}
+	switch {
+	case hasProgress:
+		lc.turnsSinceDelegation = 0
+	case hasExplore:
+		lc.turnsSinceDelegation++
+	}
 }
 
 // injectObservations 将工具执行结果作为 Observation（user 角色）逐条注入历史并返回新历史。
