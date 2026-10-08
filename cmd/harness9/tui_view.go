@@ -275,11 +275,32 @@ func (m tuiModel) renderStatusBar() string {
 		}
 	}
 
+	// taskLivePart 实时展示活跃后台任务的 "任务 N▸M" 计数（spec §5.11 状态栏）：
+	// N=运行中数量；存在暂停任务时以 ▸M 后缀提示（面板 p 键产生的暂停态一目了然）。
+	// 无运行中任务（含 tracker 未装配）时不显示，避免状态栏常驻噪音。
+	var taskLivePart string
+	if m.subAgentTracker != nil {
+		if n := m.subAgentTracker.RunningCount(); n > 0 {
+			seg := fmt.Sprintf("任务 %d", n)
+			paused := 0
+			for _, s := range m.subAgentTracker.List() {
+				if s.State == subagent.TaskPaused {
+					paused++
+				}
+			}
+			if paused > 0 {
+				seg += fmt.Sprintf("▸%d", paused)
+			}
+			taskLivePart = dimStyle.Render("  │  ") + accent.Render(seg)
+		}
+	}
+
 	content := dimStyle.Render("  model: ") +
 		accent.Render(m.modelName) +
 		modePart +
 		tasksPart +
 		bgTasksPart +
+		taskLivePart +
 		dimStyle.Render("  │  ") +
 		accent.Render(shortPath(m.workDir)) +
 		sessionInfo
@@ -306,12 +327,34 @@ func (m tuiModel) renderTaskPanel() string {
 			case subagent.TaskFailed:
 				icon = "✗"
 			}
-			row := fmt.Sprintf("%s %s  %s  \"%s\"", icon, s.AgentName, s.State.String(), truncateUTF8(s.Prompt, 48))
-			if i == m.taskPanelCursor {
-				sb.WriteString(userMsgStyle.Render("▶ "+row) + "\n")
-			} else {
-				sb.WriteString("  " + dimStyle.Render(row) + "\n")
+			// 行格式镜像 task_status 工具的单行摘要：ID [状态] agent "desc" 耗时；最近：活动。
+			// 状态字样经 taskStateStyle 着色（运行绿/暂停黄/取消灰/完成蓝/失败红），
+			// 其余部分保持 dimStyle；光标行只高亮 ▶ 前缀，避免整行重渲染吞掉状态色。
+			desc := s.Description
+			if desc == "" {
+				desc = truncateUTF8(s.Prompt, 48)
 			}
+			rest := fmt.Sprintf(" %s %q %s", s.AgentName, desc, formatPanelDuration(s.Elapsed))
+			if s.LastActivity != "" {
+				rest += "；最近：" + s.LastActivity
+			}
+			row := dimStyle.Render(icon+" "+s.ID+" ") +
+				taskStateStyle(s.State).Render("["+s.State.String()+"]") +
+				dimStyle.Render(rest)
+			prefix := "  "
+			if i == m.taskPanelCursor {
+				prefix = userMsgStyle.Render("▶ ")
+			}
+			sb.WriteString(prefix + row + "\n")
+		}
+		// 面板底部：操作提示行；x 武装时追加强确认提示；转向输入态渲染单行输入框。
+		sb.WriteString("\n")
+		sb.WriteString(dimStyle.Render("  p 暂停 · r 恢复 · x 取消（按两次确认） · s 转向 · Enter 详情 · Esc 关闭") + "\n")
+		if m.taskCancelArmed {
+			sb.WriteString(errorStyle.Render("  ⚠ 再按 x 确认取消（其他键解除）") + "\n")
+		}
+		if m.taskSteerID != "" {
+			sb.WriteString("\n转向 " + m.taskSteerID + ":\n" + m.taskSteerInput.View() + "\n")
 		}
 		return sb.String()
 	}
@@ -329,6 +372,35 @@ func (m tuiModel) renderTaskPanel() string {
 		sb.WriteString(ln + "\n")
 	}
 	return sb.String()
+}
+
+// taskStateStyle 按任务状态返回展示样式（运行=绿、暂停=黄、取消=灰、完成=蓝、失败=红）。
+// 新建样式对象而非复用包级变量：面板每帧仅渲染少量任务行，代价可忽略，
+// 换取与既有包级样式解耦（避免状态色被全局主题调整意外波及）。
+func taskStateStyle(s subagent.TaskState) lipgloss.Style {
+	switch s {
+	case subagent.TaskRunning:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	case subagent.TaskPaused:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	case subagent.TaskCancelled:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	case subagent.TaskFailed:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	default: // TaskDone
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	}
+}
+
+// formatPanelDuration 生成面板展示的人类可读时长（镜像 task_status 工具的 formatDuration，
+// TUI 侧独立实现以保持渲染自治）。
+func formatPanelDuration(d time.Duration) string {
+	switch {
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
 }
 
 // formatTaskLog 把任务全过程日志格式化为展示行（与 subAgentLines 风格一致）。

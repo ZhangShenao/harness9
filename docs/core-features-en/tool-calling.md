@@ -300,13 +300,15 @@ The tool calling process is output through **Block-Style Structured Logs**. Desi
 
 ## Implemented Tools
 
-harness9 currently ships with four built-in tools, covering a Minimum Viable Toolset for file I/O and shell command execution:
+harness9 ships six built-in tools, covering the core set of file I/O, filename/content search, and shell command execution:
 
 | Tool | File | Main capability | Sandbox protection |
 |------|------|---------|---------|
 | `read_file`  | `internal/tools/read_file.go`  | Read the content of a file in the workspace | Yes — safePath validation |
 | `write_file` | `internal/tools/write_file.go` | Create/overwrite a file in the workspace | Yes — safePath validation |
 | `edit_file`  | `internal/tools/edit_file.go`  | Precise text replacement (multi-level fuzzy matching) | Yes — safePath validation |
+| `glob`       | `internal/tools/glob.go`       | Cross-directory filename pattern matching (structured output) | Yes — `path` param safePath validation |
+| `grep`       | `internal/tools/grep.go`       | Cross-file regex content search (structured output) | Yes — `path` param safePath validation |
 | `bash`       | `internal/tools/bash.go`       | Execute arbitrary bash commands  | No — YOLO philosophy, no command whitelist |
 
 ### Shared Security Module: safePath (Path Sandbox)
@@ -421,6 +423,78 @@ L4 — Line-by-Line Indent-Agnostic Matching
 
 **Why no sandboxing is applied**: The bash tool inherently provides full shell access; adding `cd /` alone would escape `workDir`, so a "semi-sandbox" would only create a false sense of security. For path-level security, use `read_file` / `write_file` instead.
 
+### glob — Filename Pattern Matching Tool
+
+**File**: `internal/tools/glob.go`
+
+| Attribute | Value |
+|------|-----|
+| Name | `glob` |
+| Parameters | `pattern` (string, required) — glob pattern, `/`-separated<br>`path` (string, optional) — starting directory (default workspace root, validated via `safePath`)<br>`sort` (string, optional) — `mtime` (default, newest → oldest) or `name` (lexicographic) |
+| Output | A list of relative paths (`/`-separated), with a total count on the last line |
+| Truncation policy | Truncated past `globMaxResults = 200` entries, annotated with "N files total (showing the first 200)" |
+
+**Pattern semantics** (`MatchGlobPath`, segment-wise matching):
+
+- A `**` segment matches **zero or more directory levels** (`**/*_test.go` matches test files at any depth)
+- Within a segment, `*`, `?`, and `[...]` are supported (`path.Match` semantics; `*` does not cross `/`)
+
+```
+glob({"pattern": "internal/**/*_test.go"})
+→
+internal/engine/agent_loop_test.go
+internal/tools/glob_test.go
+…
+42 files total
+```
+
+**Implementation highlights**:
+
+- Pure Go (`filepath.WalkDir` + segment matching), no process overhead
+- Defaults to `mtime` descending — the most recently modified files come first, ideal for "what just changed" questions
+- Excludes the `.git` directory by default; nothing else is excluded — **the pattern is the contract**
+- The search root is explicitly validated before traversal (`os.Stat`): a missing or non-directory root returns a Go error, instead of WalkDir's fail-open swallowing the root-level error and falsely reporting "no matching files"
+
+### grep — Cross-File Regex Content Search Tool
+
+**File**: `internal/tools/grep.go`
+
+| Attribute | Value |
+|------|-----|
+| Name | `grep` |
+| Parameters | `pattern` (string, required) — Go regex syntax<br>`path` (string, optional) — starting directory (default workspace root, validated via `safePath`)<br>`glob` (string, optional) — filename filter pattern, e.g. `*.go` (supports `**`; matches the relative path or the basename)<br>`ignore_case` (bool, optional) — case-insensitive (default `false`; implemented as an `(?i)` prefix)<br>`max_results` (int, optional) — hit-line cap (default 50, clamped to 500) |
+| Output | One line per hit in `path:line: text` form, with an "N files / M lines" summary on the last line |
+| Truncation policy | Each line truncated to 500 runes (UTF-8 safe, `…` suffix); traversal stops at the hit cap (`filepath.SkipAll`) with an "cap N reached, truncated" annotation |
+
+```
+grep({"pattern": "TaskGate", "glob": "*.go"})
+→
+engine/task_gate.go:13:type TaskGate interface {
+engine/agent_loop.go:185:if e.taskGate != nil {
+…
+5 files hit / 12 lines
+```
+
+**Skip rules** (keeping the search high-quality and the context safe):
+
+- **Binary skip**: a file whose first 8KB contains a NUL byte is deemed binary and skipped entirely
+- **Oversized file skip**: files over 10MB are skipped (`grepMaxFileSize`)
+- The `.git` directory is excluded; individual unreadable files are silently skipped (fail-open, preserving search completeness)
+- The search root is explicitly validated before traversal (same rationale as glob)
+
+### glob / grep vs. bash find / grep
+
+`glob` / `grep` are **first-class tools** with four engineering advantages over invoking `find` / `grep` indirectly through `bash`:
+
+| Dimension | `glob` / `grep` tools | `find` / `grep` commands inside `bash` |
+|------|--------------------|-----------------------------|
+| Structured output | A stable contract: relative-path lists / `path:line: text` — the LLM can parse reliably without constructing `find … -exec` pipelines | Output format varies with command spelling and platform; the LLM must assemble commands and re-parse free text |
+| No process overhead | Pure in-process Go scanning, no `bash -c` process fork per call; scales better under concurrent tool calls (multiple ToolCalls per turn) | Every call forks a shell plus child processes; the overhead accumulates with high-frequency calls |
+| Truncation protection | Bounded output (≤200 entries / 50–500 lines, 500 runes per line) — the context window can never be flooded | `grep -r` on a large repo can dump megabytes of raw output, with only the bash tool's 16000-byte fallback truncation as a backstop |
+| Search-root validation | The `path` parameter goes through `safePath` sandbox validation and cannot escape `workDir` | `find` / `grep` can roam the entire filesystem (the bash tool's intentional YOLO semantics) |
+
+Selection guidance: prefer `glob` / `grep` for locating files and searching for symbols and call sites; fall back to `bash` when you need complex pipelines (search + aggregate + sort) or non-filesystem targets.
+
 ### Registration Example
 
 ```go
@@ -428,6 +502,8 @@ registry := tools.NewRegistry()
 registry.Register(tools.NewReadFileTool(workDir))
 registry.Register(tools.NewWriteFileTool(workDir))
 registry.Register(tools.NewEditFileTool(workDir))
+registry.Register(tools.NewGlobTool(workDir))
+registry.Register(tools.NewGrepTool(workDir))
 registry.Register(tools.NewBashTool(workDir))
 ```
 
@@ -491,6 +567,10 @@ Mainstream LLMs (GPT-4, Claude) support issuing multiple tool call requests in a
 
 Error information is valuable context for the LLM. When a tool execution fails, the LLM can see the reason for the failure and attempt to self-heal — correcting the command, adjusting parameters, or choosing an alternative approach. This is more robust than failing silently or terminating the loop outright.
 
+### 6. Why are glob / grep first-class tools instead of relying on bash?
+
+Having the LLM call `find` / `grep` through bash involves two steps of uncertainty — "spell the command correctly → parse the free-text output" — and both the unbounded output and the process overhead are amplified under concurrent tool calls. The first-class `glob` / `grep` tools upgrade "locate a file, search for a symbol" — the single most frequent exploration operation — from shell commands to structured tool calls, with a stable contract (relative-path lists / `path:line: text`), bounded output (200 entries / 50–500 lines), and `safePath` validation of the search root. They are also core members of the read-only tool allowlists of Sub-Agents such as `explorer`.
+
 ## File Index
 
 | File | Responsibility |
@@ -503,6 +583,8 @@ Error information is valuable context for the LLM. When a tool execution fails, 
 | `internal/tools/read_file.go` | `read_file` tool implementation |
 | `internal/tools/write_file.go` | `write_file` tool implementation |
 | `internal/tools/edit_file.go` | `edit_file` tool implementation (multi-level fuzzy matching replacement) |
+| `internal/tools/glob.go` | `glob` tool implementation (cross-directory filename pattern matching, `**` segment matching + `MatchGlobPath`) |
+| `internal/tools/grep.go` | `grep` tool implementation (cross-file regex search, binary skip + structured truncated output) |
 | `internal/tools/bash.go` | `bash` tool implementation |
 | `internal/provider/interface.go` | LLMProvider interface definition |
 | `internal/provider/openai.go` | OpenAI-compatible API adapter |

@@ -300,13 +300,15 @@ func (e *AgentEngine) executeToolsConcurrently(ctx context.Context, turn int, to
 
 ## 已实现的工具
 
-harness9 当前内置四个基础工具，覆盖文件 I/O 与 Shell 命令执行的最小可用集（Minimum Viable Toolset）：
+harness9 内置六个基础工具，覆盖文件 I/O、文件名 / 内容搜索与 Shell 命令执行的核心集：
 
 | 工具 | 文件 | 主要能力 | 沙箱保护 |
 |------|------|---------|---------|
 | `read_file`  | `internal/tools/read_file.go`  | 读取工作区文件内容 | ✅ safePath 校验 |
 | `write_file` | `internal/tools/write_file.go` | 创建/覆盖工作区文件 | ✅ safePath 校验 |
 | `edit_file`  | `internal/tools/edit_file.go`  | 精确文本替换（多级模糊匹配） | ✅ safePath 校验 |
+| `glob`       | `internal/tools/glob.go`       | 跨目录文件名模式匹配（结构化输出） | ✅ path 参数 safePath 校验 |
+| `grep`       | `internal/tools/grep.go`       | 跨文件正则内容搜索（结构化输出） | ✅ path 参数 safePath 校验 |
 | `bash`       | `internal/tools/bash.go`       | 执行任意 bash 命令  | ❌ YOLO 哲学，不做命令白名单 |
 
 ### 共享安全模块：safePath（路径沙箱）
@@ -421,6 +423,78 @@ L4 — 逐行去缩进匹配（Line-by-Line Indent-Agnostic Matching）
 
 **为什么不做沙箱**：bash 工具本质上提供完整 shell 访问，加 `cd /` 即可逃逸 `workDir`，做"半沙箱"反而给安全制造假象。如需路径安全请使用 `read_file` / `write_file`。
 
+### glob — 文件名模式匹配工具
+
+**文件**：`internal/tools/glob.go`
+
+| 属性 | 值 |
+|------|-----|
+| 名称 | `glob` |
+| 参数 | `pattern` (string, 必需) — glob 模式，`/` 分隔<br>`path` (string, 可选) — 起始目录（默认工作区根，经 `safePath` 校验）<br>`sort` (string, 可选) — `mtime`（默认，新→旧）或 `name`（字典序） |
+| 输出 | 相对路径列表（`/` 分隔），末行总数统计 |
+| 截断策略 | 超过 `globMaxResults = 200` 条时截断，标注「共 N 个文件（显示前 200 个）」 |
+
+**模式语义**（`MatchGlobPath`，分段匹配）：
+
+- `**` 段匹配**零或多层目录**（`**/*_test.go` 匹配任意深度的测试文件）
+- 段内支持 `*`、`?`、`[...]`（`path.Match` 语义，`*` 不跨 `/`）
+
+```
+glob({"pattern": "internal/**/*_test.go"})
+→
+internal/engine/agent_loop_test.go
+internal/tools/glob_test.go
+…
+共 42 个文件
+```
+
+**实现要点**：
+
+- 纯 Go 实现（`filepath.WalkDir` + 分段匹配），无进程开销
+- 默认 `mtime` 降序——最新改动的文件排在最前，适配「刚改了什么」类问题
+- 默认排除 `.git` 目录；其余不排除——**pattern 即契约**
+- 遍历前显式校验搜索根存在性（`os.Stat`）：根不存在或非目录时返回 Go error，而非 WalkDir fail-open 吞掉根级错误后的误报「没有匹配的文件」
+
+### grep — 跨文件正则内容搜索工具
+
+**文件**：`internal/tools/grep.go`
+
+| 属性 | 值 |
+|------|-----|
+| 名称 | `grep` |
+| 参数 | `pattern` (string, 必需) — Go 正则语法<br>`path` (string, 可选) — 起始目录（默认工作区根，经 `safePath` 校验）<br>`glob` (string, 可选) — 文件名过滤模式，如 `*.go`（支持 `**`，匹配相对路径或 basename）<br>`ignore_case` (bool, 可选) — 忽略大小写（默认 `false`，实现为 `(?i)` 前缀）<br>`max_results` (int, 可选) — 命中行上限（默认 50，clamp 至 500） |
+| 输出 | 每行命中 `path:line: 行内容`，末行「共 N 个文件命中 / M 行」统计 |
+| 截断策略 | 单行截断 500 runes（UTF-8 安全，`…` 结尾）；达命中上限即停止遍历（`filepath.SkipAll`）并标注「已达上限 N，已截断」 |
+
+```
+grep({"pattern": "TaskGate", "glob": "*.go"})
+→
+engine/task_gate.go:13:type TaskGate interface {
+engine/agent_loop.go:185:if e.taskGate != nil {
+…
+共 5 个文件命中 / 12 行
+```
+
+**跳过规则**（保证搜索质量与上下文安全）：
+
+- **二进制跳过**：首 8KB 含 NUL 字节的文件判定为二进制，整体跳过
+- **超大文件跳过**：单文件超过 10MB 跳过（`grepMaxFileSize`）
+- `.git` 目录排除；单文件读取失败静默跳过（fail-open，保持搜索完整性）
+- 遍历前显式校验搜索根存在性（与 glob 同理）
+
+### glob / grep 与 bash find / grep 的对比
+
+`glob` / `grep` 是**一等工具**（first-class tools），与经 `bash` 间接调用 `find` / `grep` 相比有四项工程化优势：
+
+| 维度 | `glob` / `grep` 工具 | `bash` 内 `find` / `grep` 命令 |
+|------|--------------------|-----------------------------|
+| 结构化输出 | 稳定契约：相对路径列表 / `path:line: text`，LLM 无需构造 `find … -exec` 管道即可可靠解析 | 输出格式随命令拼写与平台差异变化，需要 LLM 自行拼接命令并二次解析 |
+| 无进程开销 | 纯 Go 进程内扫描，每次调用无 `bash -c` 进程 fork；并发工具调用（同 Turn 多 ToolCall）下扩展性更好 | 每次调用 fork shell + 子进程，高频调用累积可观开销 |
+| 截断保护 | 输出有界（≤200 条 / 50–500 行、单行 500 runes），不会撑爆上下文窗口 | `grep -r` 在大仓库可倾泻数 MB 原始输出，仅靠 bash 工具的 16000 字节兜底截断 |
+| 搜索根校验 | `path` 参数经 `safePath` 沙箱校验，不可逃逸 `workDir` | `find` / `grep` 可漫游整个文件系统（bash 工具故意的 YOLO 语义） |
+
+选型建议：定位文件 / 搜索符号与调用点优先用 `glob` / `grep`；需要复杂管道（如搜索 + 统计 + 排序组合）或非文件系统目标时再落回 `bash`。
+
 ### 注册示例
 
 ```go
@@ -428,6 +502,8 @@ registry := tools.NewRegistry()
 registry.Register(tools.NewReadFileTool(workDir))
 registry.Register(tools.NewWriteFileTool(workDir))
 registry.Register(tools.NewEditFileTool(workDir))
+registry.Register(tools.NewGlobTool(workDir))
+registry.Register(tools.NewGrepTool(workDir))
 registry.Register(tools.NewBashTool(workDir))
 ```
 
@@ -491,6 +567,10 @@ LLM 的工具结果通过文本通道传递。无论工具输出是命令行输�
 
 错误信息对 LLM 是有价值的上下文。当工具执行失败时，LLM 能够看到错误原因并尝试自愈 — 修正命令、调整参数或选择替代方案。这比静默失败或直接终止循环更具鲁棒性。
 
+### 6. 为什么 glob / grep 是一等工具而非依赖 bash？
+
+LLM 通过 bash 调用 `find` / `grep` 需要「拼写命令 → 解析自由文本输出」两步不确定性，且无界输出与进程开销在并发工具调用下被放大。一等 `glob` / `grep` 工具以稳定契约（相对路径列表 / `path:line: text`）+ 有界输出（200 条 / 50–500 行）+ `safePath` 搜索根校验，把「定位文件、搜索符号」这一最高频的探索操作从 Shell 命令升级为结构化工具调用——这也是 `explorer` 等只读子代理工具白名单的核心成员。
+
 ## 文件索引
 
 | 文件 | 职责 |
@@ -503,6 +583,8 @@ LLM 的工具结果通过文本通道传递。无论工具输出是命令行输�
 | `internal/tools/read_file.go` | `read_file` 工具实现 |
 | `internal/tools/write_file.go` | `write_file` 工具实现 |
 | `internal/tools/edit_file.go` | `edit_file` 工具实现（多级模糊匹配替换） |
+| `internal/tools/glob.go` | `glob` 工具实现（跨目录文件名模式匹配，`**` 分段匹配 + `MatchGlobPath`） |
+| `internal/tools/grep.go` | `grep` 工具实现（跨文件正则搜索，二进制跳过 + 结构化截断输出） |
 | `internal/tools/bash.go` | `bash` 工具实现 |
 | `internal/provider/interface.go` | LLMProvider 接口定义 |
 | `internal/provider/openai.go` | OpenAI 兼容 API 适配器 |
