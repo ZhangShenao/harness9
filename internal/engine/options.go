@@ -117,6 +117,19 @@ func WithPlanningGate(budget int, text string) Option {
 	}
 }
 
+// WithDelegationNudge 配置委派 nudge：当连续 threshold 个 turn"调用了探索类工具
+// （read_file/glob/grep/web_search/web_fetch）且未调用任何进展类工具（edit_file/
+// write_file/plan_write/task）"时，向发送给 LLM 的历史副本注入一次 text 提示，
+// 引导把批量探索委派给子代理以保护主上下文。单次交互至多注入 2 次；
+// 出现进展类工具即重置计数；bash 不参与判定（无法区分读写）。
+// threshold<=0 时关闭。
+func WithDelegationNudge(threshold int, text string) Option {
+	return func(e *AgentEngine) {
+		e.delegationThreshold = threshold
+		e.delegationText = text
+	}
+}
+
 // WithEngineObserver 注册引擎生命周期观察者，供可观测层（OpenTelemetry 等）无侵入接入。
 func WithEngineObserver(o EngineObserver) Option {
 	return func(e *AgentEngine) { e.observer = o }

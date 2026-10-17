@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/harness9/internal/engine"
@@ -1091,8 +1092,8 @@ func TestFlushPendingThinking_UpdatesPendingReplyStart(t *testing.T) {
 // ↑↓ 光标夹紧、Enter 进详情、Esc 列表态关闭/详情态返回。
 func TestHandleTaskPanelKeyNavigation(t *testing.T) {
 	tr := subagent.NewTaskTracker()
-	id1 := tr.Start("a", "p1")
-	_ = tr.Start("b", "p2")
+	id1 := tr.Start("a", "", "p1")
+	_ = tr.Start("b", "", "p2")
 
 	m := newTestModel()
 	m.subAgentTracker = tr
@@ -1135,6 +1136,72 @@ func TestHandleTaskPanelKeyNavigation(t *testing.T) {
 	m = mm.(tuiModel)
 	if m.taskPanelMode {
 		t.Fatal("列表态 Esc 应关闭面板")
+	}
+}
+
+// TestTaskPanelControlKeys 验证面板 p/r 键路由 tracker.Control，
+// s 进入转向输入态、Enter 提交 steer。
+//
+// 实现注记：brief 原序在按 r 恢复之前调用 ctl.AwaitTurn——暂停期间门控阻塞
+// （resumeCh 未关闭，control_test.go 的 TestTaskControllerPauseResumeGate 已锁定
+// "暂停中 AwaitTurn 不应返回"），原序会永久死锁。此处将 r 恢复前移一行组，
+// AwaitTurn 在恢复后验证转向消息无错取出；全部断言与验证意图保持不变。
+func TestTaskPanelControlKeys(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.taskPanelMode = true
+	ctl := subagent.NewTaskController(nil)
+	id := m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Attach(id, ctl)
+
+	// p → 暂停
+	mp, _ := m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m2 := mp.(tuiModel)
+	if ctl.State() != subagent.TaskPaused {
+		t.Fatal("p 键应暂停选中任务")
+	}
+	// s → 转向输入态
+	ms, _ := m2.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	m3 := ms.(tuiModel)
+	if m3.taskSteerID != id {
+		t.Fatalf("s 键应进入转向输入态: %q", m3.taskSteerID)
+	}
+	// 输入 + Enter → steer 提交并退出输入态
+	m3.taskSteerInput.SetValue("只看 engine 包")
+	me, _ := m3.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m4 := me.(tuiModel)
+	if m4.taskSteerID != "" {
+		t.Fatal("Enter 后应退出转向输入态")
+	}
+	// r → 恢复
+	mr, _ := m4.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m5 := mr.(tuiModel)
+	_ = m5
+	if ctl.State() != subagent.TaskRunning {
+		t.Fatal("r 键应恢复任务")
+	}
+	if _, err := ctl.AwaitTurn(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTaskPanelCancelDoublePress 验证 x 键两段确认取消。
+func TestTaskPanelCancelDoublePress(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.taskPanelMode = true
+	ctl := subagent.NewTaskController(nil)
+	id := m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Attach(id, ctl)
+
+	mx1, _ := m.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m2 := mx1.(tuiModel)
+	if ctl.State() != subagent.TaskRunning {
+		t.Fatal("首次 x 只应武装确认，不立即取消")
+	}
+	mx2, _ := m2.handleTaskPanelKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m3 := mx2.(tuiModel)
+	_ = m3
+	if ctl.State() != subagent.TaskCancelled {
+		t.Fatal("二次 x 应确认取消")
 	}
 }
 
@@ -1319,5 +1386,156 @@ func TestRenderSandboxBar_Degraded(t *testing.T) {
 	}
 	if !strings.Contains(bar, "本地") {
 		t.Errorf("降级状态栏应提示本地执行，得到: %q", bar)
+	}
+}
+
+// minimalTUIModel 构造带后台任务跟踪器的最小可用 tuiModel（无 engine），
+// 供自动唤醒测试使用：handleSubAgentNotify → maybeAutoWake → dispatch(eng==nil) 路径
+// 只依赖 tracker / outerCtx / 自动唤醒字段，无需完整引擎装配。
+func minimalTUIModel(t *testing.T) tuiModel {
+	t.Helper()
+	m := tuiModel{
+		subAgentTracker: subagent.NewTaskTracker(),
+		outerCtx:        context.Background(),
+		autoWakeEnabled: true,
+	}
+	m.input = textinput.New()
+	m.input.Focus()
+	// 面板转向输入框：生产路径由 newTUIModel 初始化；此处补齐是因为零值
+	// textinput 的内部 cursor.blinkCtx 为 nil，s 键 Focus() 会 panic。
+	m.taskSteerInput = textinput.New()
+	return m
+}
+
+// TestAutoWakeDispatchesWhenIdle 验证空闲时后台任务完成 → 自动唤醒 dispatch。
+func TestAutoWakeDispatchesWhenIdle(t *testing.T) {
+	m := minimalTUIModel(t) // 既有辅助：构造带 tracker 的可用 model；无 eng
+	m.autoWakeEnabled = true
+	m.autoWakeBudget = 10
+
+	m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Finish("task-explorer-1", "探索完成的结果", false)
+
+	m2, _ := m.handleSubAgentNotify() // 模拟 subAgentNotifyMsg 处理路径
+	if !m2.running {
+		t.Fatal("空闲时应自动唤醒（running=true）")
+	}
+	if len(m2.pendingSubAgentInject) != 0 {
+		t.Fatal("注入缓冲应已随 dispatch 消费")
+	}
+	if m2.autoWakeBudget != 9 {
+		t.Fatalf("预算应递减: %d", m2.autoWakeBudget)
+	}
+}
+
+// TestAutoWakeSkippedWhenRunning 验证主 agent 运行中不打断（结果留注入缓冲）。
+func TestAutoWakeSkippedWhenRunning(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.autoWakeEnabled = true
+	m.autoWakeBudget = 10
+	m.running = true
+
+	m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Finish("task-explorer-1", "结果", false)
+	m2, _ := m.handleSubAgentNotify()
+	if m2.autoWakeBudget != 10 {
+		t.Fatal("运行中不应消耗预算")
+	}
+	if len(m2.pendingSubAgentInject) == 0 {
+		t.Fatal("运行中结果应留在注入缓冲，由下次 dispatch 消费")
+	}
+}
+
+// TestAutoWakeSkippedWhenCompacting 验证 /compact 压缩窗口中不自动唤醒：
+// Compact 要求空闲（!running）且 LLM 摘要耗时数秒，期间唤醒 dispatch 的落盘
+// 会与 Compact 的 Clear+AddMessages 写回竞态（互抹历史）。
+func TestAutoWakeSkippedWhenCompacting(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.autoWakeEnabled = true
+	m.autoWakeBudget = 10
+	m.compacting = true
+
+	m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Finish("task-explorer-1", "结果", false)
+	m2, _ := m.handleSubAgentNotify()
+	if m2.running || m2.autoWakeBudget != 10 {
+		t.Fatal("压缩窗口中不应唤醒、不应消耗预算")
+	}
+	if len(m2.pendingSubAgentInject) == 0 {
+		t.Fatal("压缩窗口中结果应留在注入缓冲，由压缩后的下次 dispatch 兜底消费")
+	}
+}
+
+// TestAutoWakeBudgetExhaustion 验证预算耗尽提示一次并停止自动唤醒；
+// 用户输入重置行为由 TestAutoWakeUserInputResetsCycle 驱动真实 Enter 路径锁定。
+func TestAutoWakeBudgetExhaustion(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.autoWakeEnabled = true
+	m.autoWakeBudget = 0
+	m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Finish("task-explorer-1", "结果", false)
+	m2, _ := m.handleSubAgentNotify()
+	if m2.running || m2.autoWakeExhausted != true {
+		t.Fatal("预算耗尽不应唤醒，且应提示一次")
+	}
+}
+
+// TestAutoWakeUserInputResetsCycle 驱动真实 Enter 提交路径，验证用户输入
+// 重置预算并开启新的提示周期：exhausted 复位后，新周期内再次耗尽应重新提示，
+// 而非从第二次耗尽起静默（自动唤醒"时灵时不灵"）。
+func TestAutoWakeUserInputResetsCycle(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.autoWakeEnabled = true
+	m.autoWakeBudget = 0
+	m.autoWakeExhausted = true // 模拟上一周期已耗尽并提示过
+
+	m.input.SetValue("继续处理结果")
+	m2 := applyUpdate(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m2.autoWakeBudget != autoWakeBudgetMax {
+		t.Fatalf("用户输入应重置预算: got %d", m2.autoWakeBudget)
+	}
+	if m2.autoWakeExhausted {
+		t.Fatal("用户输入应复位耗尽标记（开启新周期）")
+	}
+
+	// 模拟本轮运行结束（EventDone 置 running=false）+ 新周期内预算再次耗尽：
+	// 应重新提示（exhausted 重新置位）且不唤醒。
+	m2.running = false
+	m2.autoWakeBudget = 0
+	id := m2.subAgentTracker.Start("explorer", "再次探索", "p")
+	m2.subAgentTracker.Finish(id, "结果2", false)
+	m3, _ := m2.handleSubAgentNotify()
+	if m3.running || !m3.autoWakeExhausted {
+		t.Fatal("新周期耗尽应再次提示（exhausted 重新置位）且不唤醒")
+	}
+}
+
+// TestHarvestRendersCancelledState 验证 harvest 三分渲染：Cancelled 任务
+// （tracker.Cancel 置 IsError=true）不得被旧的 IsError 判定误渲为"失败"，
+// 对话区显示与注入块文案均应为"已取消"。
+func TestHarvestRendersCancelledState(t *testing.T) {
+	m := minimalTUIModel(t)
+	m.autoWakeEnabled = false
+	m.subAgentTracker.Start("explorer", "探索", "p")
+	m.subAgentTracker.Cancel("task-explorer-1", "方向错了")
+
+	m2 := m.harvestSubAgentResults()
+	var all strings.Builder
+	for _, ln := range m2.lines {
+		all.WriteString(ln)
+		all.WriteString("\n")
+	}
+	joined := all.String()
+	if !strings.Contains(joined, "已取消") {
+		t.Fatalf("Cancelled 任务应渲染为\"已取消\":\n%s", joined)
+	}
+	if strings.Contains(joined, "失败") {
+		t.Fatalf("Cancelled 任务不得渲染为\"失败\":\n%s", joined)
+	}
+	if len(m2.pendingSubAgentInject) != 1 {
+		t.Fatalf("注入块应有 1 个: %q", m2.pendingSubAgentInject)
+	}
+	if !strings.Contains(m2.pendingSubAgentInject[0], "已取消") {
+		t.Fatalf("注入块文案应为\"已取消\": %q", m2.pendingSubAgentInject[0])
 	}
 }

@@ -19,6 +19,12 @@ const (
 	SubAgentDone SubAgentUpdateKind = "done"
 	// SubAgentError 子代理执行出错。
 	SubAgentError SubAgentUpdateKind = "error"
+	// SubAgentPaused 子代理被暂停（Turn 边界门控生效）。
+	SubAgentPaused SubAgentUpdateKind = "paused"
+	// SubAgentResumed 子代理被恢复运行。
+	SubAgentResumed SubAgentUpdateKind = "resumed"
+	// SubAgentCancelled 子代理被取消（Text 携带原因）。
+	SubAgentCancelled SubAgentUpdateKind = "cancelled"
 )
 
 // SubAgentUpdate 是子代理运行过程向上层（TUI）转发的一次进度更新。
