@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/harness9/internal/engine"
+	"github.com/harness9/internal/tools"
 )
 
 // Failure 描述单次断言失败的详情。
@@ -69,6 +70,8 @@ type Case struct {
 	// （如 WithStallNudge）。为空时保持原最小化、确定性的引擎构造。
 	// 注意：传入引入非确定性的选项（如真实 Compactor）会破坏 eval 的可复现性，应避免。
 	EngineOptions []engine.Option
+	// ExtraTools 追加注册到 eval 引擎的工具（如 task 家族协调工具）。
+	ExtraTools []tools.BaseTool
 }
 
 // ToolCalledAssertion 断言指定工具被调用了至少 MinTimes 次（Hard）。

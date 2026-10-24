@@ -20,12 +20,13 @@ import (
 // DefaultPromptBuilder 实现了 engine.PromptBuilder 接口。
 // Go 通过结构类型（Structural Typing）隐式满足接口，无需显式声明或 import engine 包。
 type DefaultPromptBuilder struct {
-	workDir        string
-	skillsIndex    *skills.Index
-	planEnabled    bool
-	offloadEnabled bool
-	ltmReader      func() string
-	sandboxEnabled bool
+	workDir         string
+	skillsIndex     *skills.Index
+	planEnabled     bool
+	delegationGuide bool // 注入子代理委派准则段（task 系工具已注册时开启）
+	offloadEnabled  bool
+	ltmReader       func() string
+	sandboxEnabled  bool
 	// sandboxDegraded 非空表示 Sandbox 已启用但启动失败，值为降级原因。
 	sandboxDegraded string
 }
@@ -40,6 +41,12 @@ func NewPromptBuilder(workDir string, idx *skills.Index) *DefaultPromptBuilder {
 // 仅在 plan_write 已注册时调用。
 func (b *DefaultPromptBuilder) WithPlanEnabled(enabled bool) *DefaultPromptBuilder {
 	b.planEnabled = enabled
+	return b
+}
+
+// WithDelegationGuide 在 system prompt 中注入子代理委派准则（task 系工具使用指引）。
+func (b *DefaultPromptBuilder) WithDelegationGuide(enabled bool) *DefaultPromptBuilder {
+	b.delegationGuide = enabled
 	return b
 }
 
@@ -135,7 +142,24 @@ func (b *DefaultPromptBuilder) Build() string {
 		)
 	}
 
-	// 5. Offload 检索指引（仅在 OffloadHook 启用时注入）
+	// 5. 子代理委派准则（task 系工具已注册时注入；积极委派是主 agent 的核心工作方式）
+	if b.delegationGuide {
+		parts = append(parts,
+			"## 子代理委派（Delegation）\n\n"+
+				"遇到以下情况应积极使用 `task` 工具委派子代理，而不是亲自逐文件处理：\n"+
+				"- 存在 3 个以上相互独立、可并行的子任务（多模块调研、多处独立修改）→ "+
+				"同一回复中发起多个 `background=true` 任务并行执行，随后用 `task_wait` 聚合结果\n"+
+				"- 预期超过 5 轮工具调用的探索/搜索/阅读（会大量消耗主上下文）→ 委派 `explorer`，"+
+				"只回传结论与文件行号引用\n"+
+				"- 边界清晰、可独立验证的实现任务 → 委派 `implementer`；需要审查时 → `reviewer`\n"+
+				"- 后台任务方向出现偏差 → 用 `task_control` 的 `steer` 注入转向指令及时调整，"+
+				"而非取消重跑\n"+
+				"不应委派的情况：单文件小改动、强依赖主对话上下文的决策、委派开销大于收益的琐碎任务。\n"+
+				"后台任务用 `task_status` 观察、`task_wait` 等待；后台任务完成后系统会自动唤醒你处理结果。",
+		)
+	}
+
+	// 6. Offload 检索指引（仅在 OffloadHook 启用时注入）
 	if b.offloadEnabled {
 		parts = append(parts,
 			"## 大输出文件检索\n\n"+
@@ -147,7 +171,7 @@ func (b *DefaultPromptBuilder) Build() string {
 		)
 	}
 
-	// 5b. Sandbox 执行环境提示：降级说明优先——降级后并未运行在容器内，
+	// 6b. Sandbox 执行环境提示：降级说明优先——降级后并未运行在容器内，
 	// 如实告知比沉默更安全（Agent 不再需要靠 uname 考古、猜测陈旧记忆的真伪）
 	if b.sandboxDegraded != "" {
 		parts = append(parts, fmt.Sprintf(
@@ -174,7 +198,7 @@ func (b *DefaultPromptBuilder) Build() string {
 		)
 	}
 
-	// 6. 长期记忆精华（每次 Build 时调用 ltmReader 读取最新内容；reader 为 nil 或返回空时跳过）
+	// 7. 长期记忆精华（每次 Build 时调用 ltmReader 读取最新内容；reader 为 nil 或返回空时跳过）
 	if b.ltmReader != nil {
 		if content := b.ltmReader(); content != "" {
 			parts = append(parts,

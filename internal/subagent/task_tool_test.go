@@ -3,6 +3,7 @@ package subagent
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -157,5 +158,73 @@ func TestTaskToolBackgroundDoesNotUseParentSink(t *testing.T) {
 	list := tt.tracker.List()
 	if len(list) != 1 || list[0].LogLines == 0 {
 		t.Fatalf("tracker 应捕获后台日志：%+v", list)
+	}
+}
+
+// parseRunningTaskID 从 task 工具后台返回句柄 `<task id="..." state="running"/>` 中解析任务 id。
+func parseRunningTaskID(t *testing.T, out string) string {
+	t.Helper()
+	m := regexp.MustCompile(`id="([^"]+)"`).FindStringSubmatch(out)
+	if len(m) != 2 {
+		t.Fatalf("无法从返回文本解析 task id: %q", out)
+	}
+	return m[1]
+}
+
+// TestTaskToolBackgroundCreatesController 验证后台启动后 tracker 中的任务
+// 可被 Control（controller 已 Attach），且任务完成后进入 Done 而非 Failed。
+//
+// 时序设计（确定性，无竞态）：第 1 轮 LLM 调用阻塞在 proceed 上——测试侧先完成
+// Control(pause) 再放行，保证 Control 必然落在非终态 Running 任务上；单轮任务
+// 自然终止后不再经过第 2 轮门控，故 pause 不阻碍 Done。
+func TestTaskToolBackgroundCreatesController(t *testing.T) {
+	entered := make(chan struct{}) // 后台任务已进入第 1 轮 LLM 调用
+	proceed := make(chan struct{}) // 测试侧完成 Control 后放行
+	mock := providertest.NewMockWithCallback(func(_ []schema.Message, _ []schema.ToolDefinition) schema.Message {
+		close(entered)
+		<-proceed
+		return schema.Message{Role: schema.RoleAssistant, Content: "bg-done"}
+	})
+	tt := newTaskToolForTest(t, mock)
+	args, _ := json.Marshal(map[string]any{"subagent_type": "reviewer", "prompt": "x", "background": true})
+	out, err := tt.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "running") {
+		t.Fatalf("后台应立即返回 running 状态: %s", out)
+	}
+	id := parseRunningTaskID(t, out)
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("后台任务未进入第 1 轮 LLM 调用")
+	}
+
+	// controller 已在后台分支 Attach：Control 应路由成功且无错
+	if err := tt.tracker.Control(id, "pause", ""); err != nil {
+		t.Fatalf("Control(pause) 应无错（controller 未 Attach 或路由失败）: %v", err)
+	}
+	close(proceed)
+
+	// 任务完成后终态必须是 Done（而非 Failed）
+	deadline := time.After(5 * time.Second)
+	for {
+		d, ok := tt.tracker.Get(id)
+		if ok && d.State == TaskDone {
+			break
+		}
+		select {
+		case <-deadline:
+			d, _ := tt.tracker.Get(id)
+			t.Fatalf("后台任务未在期限内完成，State=%v", d.State)
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	d, _ := tt.tracker.Get(id)
+	if d.FinalText != "bg-done" {
+		t.Fatalf("FinalText=%q, want bg-done", d.FinalText)
 	}
 }
