@@ -5,10 +5,14 @@ package dataset
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/harness9/internal/evals"
 	"github.com/harness9/internal/schema"
+	"github.com/harness9/internal/tools"
 )
 
 // TestToolCalling 运行工具调用准确性评估（6 个黄金用例）。
@@ -170,4 +174,74 @@ func TestToolCalling(t *testing.T) {
 		}
 	}
 	t.Logf("工具调用评估：%d/%d 通过", passed, passed+failed)
+}
+
+// TestToolCallingGlob 验证 glob 工具被正确调用（临时目录预置文件）。
+// 核心不变量：glob 作为一等工具经 ExtraTools 注册后被调度执行、引擎零 RunError
+// （命中真实文件使工具输出非空，端到端走通 WalkDir + ** 匹配路径）。
+func TestToolCallingGlob(t *testing.T) {
+	evals.SetupHermeticEnv(t)
+	wd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wd, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wd, "pkg", "a.go"), []byte("package pkg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &evals.Case{
+		ID:       "tool_calling/glob",
+		Category: "tool_calling",
+		Prompt:   "找出工作区内所有 Go 文件",
+		WorkDir:  wd,
+		Provider: evals.NewScriptedProvider(
+			evals.ScriptedTurn{ToolCalls: []schema.ToolCall{{
+				ID: "c1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.go"}`),
+			}}},
+			evals.ScriptedTurn{Text: "找到 1 个 Go 文件：pkg/a.go"},
+		),
+		Assertions: []evals.Assertion{
+			&evals.ToolCalledAssertion{ToolName: "glob"},
+			&evals.NoErrorAssertion{},
+		},
+		ExtraTools: []tools.BaseTool{tools.NewGlobTool(wd)},
+	}
+	if res := evals.RunCase(context.Background(), c); !res.Passed {
+		t.Fatalf("eval 失败: %+v", res.Failures)
+	}
+}
+
+// TestToolCallingGrepWithFilter 验证 grep 带 glob 过滤调用。
+// 核心不变量：glob 参数过滤非 Go 文件后仅 a.go 命中、引擎零 RunError
+// （端到端覆盖正则编译 + WalkDir + 文件名过滤 + 行级命中输出路径）。
+func TestToolCallingGrepWithFilter(t *testing.T) {
+	evals.SetupHermeticEnv(t)
+	wd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wd, "a.go"), []byte("package main\nfunc Foo(){}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wd, "b.txt"), []byte("Foo in txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &evals.Case{
+		ID:       "tool_calling/grep",
+		Category: "tool_calling",
+		Prompt:   "只在 Go 文件里搜 Foo 的定义",
+		WorkDir:  wd,
+		Provider: evals.NewScriptedProvider(
+			evals.ScriptedTurn{ToolCalls: []schema.ToolCall{{
+				ID: "c1", Name: "grep", Arguments: json.RawMessage(`{"pattern":"func Foo","glob":"*.go"}`),
+			}}},
+			evals.ScriptedTurn{Text: "Foo 定义在 a.go:2"},
+		),
+		Assertions: []evals.Assertion{
+			&evals.ToolCalledAssertion{ToolName: "grep"},
+			&evals.NoErrorAssertion{},
+		},
+		ExtraTools: []tools.BaseTool{tools.NewGrepTool(wd)},
+	}
+	if res := evals.RunCase(context.Background(), c); !res.Passed {
+		t.Fatalf("eval 失败: %+v", res.Failures)
+	}
 }

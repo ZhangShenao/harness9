@@ -18,6 +18,15 @@ var progressToolNames = map[string]bool{
 	"edit_file":  true,
 }
 
+// exploreToolNames 是委派 nudge 判定的"探索类"工具集合（spec §5.8）。
+var exploreToolNames = map[string]bool{
+	"read_file":  true,
+	"glob":       true,
+	"grep":       true,
+	"web_search": true,
+	"web_fetch":  true,
+}
+
 // hasProgressTool 判断本轮工具调用中是否包含进展工具。
 func hasProgressTool(calls []schema.ToolCall) bool {
 	for _, tc := range calls {
