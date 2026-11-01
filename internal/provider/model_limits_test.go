@@ -67,3 +67,43 @@ func TestGetModelLimits_KimiK3(t *testing.T) {
 		t.Fatalf("want 65536, got %d", limits.OutputTokens)
 	}
 }
+
+func TestGetModelLimits_DeepSeekFlash(t *testing.T) {
+	limits := provider.GetModelLimits("deepseek-flash")
+	if limits.ContextTokens != 1_048_576 {
+		t.Fatalf("want 1048576, got %d", limits.ContextTokens)
+	}
+	if limits.OutputTokens != 393_216 {
+		t.Fatalf("want 393216, got %d", limits.OutputTokens)
+	}
+}
+
+func TestGetModelLimits_DeepSeekV4Pro(t *testing.T) {
+	limits := provider.GetModelLimits("deepseek-v4-pro")
+	if limits.ContextTokens != 1_048_576 {
+		t.Fatalf("want 1048576, got %d", limits.ContextTokens)
+	}
+}
+
+func TestGetModelLimits_DeepSeekLegacyAlias(t *testing.T) {
+	// 旧模型名 deepseek-v4-flash 官网声明仍可调用（由新模型提供服务），
+	// 应命中同一条注册表条目而非回退 256K 默认值。
+	limits := provider.GetModelLimits("deepseek-v4-flash")
+	if limits.ContextTokens != 1_048_576 {
+		t.Fatalf("legacy alias should resolve to new model limits, want 1048576, got %d", limits.ContextTokens)
+	}
+}
+
+func TestGetModelLimits_DeepSeekLegacyV3(t *testing.T) {
+	limits := provider.GetModelLimits("deepseek-v3")
+	if limits.ContextTokens != 64_000 {
+		t.Fatalf("want 64000, got %d", limits.ContextTokens)
+	}
+}
+
+func TestGetModelLimits_DeepSeekWithProviderPrefix(t *testing.T) {
+	limits := provider.GetModelLimits("openai/deepseek-flash")
+	if limits.ContextTokens != 1_048_576 {
+		t.Fatalf("want 1048576, got %d", limits.ContextTokens)
+	}
+}
