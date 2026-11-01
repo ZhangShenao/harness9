@@ -69,3 +69,6 @@ jscpd-report/
 desktop/frontend/node_modules/
 desktop/frontend/wailsjs/
 desktop/build/bin/
+
+# wails 绑定生成阶段的临时产物
+desktop/desktop
