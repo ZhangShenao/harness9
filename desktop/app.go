@@ -17,13 +17,16 @@ import (
 // App 是暴露给前端的绑定对象（Wails Bind）。所有方法都是对 appservice.Service
 // 的薄转发，不承载业务逻辑；事件经 agent:event 通道推送给前端。
 type App struct {
-	homeDir  string
-	version  string
-	ctx      context.Context
-	mu       sync.Mutex
-	svc      *appservice.Service
-	workDir  string // 当前 Service 对应的 workDir
-	settings appservice.Settings
+	homeDir string
+	version string
+	ctx     context.Context
+	mu      sync.Mutex
+	svc     *appservice.Service
+	workDir string // 当前 Service 对应的 workDir
+	// quitBypass 置位后 beforeClose 直接放行（用户已在前端确认退出）。
+	// 仅作为一次性旁路，ConfirmQuit 里先置位再 Quit。
+	quitBypass bool
+	settings   appservice.Settings
 }
 
 // NewApp 构造绑定对象。
@@ -41,24 +44,41 @@ func (a *App) startup(ctx context.Context) {
 	}
 }
 
-// beforeClose 在任务运行中弹出确认框，防止误关窗口丢任务。
+// beforeClose 实现退出确认：任务运行中时通知前端弹出确认弹窗并阻止本次关闭；
+// 用户确认后前端调用 ConfirmQuit（置旁路位 + Quit），再次走关闭流程即放行。
+//
+// 不使用原生 MessageDialog：其 ON_MAIN_THREAD 派发与 beforeClose 的调用上下文
+// 在 macOS 上存在线程/按钮返回值的兼容性问题（点击无响应），前端弹窗完全可控。
 func (a *App) beforeClose(ctx context.Context) bool {
-	if a.svc == nil || !a.svc.IsRunning() {
+	if a.quitBypass {
 		return true
 	}
-	choice, err := wailsruntime.MessageDialog(ctx, wailsruntime.MessageDialogOptions{
-		Type:          wailsruntime.QuestionDialog,
-		Title:         "任务正在运行",
-		Message:       "Agent 任务尚未结束，退出将中断当前任务。确定退出吗？",
-		Buttons:       []string{"退出", "取消"},
-		DefaultButton: "取消",
-		CancelButton:  "取消",
-	})
-	if err != nil {
-		// 对话框异常时宁可阻止关闭，避免误中断
-		return false
+	a.mu.Lock()
+	running := a.svc != nil && a.svc.IsRunning()
+	a.mu.Unlock()
+	if !running {
+		return true
 	}
-	return choice == "退出"
+	// 异步通知前端弹确认框；返回 false 阻止本次关闭
+	wailsruntime.EventsEmit(ctx, "app:quit-requested")
+	return false
+}
+
+// ConfirmQuit 是前端确认后的退出入口：置旁路位并触发应用退出。
+// 下一轮 beforeClose 直接放行，shutdown 中统一释放资源（含中断运行中的任务）。
+func (a *App) ConfirmQuit() {
+	log.Print("desktop: 用户确认退出")
+	a.mu.Lock()
+	a.quitBypass = true
+	a.mu.Unlock()
+	wailsruntime.Quit(a.ctx)
+}
+
+// CancelQuit 复位旁路位（前端取消退出时调用，保证下次关窗仍走确认流程）。
+func (a *App) CancelQuit() {
+	a.mu.Lock()
+	a.quitBypass = false
+	a.mu.Unlock()
 }
 
 // shutdown 释放服务层资源。

@@ -55,6 +55,7 @@ export interface UiState {
   rightTab: "plan" | "diff" | null;
   settingsOpen: boolean;
   errorMsg: string;
+  quitConfirmOpen: boolean;
 
   // actions
   initFromResult: (r: InitResult) => void;
@@ -75,6 +76,8 @@ export interface UiState {
   initialize: (workDir: string) => Promise<void>;
   setRightTab: (tab: "plan" | "diff" | null) => void;
   setSettingsOpen: (open: boolean) => void;
+  setQuitConfirmOpen: (open: boolean) => void;
+  confirmQuit: () => Promise<void>;
   clearError: () => void;
 }
 
@@ -119,6 +122,7 @@ export const useStore = create<UiState>((set, get) => ({
   rightTab: null,
   settingsOpen: false,
   errorMsg: "",
+  quitConfirmOpen: false,
 
   // ---- 初始化 ----
 
@@ -408,6 +412,10 @@ export const useStore = create<UiState>((set, get) => ({
 
   setRightTab: (tab) => set({ rightTab: tab }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setQuitConfirmOpen: (open) => set({ quitConfirmOpen: open }),
+  confirmQuit: async () => {
+    await window.go.main.App.ConfirmQuit();
+  },
   clearError: () => set({ errorMsg: "" }),
 }));
 

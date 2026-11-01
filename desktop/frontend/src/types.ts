@@ -29,6 +29,8 @@ export interface WailsWindow {
         GetSkills(): Promise<string[]>;
         GetSkillContent(name: string): Promise<string>;
         SaveSettings(model: string, permissionMode: string, sandboxBackend: string): Promise<string>;
+        ConfirmQuit(): Promise<void>;
+        CancelQuit(): Promise<void>;
       };
     };
   };

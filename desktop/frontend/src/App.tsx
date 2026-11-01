@@ -9,6 +9,7 @@ import { Composer } from "./components/Composer";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { RightPanel } from "./components/RightPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { QuitConfirmModal } from "./components/QuitConfirmModal";
 import { Welcome } from "./components/Welcome";
 import type { AgentEvent } from "./types";
 
@@ -27,6 +28,8 @@ export default function App() {
     setBootstrapped(true);
     // 订阅引擎事件流
     window.runtime.EventsOn("agent:event", (evt: AgentEvent) => handleEvent(evt));
+    // 退出确认：任务运行中关窗/Cmd+Q 时由 Go beforeClose 触发
+    window.runtime.EventsOn("app:quit-requested", () => useStore.getState().setQuitConfirmOpen(true));
     // 冷启动：有最近目录时仍先进入欢迎页（用户可一键续用），
     // 保证多项目场景下 workDir 是显式决策。
     window.go.main.App.RecentWorkDirs().then(
@@ -58,6 +61,7 @@ export default function App() {
       <RightPanel />
       {hasApprovals && <ApprovalModal />}
       {settingsOpen && <SettingsDialog />}
+      <QuitConfirmModal />
       {errorMsg && (
         <div className="toast toast-error" onClick={clearError}>
           {errorMsg}（点击关闭）
