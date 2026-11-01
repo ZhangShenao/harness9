@@ -2,7 +2,7 @@
 // 本文件维护 knownModels 静态注册表，存储各主流模型的 ContextTokens 和 OutputTokens。
 // GetModelLimits 自动剥离 provider 前缀（如 "openai/gpt-4o" → "gpt-4o"），
 // 未知模型返回 256K 保守回退值（与 HermesAgent 策略一致）。
-// 此注册表是静态的，新模型上线后需手动添加条目。最后更新：2026-09。
+// 此注册表是静态的，新模型上线后需手动添加条目。最后更新：2026-11。
 package provider
 
 import "strings"
@@ -15,7 +15,7 @@ type ModelLimits struct {
 
 // knownModels 以裸模型名（不含 provider 前缀）为键，存储已知模型的上下文限制。
 // 数据来源：OpenAI API 文档、Anthropic API 文档、各模型 provider 官网。
-// 最后更新：2026-09。
+// 最后更新：2026-11。
 var knownModels = map[string]ModelLimits{
 	// Anthropic Claude 4.x
 	"claude-opus-4-7":           {ContextTokens: 200_000, OutputTokens: 32_000},
@@ -36,7 +36,15 @@ var knownModels = map[string]ModelLimits{
 	// OpenAI o-series
 	"o3":      {ContextTokens: 200_000, OutputTokens: 100_000},
 	"o4-mini": {ContextTokens: 200_000, OutputTokens: 100_000},
-	// DeepSeek
+	// DeepSeek（2026-11 官网核实：https://api-docs.deepseek.com/zh-cn/。
+	// deepseek-flash 已升级为 DeepSeek-V4.1-Flash-1017，调用名不变；旧名
+	// deepseek-v4-flash / deepseek-v4-flash-vision-exp 仍可调用，由新模型提供服务。
+	// 官网标注上下文 1M、最大输出 384K）
+	"deepseek-flash":               {ContextTokens: 1_048_576, OutputTokens: 393_216},
+	"deepseek-v4-pro":              {ContextTokens: 1_048_576, OutputTokens: 393_216},
+	"deepseek-v4-flash":            {ContextTokens: 1_048_576, OutputTokens: 393_216},
+	"deepseek-v4-flash-vision-exp": {ContextTokens: 1_048_576, OutputTokens: 393_216},
+	// DeepSeek 旧模型名（V3/R1 时代，部分网关仍可用）
 	"deepseek-v3": {ContextTokens: 64_000, OutputTokens: 8_000},
 	"deepseek-r1": {ContextTokens: 64_000, OutputTokens: 8_000},
 	// Qwen
