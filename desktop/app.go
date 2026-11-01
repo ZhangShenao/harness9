@@ -44,24 +44,27 @@ func (a *App) startup(ctx context.Context) {
 	}
 }
 
-// beforeClose 实现退出确认：任务运行中时通知前端弹出确认弹窗并阻止本次关闭；
-// 用户确认后前端调用 ConfirmQuit（置旁路位 + Quit），再次走关闭流程即放行。
+// beforeClose 实现退出确认。
 //
-// 不使用原生 MessageDialog：其 ON_MAIN_THREAD 派发与 beforeClose 的调用上下文
-// 在 macOS 上存在线程/按钮返回值的兼容性问题（点击无响应），前端弹窗完全可控。
+// Wails v2 的语义（见 darwin/frontend.go 的 Frontend.Quit）与直觉相反：
+// 返回 true = 阻止本次关闭；返回 false = 执行退出。
+// 关窗按钮（WindowDelegate）与 ⌘Q（AppDelegate）都会走到这里。
+//
+// 流程：空闲直接放行；任务运行中阻止关闭并通知前端弹确认框，
+// 用户确认后前端调用 ConfirmQuit（置旁路位 + Quit），再次进入即放行。
 func (a *App) beforeClose(ctx context.Context) bool {
 	if a.quitBypass {
-		return true
+		return false // 用户已在前端确认退出
 	}
 	a.mu.Lock()
 	running := a.svc != nil && a.svc.IsRunning()
 	a.mu.Unlock()
 	if !running {
-		return true
+		return false // 空闲状态直接退出
 	}
-	// 异步通知前端弹确认框；返回 false 阻止本次关闭
+	// 任务运行中：阻止本次关闭，由前端确认后重入
 	wailsruntime.EventsEmit(ctx, "app:quit-requested")
-	return false
+	return true
 }
 
 // ConfirmQuit 是前端确认后的退出入口：置旁路位并触发应用退出。

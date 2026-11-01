@@ -1,7 +1,7 @@
-// QuitConfirmModal.tsx — 退出确认弹窗（替代原生 MessageDialog：
-// 原生对话框在 beforeClose 的主线程上下文中存在点击无响应的兼容性问题）。
-// 触发链路：关窗/Cmd+Q → Go beforeClose → app:quit-requested 事件 → 本弹窗；
-// 「退出」→ ConfirmQuit 绑定（置旁路位 + Quit），「取消」→ 仅关弹窗。
+// QuitConfirmModal.tsx — 退出确认弹窗。
+// 触发链路：关窗按钮/⌘Q → Go beforeClose（返回 true 阻止关闭，Wails 语义
+// 与直觉相反）→ app:quit-requested 事件 → 本弹窗；
+// 「退出」→ ConfirmQuit 绑定（置旁路位 + Quit），「继续运行」→ 仅关弹窗。
 import { useStore } from "../store";
 
 export function QuitConfirmModal() {
