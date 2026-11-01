@@ -12,6 +12,13 @@ import (
 // SandboxConfig 是 Sandbox 系统的全局配置。
 // 通过 DefaultConfig 从环境变量读取，支持 .env 文件覆盖（internal/env 先行加载）。
 type SandboxConfig struct {
+	// Backend 选择沙箱后端实现（对标 Codex 的 approval/sandbox 策略分离）：
+	//   - "docker"（默认）：DockerEnvironment，容器级隔离，经 Manager 管理生命周期；
+	//   - "seatbelt"：SeatbeltEnvironment，macOS sandbox-exec 原生沙箱（无容器生命周期，
+	//     由构造方直接实例化，不经过 Manager）。
+	// 环境变量 SANDBOX_BACKEND 可设置。注意：当前 CLI 主路径（cmd/harness9/main.go）
+	// 仅消费 docker 后端；seatbelt 由桌面服务层（internal/appservice）优先接入。
+	Backend string
 	// Enabled 是否启用 Docker Sandbox。false 时工具使用本地进程执行，行为与原始版本完全一致。
 	Enabled bool
 	// Image Docker 镜像名称。
@@ -45,6 +52,7 @@ type SandboxConfig struct {
 // DefaultConfig 从环境变量读取配置，未设置时使用内置安全默认值。
 func DefaultConfig() SandboxConfig {
 	return SandboxConfig{
+		Backend:   getenvOr("SANDBOX_BACKEND", "docker"),
 		Enabled:   strings.ToLower(os.Getenv("SANDBOX_ENABLED")) != "false",
 		Image:     getenvOr("SANDBOX_IMAGE", "ubuntu:22.04"),
 		CPUs:      getenvOr("SANDBOX_CPUS", "1.0"),
