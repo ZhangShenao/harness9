@@ -115,13 +115,12 @@ func (s *Service) SaveSettings(st Settings) (restartHint string, err error) {
 	s.cfg = cur
 	s.mu.Unlock()
 
-	// 追加记录最近工作目录（去重、保序、上限 10）
-	if len(st.RecentWorkDirs) > 0 {
-		disk, err := LoadSettings(s.cfg.HomeDir)
-		if err == nil {
-			disk.RecentWorkDirs = mergeRecent(st.RecentWorkDirs, 10)
-			st = disk
-		}
+	// 合并磁盘上的最近工作目录后再落盘：调用方未携带 recents 时保留磁盘值
+	//（否则设置页每次保存都会把 AddRecentWorkDir 持久化的记录清空）；
+	// 携带时以调用方顺序优先。其余字段（model/permission/sandbox）以调用方为准，
+	// 不得用磁盘值回填——那会把刚要保存的新值覆盖回旧值。
+	if disk, err := LoadSettings(s.cfg.HomeDir); err == nil {
+		st.RecentWorkDirs = mergeRecent(append(st.RecentWorkDirs, disk.RecentWorkDirs...), 10)
 	}
 	if err := SaveSettings(s.cfg.HomeDir, st); err != nil {
 		return "", err

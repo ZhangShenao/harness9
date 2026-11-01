@@ -224,6 +224,14 @@ func (s *Service) NewSession() (SessionInfoDTO, error) {
 	if err := s.checkOpen(); err != nil {
 		return SessionInfoDTO{}, err
 	}
+	s.mu.Lock()
+	running := s.running
+	s.mu.Unlock()
+	// 运行中切换会话会让在跑任务的事件泵继续向旧栈写入、而 UI 已切到新栈，
+	// 两边状态错位；与 SendMessage 一致按单飞语义拒绝。
+	if running {
+		return SessionInfoDTO{}, ErrRunInProgress
+	}
 	sess, err := s.shared.mgr.NewSession(s.ctx)
 	if err != nil {
 		return SessionInfoDTO{}, err
@@ -244,6 +252,13 @@ func (s *Service) NewSession() (SessionInfoDTO, error) {
 func (s *Service) OpenSession(id string) (SessionInfoDTO, []HistoryItem, []planning.PlanItem, error) {
 	if err := s.checkOpen(); err != nil {
 		return SessionInfoDTO{}, nil, nil, err
+	}
+	s.mu.Lock()
+	running := s.running
+	s.mu.Unlock()
+	// 与 NewSession 同理：运行中拒绝切换会话，保证事件泵与 UI 指向同一栈。
+	if running {
+		return SessionInfoDTO{}, nil, nil, ErrRunInProgress
 	}
 	sess, err := s.shared.mgr.OpenSession(s.ctx, id)
 	if err != nil {
@@ -338,7 +353,8 @@ func (s *Service) SendMessage(prompt string) error {
 		s.runCancel = nil
 		s.mu.Unlock()
 		cancel()
-		s.emit(Event{Type: string(engine.EventError), Data: err.Error()})
+		// 不额外发 EventError：错误经返回值交付（桌面端已在 catch 中展示），
+		// 双通道会导致同一条错误重复渲染。
 		return fmt.Errorf("启动 agent run：%w", err)
 	}
 	go s.pump(stack, ch, cancel)

@@ -260,12 +260,13 @@ export const useStore = create<UiState>((set, get) => ({
         flushStreaming(set);
         set((st) => ({
           running: false,
+          approvals: [], // run 已结束，未应答审批全部失效（服务端同样会清理）
           items: [...st.items, { key: nextKey("error"), kind: "error", text: String(evt.data ?? "未知错误") }],
         }));
         break;
       case "done":
         flushStreaming(set);
-        set({ running: false });
+        set({ running: false, approvals: [] });
         // 任务结束后刷新计划与 diff（对标 Codex 的 review 闭环）
         get().refreshPlan().catch(() => {});
         get().refreshDiff().catch(() => {});

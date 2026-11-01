@@ -511,3 +511,90 @@ func TestServicePermissionModeApplied(t *testing.T) {
 	}
 	_ = json.Marshal // 保持 json 导入被使用（DTO 序列化在后续用例中扩展）
 }
+
+// TestServiceApprovalsClearedAfterRunEnd 锁定泵退出清理语义：
+// run 结束（含中断）后，未应答的审批必须被清空，
+// 否则 RespondApproval 会把决策发给已不存在的引擎接收者。
+func TestServiceApprovalsClearedAfterRunEnd(t *testing.T) {
+	prov := providertest.NewMockWithCallback(func(_ []schema.Message, tools []schema.ToolDefinition) schema.Message {
+		if len(tools) == 0 {
+			return schema.Message{Role: schema.RoleAssistant, Content: "思考"}
+		}
+		// 首个 action 调用触发 bash（空白名单 → permission hook ask），
+		// 随后测试在中断 run，使引擎阻塞在 ResponseCh 上直到 ctx 取消。
+		return schema.Message{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{
+				{ID: "call_block", Name: "bash", Arguments: []byte(`{"command": "sleep 30"}`)},
+			},
+		}
+	})
+	svc := newTestService(t, prov)
+	if _, err := svc.NewSession(); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ec := newEventCollector(svc)
+	if err := svc.SendMessage("触发审批后中断"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	// 等审批事件到达且不应答
+	deadline := time.After(30 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("等待审批请求超时")
+		case <-time.After(10 * time.Millisecond):
+			if len(svc.PendingApprovals()) > 0 {
+				goto approved
+			}
+		}
+	}
+approved:
+	svc.Interrupt()
+
+	// 泵退出后 running 复位且审批清空
+	pollDeadline := time.Now().Add(10 * time.Second)
+	for svc.IsRunning() && time.Now().Before(pollDeadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if svc.IsRunning() {
+		t.Fatalf("中断后 running 应复位")
+	}
+	if got := svc.PendingApprovals(); len(got) != 0 {
+		t.Fatalf("run 结束后审批应清空，实际: %+v", got)
+	}
+	_ = ec
+}
+
+// TestServiceSaveSettingsPreservesRecents 锁定设置合并语义：
+// SaveSettings 不得用磁盘旧值覆盖调用方新值，也不得清空磁盘上的 recents。
+func TestServiceSaveSettingsPreservesRecents(t *testing.T) {
+	svc := newTestService(t, providertest.NewMock())
+
+	svc.AddRecentWorkDir("/tmp/proj-a")
+	svc.AddRecentWorkDir("/tmp/proj-b")
+
+	hint, err := svc.SaveSettings(Settings{
+		Model:          "new-model",
+		PermissionMode: "read_only",
+		SandboxBackend: "seatbelt",
+	})
+	if err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	if hint == "" {
+		t.Fatalf("模型/后端变更应返回重启提示")
+	}
+
+	got, err := LoadSettings(svc.cfg.HomeDir)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if got.Model != "new-model" || got.PermissionMode != "read_only" || got.SandboxBackend != "seatbelt" {
+		t.Fatalf("新设置未落盘（被磁盘旧值覆盖）: %+v", got)
+	}
+	if len(got.RecentWorkDirs) != 2 || got.RecentWorkDirs[0] != "/tmp/proj-b" {
+		t.Fatalf("recents 应保留且新值优先: %v", got.RecentWorkDirs)
+	}
+}

@@ -71,6 +71,10 @@ func (s *Service) pump(stack *SessionStack, ch <-chan engine.Event, cancel conte
 		s.mu.Lock()
 		s.running = false
 		s.runCancel = nil
+		// 清掉本次 run 遗留的未应答审批：run 已结束，引擎侧接收者不复存在，
+		// 残留条目会让 RespondApproval 误以为仍在等待（应答只会超时丢弃），
+		// 也会让 PendingApprovals 恢复逻辑展示已失效的弹窗。
+		s.pendingApprovals = make(map[string]*engine.ApprovalRequest)
 		s.mu.Unlock()
 		log.Print(logfmt.FormatMsg("appservice", "事件泵退出"))
 	}()

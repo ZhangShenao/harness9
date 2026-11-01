@@ -42,10 +42,14 @@ export function Composer() {
   }, [text]);
 
   const finishSlash = (item: SlashItem) => {
-    if (item.builtin === "new") {
-      newSession().catch(() => {});
-    } else if (item.builtin === "compact") {
-      compact();
+    if (item.builtin) {
+      // 内置命令立即执行并清空输入（否则 "/new" 会残留在输入框里）
+      setText("");
+      if (item.builtin === "new") {
+        newSession().catch(() => {});
+      } else {
+        compact();
+      }
     } else {
       setText(item.label + " ");
       taRef.current?.focus();
