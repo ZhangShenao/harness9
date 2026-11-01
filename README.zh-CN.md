@@ -51,6 +51,20 @@ harness9 --version
 
 > 完整安装选项、Anthropic/OpenRouter/OrcaRouter 配置、AGENTS.md 设置和常见问题，见[快速启动指南](https://zhangshenao.github.io/harness9/zh/docs/quick-start)。
 
+### 桌面客户端（macOS）
+
+更习惯图形界面？harness9 提供原生 macOS 桌面客户端（对标 Codex 的工作台：会话管理、流式对话、人类审批、Plan/Diff 审查、Seatbelt 原生沙箱）：
+
+```bash
+# 依赖：Go 1.25+、Node 18+、Xcode CLT、wails CLI
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+cd desktop && wails build
+open build/bin/harness9.app
+```
+
+架构详解见 [Desktop App 技术方案](https://zhangshenao.github.io/harness9/zh/docs/desktop-app)。
+
 ---
 
 ## 核心特性

@@ -73,19 +73,19 @@ func (a *App) shutdown(ctx context.Context) {
 
 // InitResult 是 Initialize 的返回视图：前端冷启动所需的全量状态。
 type InitResult struct {
-	WorkDir         string                       `json:"work_dir"`
-	Version         string                       `json:"version"`
-	ActiveSession   appservice.SessionInfoDTO    `json:"active_session"`
-	Sessions        []appservice.SessionInfoDTO  `json:"sessions"`
-	Items           []appservice.HistoryItem     `json:"items"`
-	Plan            []planning.PlanItem          `json:"plan"`
-	ModelInfo       appservice.ModelInfoDTO      `json:"model_info"`
-	SandboxLabel    string                       `json:"sandbox_label"`
-	SandboxStatus   []sandbox.SandboxInfo        `json:"sandbox_status"`
-	DegradedReason  string                       `json:"degraded_reason,omitempty"`
-	Skills          []string                     `json:"skills"`
-	Settings        appservice.Settings          `json:"settings"`
-	PermissionModes []PermissionModeOption       `json:"permission_modes"`
+	WorkDir         string                      `json:"work_dir"`
+	Version         string                      `json:"version"`
+	ActiveSession   appservice.SessionInfoDTO   `json:"active_session"`
+	Sessions        []appservice.SessionInfoDTO `json:"sessions"`
+	Items           []appservice.HistoryItem    `json:"items"`
+	Plan            []planning.PlanItem         `json:"plan"`
+	ModelInfo       appservice.ModelInfoDTO     `json:"model_info"`
+	SandboxLabel    string                      `json:"sandbox_label"`
+	SandboxStatus   []sandbox.SandboxInfo       `json:"sandbox_status"`
+	DegradedReason  string                      `json:"degraded_reason,omitempty"`
+	Skills          []string                    `json:"skills"`
+	Settings        appservice.Settings         `json:"settings"`
+	PermissionModes []PermissionModeOption      `json:"permission_modes"`
 }
 
 // PermissionModeOption 是权限模式选择器的选项。
@@ -384,7 +384,7 @@ func (a *App) service() (*appservice.Service, error) {
 }
 
 // permissionModeFromSetting / backendFromSetting 把设置字符串转为配置值
-//（非法值静默回退默认，保证冷启动可用）。
+// （非法值静默回退默认，保证冷启动可用）。
 func permissionModeFromSetting(s string) engine.PermissionMode {
 	switch s {
 	case "auto_approve":

@@ -32,6 +32,7 @@ harness9 是一款基于 Go 语言构建的**轻量级、功能完备、生产�
 - **网页搜索与抓取**: `internal/tools/web_search.go` / `web_fetch.go` / `web_safety.go` / `web_content.go`；`web_search` 工具（DuckDuckGo HTML 端点 POST，无 API Key，20s 超时 + 10s dial 超时，`golang.org/x/net/html` DOM 解析，`decodeUDDG` 还原真实 URL）+ `web_fetch` 工具（HTTP GET，15s 超时，5 次重定向上限，`text/html` → `go-readability` 提取主内容 → `html-to-markdown` 转 Markdown，`text/*` → 原始文本，其他 → 不支持提示）；`isSafeURL` 共享 SSRF 安全门（scheme + userinfo + DNS 解析 + 9 个 IP 段检查（含 IPv6 ULA `fc00::/7` 和链路本地 `fe80::/10`）+ IPv4-mapped IPv6 规范化 + IPv6 loopback，DNS 失败 fail-closed，重定向链每跳复检）；`DefaultPromptBuilder` 实时注入 `当前日期：YYYY-MM-DD`，防止 LLM 因训练截止日期偏差产生陈旧搜索词；主 Agent + 所有 Sub-Agent 均可使用，零额外配置
 - **Test & Eval（自动化测试与评估）**: `internal/evals/` 包；`ScriptedProvider`（确定性 LLM mock，按预设 Turn 序列返回回复，不发起真实 API 调用）+ `Assertion` 接口（Hard 断言：ToolCalled/ToolNotCalled/OutputContains/OutputExcludes/NoError/Error；Soft 断言：MaxTurns/MaxToolCalls，仅记警告不影响通过率）+ `EvalHarness`（`RunCase` 构建最小化隔离引擎 + `recordingHook` 记录工具调用轨迹 + `Suite` 批量运行）+ `SetupHermeticEnv`（清除所有 API Key，标准 Hermetic 隔离环境（密封测试，防止 eval 调用真实 API），本地与 CI 环境一致）+ `BuildReport`/`WriteJSON`/`WriteMarkdown`（JSON + Markdown 评估报告生成）；`internal/evals/dataset/` 黄金数据集（24 个用例：工具调用准确性 × 6 + Planning 完成率 × 5 + Context Engineering × 4 + Error Handling/Self-Healing × 3 + Memory 持久化 × 2 + Context Compaction × 4）；`.github/workflows/eval.yml` CI Quality Gate（PR 触发 hermetic eval，失败则阻断合并）
 - **MCP 工具集成（Model Context Protocol）**: `internal/mcp/` 包；JSON-RPC 2.0 over stdio/HTTP；`Config`（`.mcp.json` 加载，file-not-found 静默返回空）+ `StdioTransport`（subprocess + NDJSON async reader goroutine + pending map ID 关联 + 三路 select ctx/done/response；`transport_proc_unix.go` 独立进程组 + SIGKILL 终止 npx 孤儿 node 子进程，`transport_proc_windows.go` stub 回退单进程 kill）+ `HTTPTransport`（无状态 POST）+ `Client`（initialize → notifications/initialized → tools/list → tools/call 握手与调用）+ `Manager`（并发 Start 30s per-server timeout，fail-soft，`ServerStatus` + `ToolDetails` TUI 通知链，`InjectTools` 闭包捕获避免循环变量 bug，`WithNotify` channel 回调；`Start` 始终返回 nil，失败状态通过 `Statuses()` 的 `StatusFailed` 暴露）+ `MCPToolAdapter`（实现 `BaseTool` 接口，`mcp__{server}__{tool}` 双下划线命名，对 Engine 完全透明）；TUI MCPBar（状态栏实时展示）+ `/mcp` 模态工具面板（工具列表，`e` 键 `tea.ExecProcess` 打开 `$EDITOR` 编辑 `.mcp.json`；鼠标滚轮 + ↑↓/jk 双支持）；`.mcp.json` 配置文件驱动，main.go 中异步启动不阻塞 TUI 渲染；`defer mcpMgr.Stop()` Session 级生命周期；`mcpPanelOverhead=4` 与 `contentH=m.height-4` 保持一致，确保面板撑满屏幕不遮挡对话区
+- **Desktop App（macOS 桌面客户端）**: `desktop/` 嵌套 Go 模块（Wails v2 + React/TS，对标 OpenAI Codex 桌面版）；`internal/appservice` 应用服务层把 main.go 装配序列参数化为 sharedStack（跨会话共享 provider/sandbox/memory/LTM/MCP）+ SessionStack（会话级栈重建，修复切换会话后 offload/压缩记录归属错位），事件泵与审批桥解耦 UI（审批入队不阻塞泵，规避无缓冲事件通道并发审批死锁）；前端工作台：会话侧栏（标题/恢复/删除/重命名）、流式对话（Markdown/Thinking 折叠/工具卡片/子代理卡片/token 计量条）、五选项审批弹窗（多审批排队）、Plan/Diff 审查面板、斜杠补全、设置页；Seatbelt 原生沙箱（sandbox-exec，deny-by-default，read-only/workspace-write 两档，可写根符号链接解析）作为一等默认后端，Docker 保留可选；`sessions` 表增量迁移 title 列（首条消息自动生成标题）；`SANDBOX_BACKEND` 环境变量接缝；`wails build` 产出自签名 harness9.app
 - **AutoDev（自举开发闭环）**: `skills/autodev/SKILL.md`（`/autodev` AgentSkill，三阶段：需求澄清→Spec 生成与强制确认关卡→委派 dev sub-agent）+ `.harness9/agents/dev.md`（dev sub-agent 定义：读规范→探索→实现→`go build/test` 迭代循环（≤3 次）→gofmt→commit→push→`gh pr create`）；git worktree（`.autodev/<slug>/`，代码隔离）+ Docker Sandbox（执行隔离，需 `SANDBOX_IMAGE=golang:1.25-bookworm`）；零新 Go 代码，完全由 Skill 文件 + Agent 定义文件驱动，复用现有 Skills 系统、Sub-Agent 系统、Sandbox 基础设施
 
 ### 参考框架
@@ -72,6 +73,7 @@ harness9 是一款基于 Go 语言构建的**轻量级、功能完备、生产�
 | `go.opentelemetry.io/otel/exporters/stdout/stdoutmetric` | v1.44.0 | Stdout Metric 导出器 |
 | `github.com/go-shiori/go-readability` | latest | Mozilla Readability Go 移植，`web_fetch` HTML 主内容提取 |
 | `github.com/JohannesKaufmann/html-to-markdown` | v1.6.0 | HTML → Markdown 转换，`web_fetch` 输出格式化 |
+| `github.com/wailsapp/wails/v2` | v2.17.0 | 桌面客户端壳（仅 `desktop/` 嵌套模块使用：WKWebView + 绑定 + 事件，主模块零依赖） |
 
 ### 间接依赖（自动引入，无需手动管理）
 
@@ -188,7 +190,26 @@ harness9/
 │   └── starhistory/                 # GitHub Star History 图表生成（写入本地 SVG）
 │       ├── main.go                  # CLI 入口：仓库名 / 输出路径 / 颜色参数
 │       └── render.go                # SVG 渲染：时间序列曲线 + 标注 + 主题
+├── desktop/                         # 桌面客户端（Wails v2，macOS 一期；嵌套 Go 模块）
+│   ├── go.mod                       # module github.com/harness9/desktop + replace ../（internal/ 可见性 + CI 零感知）
+│   ├── wails.json                   # Wails 工程配置（产品名/版本/前端构建命令）
+│   ├── main.go                      # 入口：Wails 运行时装配 + stdlib log 重定向到 ~/.harness9/desktop/logs/
+│   ├── app.go                       # 绑定层：appservice → 前端绑定方法 + agent:event 事件桥 + 关窗确认
+│   ├── build/appicon.png            # 应用图标（1024x1024）
+│   └── frontend/                    # React + TypeScript + Vite（深色工作台，中文 UI）
+│       └── src/
+│           ├── types.ts             # 与 Go DTO 一一对应的类型契约（含 Wails 全局对象声明）
+│           ├── store.ts             # zustand 全局状态 + 事件装配（对标 TUI handleEvent）
+│           ├── App.tsx              # 布局骨架：loading → welcome（选 workDir）→ ready（三栏）
+│           └── components/          # Sidebar / Chat / Composer / ApprovalModal / RightPanel / SettingsDialog / Welcome
 ├── internal/
+│   ├── appservice/                  # 应用服务层 — 对标 Codex app-server 的装配与运行时服务（桌面端事实源）
+│   │   ├── service.go               # Service：会话 CRUD/标题、SendMessage 单飞、Interrupt/Compact、查询接口
+│   │   ├── assembly.go              # sharedStack（跨会话共享）+ SessionStack（会话级栈重建）装配，序列对齐 main.go
+│   │   ├── events.go                # 事件泵（审批入队不阻塞泵）+ RespondApproval 桥 + HistoryItem 归并
+│   │   ├── diff.go                  # GetSessionDiff：git status/diff HEAD 采集（fail-soft）
+│   │   ├── settings.go              # ~/.harness9/desktop/settings.json 读写 + 权限模式互转
+│   │   └── service_test.go          # 服务层单元测试（含审批并发/白名单持久化/diff/settings）
 │   ├── engine/                      # Agent 核心引擎 — 标准 ReAct 主循环（按职责拆分为多个文件）
 │   │   ├── agent_loop.go            # 引擎结构 + NewAgentEngine + emitter 定义 + 阻塞式 Run + runLoop 阶段编排器
 │   │   ├── options.go               # With* 函数式配置选项 + 运行期 SetSession + PromptBuilder 接口
@@ -315,7 +336,8 @@ harness9/
 │   │   ├── daemon.go                # ensureDaemonReady：daemon 探测 + 自动拉起 + 有界轮询（CreateWithRetry 的前置保障）
 │   │   ├── daemon_darwin.go         # tryStartDaemon macOS 实现（open -a Docker，幂等）
 │   │   ├── daemon_other.go          # tryStartDaemon 非 darwin stub（不自动拉起，短等待快速失败）
-│   │   └── *_test.go                # 各组件单元测试（container mock + manager 并发测试 + daemon 轮询）
+│   │   ├── seatbelt.go              # SeatbeltEnvironment：macOS sandbox-exec 原生沙箱（deny-by-default，read-only / workspace-write 两档）
+│   │   └── *_test.go                # 各组件单元测试（container mock + manager 并发测试 + daemon 轮询 + seatbelt 真实冒烟）
 │   ├── observability/               # OpenTelemetry 可观测性 — Tracing + Metrics
 │   │   ├── config.go                # Config 结构体 + ConfigFromEnv()（env var 驱动）
 │   │   ├── attributes.go            # Span 名称 / Metric 名称 / 属性键常量
@@ -453,6 +475,8 @@ harness9/
 | **cmd/harness9** | 主入口：TTY 自动检测选择 TUI / CLI；`--help` / `--version` flag；`upgrade` 子命令；初始化 Memory Manager + SummarizationCompactor + Session + OffloadHook + FilePlanWriter + HookRegistry | ✅ |
 | **tui** | 全屏 TUI（Bubbletea）：WelcomeBanner + 对话页双 Phase、Spinner 动词轮换、内置命令 Tab 补全 + Skills 补全、Markdown 渲染、会话管理、状态栏 token 用量实时展示（颜色告警）+ 压缩通知 + 计划渲染 + autoExecuting 自动续跑（plan_write 成功激活，停滞 3 次放弃，取消即停）；ToolResultData 携带引擎侧精确耗时；Thinking 块流式渲染（EventThinkingDelta → 深灰 │ 前缀行，flushPendingThinking 在工具/正文边界自动关闭）；Shell 执行模式（`!` 前缀 → dispatchShellCommand → tea.Cmd 异步 → shellResultMsg → pendingShellOutput 注入 LLM 上下文） | ✅ |
 | **engine** | 标准 ReAct 主循环（按职责拆分：agent_loop.go 编排器 + loop_phases.go 阶段方法 + options/retry/history/nudge/tools_exec 子模块），阻塞 + 流式双模式，并发工具调度，Session/Compactor 集成，EventTokenUpdate / EventCompaction / EventToolResult（ToolResultData）/ EventThinkingDelta 事件，WithContextWindow 选项，双档 LLM 重试（默认/网络预算），原生规划集成（PlanStore 跨会话持久化 + plan_write 写时检查点 + 每轮活跃 Plan 原样注入发送视图，Compactor 零改动），Compact 写回失败自动回滚，WithMemoryNudge（每 N 轮向防御性副本注入长期记忆提示，不持久化），WithStallNudge（连续 N 轮无进展工具（edit_file/write_file）调用时注入一次停滞提示打断空转，防御性副本，不持久化），provider 空响应防御（转为可重试错误而非 panic） | ✅ |
+| **desktop** | macOS 桌面客户端（Wails v2 嵌套 Go 模块 + React/TS 前端）：`app.go` 薄绑定层（appservice 方法暴露 + agent:event 事件桥 + 运行中关窗确认 + 日志重定向）；前端工作台（会话侧栏/流式对话/审批弹窗/Plan-Diff 面板/斜杠补全/设置页）；`wails build` 产出自签名 .app；对主模块 CI/GoReleaser 零侵入 | ✅ |
+| **appservice** | 应用服务层（对标 Codex app-server 的分层接缝）：sharedStack（跨会话共享 provider/沙箱/数据库/LTM/MCP）+ SessionStack（会话级栈重建）；SendMessage 单飞 + 事件泵（审批入队不阻塞）；审批桥（五选项语义 + 白名单持久化移植）；会话 CRUD + title；git diff 采集；桌面设置持久化；DTO 全量可序列化（二期可平移为 JSON-RPC app-server） | ✅ |
 | **hooks** | 文件系统能力：ToolHook 接口 + HookRegistry（洋葱模型）；OffloadHook（超大输出 offload 到 `~/.harness9/tool_results/`，fail-open）；FilePlanWriter（执行计划持久化为 markdown，git 项目写入 workDir/.harness9/plans/） | ✅ |
 | **planning** | Plan 是 Agent 原生能力：PlanStore（Session 级，线程安全，全量替换）、PlanItem/PlanStatus 状态机（pending/in_progress/completed/cancelled）、FormatPlan（活跃条目原样注入文本）、PlanWriter 接口（解耦 PlanWriteTool 与 FilePlanWriter）；plan_write 工具（tools 包）承担防作弊校验 | ✅ |
 | **subagent** | Sub-Agent 子代理委派：SubAgentDefinition（ResolveTools 白名单∩全集-黑名单-task）、Registry（编程式 + `.harness9/agents/*.md` 文件式定义）、Runner（构建隔离子引擎 + RunStream + 桥接审批与进度）、TaskTool（task 工具，前台/后台双模式）、TaskTracker（后台任务单一事实源）；内置 general-purpose 通用子代理（继承父全部可用工具与模型）；防递归 + 权限不扩权 + 上下文隔离 + Plan 双向隔离（每次委派构造独立 PlanStore + 独立 plan_write 实例，子代理拥有原生规划能力） | ✅ |
@@ -465,7 +489,7 @@ harness9/
 | **tools** | 工具注册表 + 内置工具（bash / read_file（offset/limit 分页）/ write_file / edit_file / plan_write / memory_write（add/update/remove + Precis 重建）/ memory_search（FTS5 检索 + 命中强化）/ web_search（DuckDuckGo，无 API Key）/ web_fetch（go-readability + html-to-markdown，Markdown 输出））+ 路径沙箱（safe_path.go）+ SSRF 防护（web_safety.go） | ✅ |
 | **env** | 零依赖 `.env` 配置加载器（系统变量优先） | ✅ |
 | **logfmt** | 跨模块共享的块状日志渲染（FormatMsg/ToolStart/LoopStart 等 11 个格式函数） | ✅ |
-| **sandbox** | Docker 容器级 Sandbox：Environment 接口（LocalEnvironment 进程级 / DockerEnvironment 容器级）、Container 五状态机（Pending/Running/Stopping/Terminated/Failed）、Manager（Create/Destroy/DestroyAll/ReapOrphans/ListAll，并发安全）、工具透明路由（bash via docker exec，文件 via bind mount）、安全加固（cap-drop all + security-opt no-new-privileges + pids-limit + tmpfs）、Agent 级隔离（主 Agent + 每个 Sub-Agent 独立容器）、TUI SandboxBar、孤儿容器回收、向后兼容（默认启用，`SANDBOX_ENABLED=false` 才关闭，行为与引入前完全一致） | ✅ |
+| **sandbox** | 双后端 Sandbox：Environment 接口统一抽象——DockerEnvironment（容器级：五状态机 + Manager + 安全加固 + Agent 级隔离 + 孤儿回收，`SANDBOX_BACKEND=docker`）/ **SeatbeltEnvironment（macOS 原生：sandbox-exec deny-by-default，read-only / workspace-write 两档，可写根符号链接解析，零守护进程依赖，桌面端一等默认，`SANDBOX_BACKEND=seatbelt`）** / LocalEnvironment（`SANDBOX_ENABLED=false`）；TUI SandboxBar + 桌面 SandboxBadge | ✅ |
 | **observability** | OpenTelemetry 可观测层：`Config`/`Setup`（noop/stdout/otlp 三种 Exporter）、`OTELEngineObserver`（Interaction + Turn Span）、`TracingProvider`（LLM Request Span + Token Metrics）、`ObservabilityHook`（Tool Execution Span + Tool Metrics）；默认 noop 零开销，`OTEL_ENABLED=true` 激活 | ✅ |
 | **evals** | 自动化评估框架：`ScriptedProvider`（确定性 mock）、`Assertion`（Hard/Soft 断言，8 种实现）、`RunCase`/`Suite`（最小化隔离引擎 + `recordingHook`）、`SetupHermeticEnv`（Hermetic CI 隔离）、`BuildReport`/`WriteJSON`/`WriteMarkdown`（评估报告）；`dataset/` 黄金数据集 24 用例（tool_calling/planning/context/error_handling/memory/compaction）；`.github/workflows/eval.yml` Quality Gate | ✅ |
 | **permission** | 工具权限规则系统（JSON 配置驱动）：`Rules`（有序规则列表，glob 模式匹配，无匹配默认 ask）、`LoadRules`/`SaveRules`（配置文件重载，TUI "总是允许"动态生效）、`Hook`（实现 hooks.ToolHook，`NewHook` 内存 / `NewFileHook` 每次调用重载） | ✅ |
@@ -475,6 +499,7 @@ harness9/
 
 > **Roadmap（后续方向）**：
 > - **短期记忆**：FTS5 全文会话搜索（P3，跨会话检索历史对话消息，区别于 LTM 对记忆条目的检索）。
+> - **Desktop 二期**：git worktree 任务隔离（每任务独立 worktree + 分支，diff 按分支精确圈定）、多会话并行运行（多引擎实例 + 侧栏进度徽标）、内嵌终端面板、JSON-RPC over stdio app-server（appservice 平移，完整对标 Codex 多客户端协议）、应用签名/公证与自动更新。
 > - **Long-Term Memory Phase 3**：向量嵌入语义检索（`Embedder`，接入 Ollama / OpenAI Embeddings）、Dreaming 巩固（`Consolidator`，cron 批量晋升）、外部记忆提供者（`Provider`，接入 Mem0 / Honcho）、基于 `StaleCandidates` 的陈旧记忆自动清理。
 
 ---

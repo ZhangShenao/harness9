@@ -160,6 +160,25 @@ The SandboxBar is automatically hidden when the terminal width is insufficient, 
 
 ---
 
+## Seatbelt Backend (macOS Native Sandbox)
+
+Besides Docker, harness9 ships a macOS-native Seatbelt backend (`internal/sandbox/seatbelt.go`, following OpenAI Codex's macOS sandbox approach): every `RunBash` spawns the child via `sandbox-exec -p <profile>` under a **deny-by-default** profile — no container lifecycle, no daemon dependency, instant start.
+
+Two policy tiers:
+
+| Tier | Writes | Network | Use case |
+|------|--------|---------|----------|
+| `read-only` | fully read-only | denied | read-only exploration, code review tasks |
+| `workspace-write` (default) | workDir / TMPDIR / ~/.harness9 writable (symlinks resolved) | allowed | regular coding tasks |
+
+```go
+env := sandbox.NewSeatbeltEnvironment(workDir, sandbox.SeatbeltWorkspaceWrite)
+```
+
+The positioning is a behavior guardrail, not an adversarial security boundary (same wording as `SANDBOX_BLOCKED_HOSTS`); use the Docker backend where hard isolation is required. The desktop client (harness9 Desktop) defaults to this backend and can switch in its settings dialog. See [Desktop App](/docs/desktop-app).
+
+---
+
 ## Configuration Parameters
 
 | Environment Variable | Default | Description |

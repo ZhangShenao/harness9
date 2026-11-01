@@ -160,6 +160,25 @@ Sub-Agent B Sandbox（sub-2）           ← 独立容器，互不影响
 
 ---
 
+## Seatbelt 后端（macOS 原生沙箱）
+
+除 Docker 外，harness9 还提供 macOS 原生的 Seatbelt 后端（`internal/sandbox/seatbelt.go`，对标 OpenAI Codex 的 macOS 沙箱实现）：每次 `RunBash` 通过 `sandbox-exec -p <profile>` 以 **deny-by-default** profile 拉起子进程，无容器生命周期、零守护进程依赖、秒级启动。
+
+两档策略：
+
+| 档位 | 写入 | 网络 | 适用场景 |
+|------|------|------|---------|
+| `read-only` | 全盘禁写 | 禁止 | 只读探索、代码审查类任务 |
+| `workspace-write`（默认） | workDir / TMPDIR / ~/.harness9 可写（符号链接已解析） | 允许 | 常规编码任务 |
+
+```go
+env := sandbox.NewSeatbeltEnvironment(workDir, sandbox.SeatbeltWorkspaceWrite)
+```
+
+定位是行为护栏而非对抗性安全边界（与 `SANDBOX_BLOCKED_HOSTS` 同一口径）；需要硬隔离的场景仍应使用 Docker 后端。桌面客户端（harness9 Desktop）默认使用该后端，可在设置页切换。详见 [Desktop App](/docs/desktop-app)。
+
+---
+
 ## 配置参数
 
 | 环境变量 | 默认值 | 说明 |
