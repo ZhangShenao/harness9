@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/harness9/internal/engine"
+	"github.com/harness9/internal/sandbox"
 )
 
 // Failure 描述单次断言失败的详情。
@@ -69,6 +70,10 @@ type Case struct {
 	// （如 WithStallNudge）。为空时保持原最小化、确定性的引擎构造。
 	// 注意：传入引入非确定性的选项（如真实 Compactor）会破坏 eval 的可复现性，应避免。
 	EngineOptions []engine.Option
+	// ToolEnvironment 注入自定义执行环境（如 Seatbelt 沙箱）到四个文件/命令工具，
+	// nil = 本地进程执行（原行为）。仅用于评估沙箱后端的行为约束（放行与拒绝两个
+	// 方向）；普通用例保持 nil 以维持最小化、确定性的引擎构造。
+	ToolEnvironment sandbox.Environment
 }
 
 // ToolCalledAssertion 断言指定工具被调用了至少 MinTimes 次（Hard）。

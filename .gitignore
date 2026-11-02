@@ -64,3 +64,11 @@ __pycache__/
 # CI 质量报告数据管线生成物（覆盖率 profile、jscpd json 报告）
 coverage.out
 jscpd-report/
+
+# desktop（Wails 桌面端）
+desktop/frontend/node_modules/
+desktop/frontend/wailsjs/
+desktop/build/bin/
+
+# wails 绑定生成阶段的临时产物
+desktop/desktop

@@ -91,6 +91,10 @@ func NewManager(dbPath string, opts ...ManagerOption) (*Manager, error) {
 		db.Close()
 		return nil, fmt.Errorf("初始化 schema: %w", err)
 	}
+	if err := ensureSessionsTitleColumn(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("迁移 sessions.title 列：%w", err)
+	}
 	m := &Manager{db: db}
 	for _, opt := range opts {
 		opt(m)
@@ -125,10 +129,10 @@ func (m *Manager) OpenSession(ctx context.Context, id string) (Session, error) {
 	return &SQLiteSession{db: m.db, sessionID: id}, nil
 }
 
-// ListSessions 按 updated_at 降序返回所有会话元数据（含消息条数）。
+// ListSessions 按 updated_at 降序返回所有会话元数据（含标题与消息条数）。
 func (m *Manager) ListSessions(ctx context.Context) ([]SessionInfo, error) {
 	rows, err := m.db.QueryContext(ctx, `
-		SELECT s.id, s.created_at, s.updated_at, COUNT(msg.id)
+		SELECT s.id, COALESCE(s.title, ''), s.created_at, s.updated_at, COUNT(msg.id)
 		FROM sessions s
 		LEFT JOIN messages msg ON msg.session_id = s.id
 		GROUP BY s.id
@@ -143,7 +147,7 @@ func (m *Manager) ListSessions(ctx context.Context) ([]SessionInfo, error) {
 	for rows.Next() {
 		var info SessionInfo
 		var createdAt, updatedAt int64
-		if err := rows.Scan(&info.ID, &createdAt, &updatedAt, &info.MsgCount); err != nil {
+		if err := rows.Scan(&info.ID, &info.Title, &createdAt, &updatedAt, &info.MsgCount); err != nil {
 			return nil, fmt.Errorf("扫描会话：%w", err)
 		}
 		info.CreatedAt = time.Unix(createdAt, 0)
@@ -151,6 +155,50 @@ func (m *Manager) ListSessions(ctx context.Context) ([]SessionInfo, error) {
 		result = append(result, info)
 	}
 	return result, rows.Err()
+}
+
+// ensureSessionsTitleColumn 幂等迁移：为 sessions 表补充 title 列。
+// 旧库（桌面版引入前创建）没有该列，通过 PRAGMA table_info 探测后增量 ALTER TABLE，
+// 避免在 CREATE TABLE 中加列导致旧库首次打开即失败。
+func ensureSessionsTitleColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		return fmt.Errorf("探测 sessions 表结构：%w", err)
+	}
+	defer rows.Close()
+	hasTitle := false
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("扫描表结构：%w", err)
+		}
+		if name == "title" {
+			hasTitle = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历表结构：%w", err)
+	}
+	if hasTitle {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("新增 title 列：%w", err)
+	}
+	return nil
+}
+
+// SetTitle 设置会话标题。
+// 标题是会话的展示元数据（桌面端侧栏 / 列表使用），不参与 LLM 上下文。
+func (m *Manager) SetTitle(ctx context.Context, sessionID, title string) error {
+	_, err := m.db.ExecContext(ctx, `UPDATE sessions SET title = ? WHERE id = ?`, title, sessionID)
+	if err != nil {
+		return fmt.Errorf("更新会话标题：%w", err)
+	}
+	return nil
 }
 
 // DeleteSession 删除指定会话及其所有消息（通过 ON DELETE CASCADE）。

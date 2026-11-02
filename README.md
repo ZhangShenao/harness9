@@ -51,6 +51,20 @@ harness9 --version
 
 > For full install options, Anthropic/OpenRouter/OrcaRouter configuration, AGENTS.md setup, and FAQ, see the [Quick Start Guide](https://zhangshenao.github.io/harness9/docs/quick-start).
 
+### Desktop App (macOS)
+
+Prefer a GUI? harness9 ships a native macOS desktop client (Codex-style workspace: sessions, streaming chat, approvals, Plan/Diff review, native Seatbelt sandbox):
+
+```bash
+# Prerequisites: Go 1.25+, Node 18+, Xcode CLT, wails CLI
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+cd desktop && wails build
+open build/bin/harness9.app
+```
+
+See the [Desktop App writeup](https://zhangshenao.github.io/harness9/docs/desktop-app) for the architecture.
+
 ---
 
 ## Core Features

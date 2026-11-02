@@ -27,7 +27,10 @@ type Session interface {
 
 // SessionInfo 是 Manager.ListSessions 返回的会话元数据。
 type SessionInfo struct {
-	ID        string
+	ID string
+	// Title 会话展示标题（桌面端侧栏使用），由首条用户 prompt 自动生成或用户手动重命名；
+	// 旧会话可能为空串。
+	Title     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	MsgCount  int

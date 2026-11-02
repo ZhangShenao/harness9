@@ -1,0 +1,18 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "harness9",
+  "outputfilename": "harness9",
+  "info": {
+    "productName": "harness9",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright © 2026 harness9",
+    "comments": "轻量级 AI Agent Harness · 桌面版"
+  },
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "harness9"
+  }
+}

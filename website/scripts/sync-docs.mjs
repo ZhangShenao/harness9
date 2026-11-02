@@ -19,6 +19,7 @@ const repoRoot = path.resolve(__dirname, '../..') // website/scripts -> website 
 
 // 唯一手工配置：核心功能组的展示顺序（未列出的新文档自动追加末尾）
 const CORE_ORDER = [
+  'desktop-app',
   'tui',
   'shell-execution',
   'agent-loop',
