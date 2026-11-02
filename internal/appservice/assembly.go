@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"sync"
 	"time"
 
 	harctx "github.com/harness9/internal/context"
@@ -63,6 +64,10 @@ type sharedStack struct {
 	recordStore *memory.FileRecordStore
 
 	mcpMgr *mcppkg.Manager // 未配置 MCP server 时为 nil
+	// mcpReadyCh 在 Manager.Start 返回（全部 server 连接完成或超时失败）后关闭，
+	// 供晚连接场景的补注入判断（见 injectMCPToolsOnce）。
+	mcpReadyCh    chan struct{}
+	mcpInjectOnce sync.Once
 
 	// 公共 hook（会话无关）：permHook 每次调用重读规则文件；dangerHook 无状态；
 	// obsHook 仅观测。offloadHook 因绑定 sessionID，在 SessionStack 中构建。
@@ -190,9 +195,15 @@ func (s *Service) buildSharedStack(ctx context.Context) (*sharedStack, error) {
 	pb := harctx.NewPromptBuilder(workDir, skillsIndex).
 		WithPlanEnabled(true).
 		WithOffloadEnabled(true)
-	if ss.sandboxEnv != nil {
+	// 执行环境说明按后端分派：Seatbelt 必须用独立文案——Docker 文案的
+	// "root in Ubuntu / 操作不影响真实系统 / apt-get 安装" 对 macOS 原生沙箱
+	// 全部不成立，模型据此行动会越界破坏真实工作区。
+	switch {
+	case ss.sandboxBackendLabel == "seatbelt":
+		pb = pb.WithSeatbeltContext(true)
+	case ss.sandboxEnv != nil:
 		pb = pb.WithSandboxContext(true)
-	} else if ss.sandboxDegradeReason != "" {
+	case ss.sandboxDegradeReason != "":
 		pb = pb.WithSandboxDegraded(ss.sandboxDegradeReason)
 	}
 
@@ -248,7 +259,10 @@ func (s *Service) buildSharedStack(ctx context.Context) (*sharedStack, error) {
 	if len(mcpCfg.Servers) > 0 {
 		mcpMgr := mcppkg.NewManager(mcpCfg)
 		ss.mcpMgr = mcpMgr
+		ss.mcpReadyCh = make(chan struct{})
+		ready := ss.mcpReadyCh
 		go func() {
+			defer close(ready)
 			if err := mcpMgr.Start(ctx); err != nil {
 				log.Print(logfmt.FormatMsg("appservice", fmt.Sprintf("MCP Manager 启动失败: %v", err)))
 			}
@@ -265,6 +279,46 @@ func (s *Service) buildSharedStack(ctx context.Context) (*sharedStack, error) {
 	}
 
 	return ss, nil
+}
+
+// injectMCPToolsOnce 在 MCP 连接就绪后把工具注入会话 registry（Service 生命周期内一次）。
+//
+// 为什么不能只在栈构建时注入一次：buildSharedStack 异步启动 Manager，npx 等
+// server 冷启动可达数十秒——构建会话栈时连接往往尚未完成，一次性注入会让该
+// 会话永久缺失 MCP 工具。SendMessage 前调用本方法，晚连接的 server 在下一条
+// 消息即可用。Registry.Register 对重复注册返回 ErrAlreadyRegistered、
+// Manager.InjectTools 会跳过，因此注入天然幂等；once 保证不重复刷 skip 日志。
+// 之后新建的栈在 buildSessionStack 里注入（届时必然已就绪）。
+func (ss *sharedStack) injectMCPToolsOnce(stack *SessionStack) {
+	if ss.mcpMgr == nil || ss.mcpReadyCh == nil {
+		return
+	}
+	select {
+	case <-ss.mcpReadyCh:
+	default:
+		return // 连接尚未完成，下一条消息再试
+	}
+	ss.mcpInjectOnce.Do(func() {
+		if n := ss.mcpMgr.InjectTools(stack.registry); n > 0 {
+			log.Print(logfmt.FormatMsg("appservice", fmt.Sprintf("MCP: 补注入 %d 个工具", n)))
+		}
+	})
+}
+
+// formatCompletedTasks 把已完成的后台子代理任务格式化为注入块，
+// 语义对标 TUI 的 pendingSubAgentInject（后台结果必须回流到主对话）。
+func formatCompletedTasks(completed []subagent.CompletedTask) []string {
+	blocks := make([]string, 0, len(completed))
+	for _, c := range completed {
+		status := "完成"
+		if c.IsError {
+			status = "失败"
+		}
+		blocks = append(blocks, fmt.Sprintf(
+			"[后台子代理任务%s] agent=%s task=%s\n最终结果：\n%s",
+			status, c.AgentName, c.TaskID, c.FinalText))
+	}
+	return blocks
 }
 
 // defaultProviderFactory 是生产默认的 Provider 工厂：NewFromEnv + 模型窗口注册表。
@@ -289,6 +343,11 @@ type SessionStack struct {
 	hookReg   tools.Registry
 	engine    *engine.AgentEngine
 	taskTool  *subagent.TaskTool
+	// tracker 是本会话后台子代理任务的单一事实源；桌面端没有 TUI 的轮询面板，
+	// 完成结果靠事件泵收割进 pendingInject、下一条消息前置注入（见 events.go）。
+	tracker *subagent.TaskTracker
+	// pendingInject 是待注入下一条 prompt 的文本块（s.mu 保护）。
+	pendingInject []string
 }
 
 // buildSessionStack 为指定会话构建全新运行栈。
@@ -332,11 +391,18 @@ func (s *Service) buildSessionStack(sess memory.Session) (*SessionStack, error) 
 	}
 
 	// ---- Sub-Agent 接线（会话级：runner 的 SharedHooks 含会话级 offloadHook）----
+	// 沙箱继承：docker 后端沿用 Runner 为每个子代理创建独立容器的路径（SandboxMgr）；
+	// Seatbelt 等无 Manager 后端必须显式共享父环境——否则子代理的 bash 直跑宿主机，
+	// 父会话被沙箱约束、委派出去却不受限，违反"权限只能更严不能扩权"不变量。
+	subAgentEnv := ss.sandboxEnv
+	if ss.sandboxMgr != nil {
+		subAgentEnv = nil
+	}
 	subAgentBaseTools := []tools.BaseTool{
-		tools.NewReadFileTool(workDir),
-		tools.NewWriteFileTool(workDir),
-		tools.NewBashTool(workDir),
-		tools.NewEditFileTool(workDir),
+		tools.NewReadFileTool(workDir, tools.ReadFileWithEnvironment(subAgentEnv)),
+		tools.NewWriteFileTool(workDir, tools.WriteFileWithEnvironment(subAgentEnv)),
+		tools.NewBashTool(workDir, tools.WithEnvironment(subAgentEnv)),
+		tools.NewEditFileTool(workDir, tools.EditFileWithEnvironment(subAgentEnv)),
 		skills.NewUseSkillTool(ss.skillsIndex),
 		tools.NewWebFetchTool(),
 		tools.NewWebSearchTool(),
@@ -435,6 +501,12 @@ func (s *Service) buildSessionStack(sess memory.Session) (*SessionStack, error) 
 		}
 	}
 
+	// 恢复持久化的执行计划：引擎要到下一次 run 开始才加载 Plan，
+	// 不在此处恢复会让重新打开的会话在 UI 上丢失既有计划进度。
+	if items, err := sess.GetPlan(s.ctx); err == nil && len(items) > 0 {
+		planStore.Write(items)
+	}
+
 	return &SessionStack{
 		session:   sess,
 		info:      SessionInfoDTO{ID: sessionID, Title: title},
@@ -444,5 +516,6 @@ func (s *Service) buildSessionStack(sess memory.Session) (*SessionStack, error) 
 		hookReg:   hookReg,
 		engine:    eng,
 		taskTool:  taskTool,
+		tracker:   tracker,
 	}, nil
 }

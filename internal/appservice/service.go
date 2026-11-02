@@ -27,6 +27,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -333,6 +334,12 @@ func (s *Service) SendMessage(prompt string) error {
 		return ErrRunInProgress
 	}
 	stack := s.stack
+	// 删除最后一个会话后 stack 为 nil 而前端仍处于就绪态，此时发送必须返回
+	// 可恢复的哨兵错误而非在 stack.info 上解引用 panic。
+	if stack == nil {
+		s.mu.Unlock()
+		return ErrNoActiveSession
+	}
 	s.running = true
 	runCtx, cancel := context.WithCancel(s.ctx)
 	s.runCancel = cancel
@@ -344,7 +351,19 @@ func (s *Service) SendMessage(prompt string) error {
 			}
 		}
 	}
+	// 收割已完成的后台子代理任务并前置注入（对标 TUI pendingSubAgentInject）：
+	// 桌面端没有任务面板轮询，完成结果必须回流到主对话，否则后台委派形同丢失。
+	if completed := stack.tracker.DrainCompleted(); len(completed) > 0 {
+		stack.pendingInject = append(stack.pendingInject, formatCompletedTasks(completed)...)
+	}
+	if len(stack.pendingInject) > 0 {
+		prompt = strings.Join(stack.pendingInject, "\n\n---\n\n") + "\n\n---\n\n" + prompt
+		stack.pendingInject = nil
+	}
 	s.mu.Unlock()
+
+	// MCP 晚连接补注入（栈构建时连接可能尚未完成，见 injectMCPToolsOnce）
+	s.shared.injectMCPToolsOnce(stack)
 
 	ch, err := stack.engine.RunStream(runCtx, prompt)
 	if err != nil {
@@ -449,8 +468,13 @@ func (s *Service) Close() {
 	s.mu.Unlock()
 
 	s.cancel()
+	// 清理必须用独立的有界 ctx：s.cancel() 之后 s.ctx 已取消，
+	// Manager.DestroyAll → Container.Stop 的 docker stop 子进程将无法启动，
+	// 容器既泄漏又已从跟踪表移除（再无二次清理机会）。
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cleanupCancel()
 	if s.shared != nil {
-		s.shared.close(s.ctx)
+		s.shared.close(cleanupCtx)
 	}
 	log.Print(logfmt.FormatMsg("appservice", "服务已关闭"))
 }

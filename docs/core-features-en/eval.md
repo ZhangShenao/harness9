@@ -4,7 +4,7 @@ harness9's quality assurance system consists of three mutually independent but c
 
 ```
 Development stage ──→ Test (deterministic testing)      ScriptedProvider + Assertion
-CI stage           ──→ Eval (golden dataset evaluation)  24 cases + Quality Gate
+CI stage           ──→ Eval (golden dataset evaluation)  26 cases + Quality Gate
 Production stage   ──→ Observability (tracing)           OTEL Traces + Metrics → Langfuse
 ```
 
@@ -33,7 +33,7 @@ Traditional software unit testing assumes: given the same input, you always get 
                              │
           ┌───────────────────▼──────────────────┐
           │ Eval                                 │  ← CI/CD: golden dataset Quality Gate
-          │ Quantify Agent capability boundaries │    24 cases, PR-triggered, failure blocks merge
+          │ Quantify Agent capability boundaries │    26 cases, PR-triggered, failure blocks merge
           └───────────────────┬──────────────────┘
                              │
           ┌───────────────────▼──────────────────┐
@@ -192,7 +192,7 @@ func TestMyFeature(t *testing.T) {
 
 ## III. Eval Subsystem: Golden Dataset
 
-### 3.1 Current Golden Dataset (24 cases)
+### 3.1 Current Golden Dataset (26 cases)
 
 | Category | Case | Verification target |
 |------|------|---------|
@@ -214,6 +214,8 @@ func TestMyFeature(t *testing.T) {
 | `error_handling` | `bash_fallback_on_error` | LLM switches to an alternative approach after a tool failure (Self-Healing) |
 | `error_handling` | `write_failure_graceful_stop` | Graceful degradation without retry after a write failure |
 | `error_handling` | `max_turns_protection` | MaxTurns triggers controlled engine termination (no panic) |
+| `sandbox_backend` | `seatbelt_workspace_write` | Seatbelt workspace-write allows workspace writes (real sandbox-exec, side-effect assertion) |
+| `sandbox_backend` | `seatbelt_read_only_denies_write` | Seatbelt read-only denies workspace writes at the kernel level (file must not land) |
 | `memory` | `write_memory` | memory_write tool is called |
 | `memory` | `search_memory` | memory_search tool is called |
 | `compaction` | `anchor_preservation` | After compaction the LLM can still answer questions about the user's intent (anchor preservation) |
@@ -224,7 +226,7 @@ func TestMyFeature(t *testing.T) {
 ### 3.2 Running Eval
 
 ```bash
-# Run the full golden dataset (24 cases, no API Key required)
+# Run the full golden dataset (26 cases, no API Key required)
 go test ./internal/evals/... ./internal/evals/dataset/... -v
 
 # Run only a specific category
@@ -249,7 +251,7 @@ Once feature development is complete, a corresponding golden case **must** be ad
 - Every feature must cover at least a **positive case** (the feature works correctly) and a **negative case** (the constraint is correctly enforced)
 - `SetupHermeticEnv` must be called first; `NoErrorAssertion` or `ErrorAssertion` is mandatory
 - Extending the dataset only requires adding a new `_test.go` file — no framework code changes needed
-- The current 24 cases are the baseline; they may only be added to, never removed or have coverage reduced
+- The current 26 cases are the baseline; they may only be added to, never removed or have coverage reduced
 
 ---
 

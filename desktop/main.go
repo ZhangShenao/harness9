@@ -82,7 +82,7 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Printf("desktop: Wails 退出: %v", err)
+		log.Print(logfmt.FormatMsg("desktop", fmt.Sprintf("Wails 退出: %v", err)))
 		// GUI 进程无控制台可见性，错误落日志后以非零码退出
 		fmt.Fprintf(os.Stderr, "desktop: %v\n", err)
 		os.Exit(1)

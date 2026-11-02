@@ -172,17 +172,19 @@ export const useStore = create<UiState>((set, get) => ({
         break;
       case "tool_start": {
         const tc = evt.data as ToolCallPayload;
-        const tools = new Map(s.streamingTools);
+        // 工具边界：先固化已缓冲的 thinking/正文，再以【全新】的 streaming map
+        // 承载新卡片——沿用 flush 前的旧 map 会把上一张刚固化进 items 的卡片
+        // 再复制一份（两处各出现一张，且后续 tool_result 只更新流式副本）。
+        flushStreaming(set);
+        const tools = new Map<string, ChatItem>();
         tools.set(tc.id, {
           key: `tool_${tc.id}`,
           kind: "tool",
           toolCallId: tc.id,
           toolName: tc.name,
-          toolArgs: tc.arguments,
+          toolArgs: normalizeToolArgs(tc.arguments),
           running: true,
         });
-        // 工具边界：把已缓冲的 thinking/正文固化进时间线
-        flushStreaming(set);
         set({ streamingTools: tools });
         break;
       }
@@ -480,6 +482,19 @@ function subAgentLine(sp: SubAgentPayload): string {
       return `✗ ${sp.text}`;
     default:
       return sp.text || sp.kind;
+  }
+}
+
+// normalizeToolArgs 把 json.RawMessage 经事件桥到达的参数统一为 JSON 文本。
+// 事件路径是对象、历史路径是字符串；不归一化会让 argPreview 的 JSON.parse
+// 与 args.slice 对对象抛 TypeError，直接白屏。
+function normalizeToolArgs(args: unknown): string {
+  if (args == null) return "";
+  if (typeof args === "string") return args;
+  try {
+    return JSON.stringify(args);
+  } catch {
+    return String(args);
   }
 }
 

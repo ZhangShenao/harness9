@@ -163,7 +163,11 @@ export interface AgentEvent {
 export interface ToolCallPayload {
   id: string;
   name: string;
-  arguments: string;
+  // schema.ToolCall.Arguments 是 json.RawMessage：经事件桥 JSON 序列化后
+  // 到前端是【对象】（历史记录路径 HistoryItem.tool_args 才是字符串）。
+  // 消费前必须经 normalizeToolArgs 归一化为文本，否则 JSON.parse/
+  // args.slice 会对对象抛 TypeError 直接白屏（前端无错误边界）。
+  arguments: string | Record<string, unknown> | null;
 }
 
 // engine.ToolResultData：无 json tag，字段名保持 Go 大写导出名。

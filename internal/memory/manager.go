@@ -93,7 +93,7 @@ func NewManager(dbPath string, opts ...ManagerOption) (*Manager, error) {
 	}
 	if err := ensureSessionsTitleColumn(db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("迁移 sessions.title 列: %w", err)
+		return nil, fmt.Errorf("迁移 sessions.title 列：%w", err)
 	}
 	m := &Manager{db: db}
 	for _, opt := range opts {

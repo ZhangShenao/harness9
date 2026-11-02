@@ -79,10 +79,10 @@ func RunCase(ctx context.Context, c *Case) Result {
 	// 不会触发该错误——若触发则说明框架内部逻辑有误，此时通过 RunError 明确上浮。
 	registry := tools.NewRegistry()
 	for _, t := range []tools.BaseTool{
-		tools.NewReadFileTool(workDir),
-		tools.NewWriteFileTool(workDir),
-		tools.NewBashTool(workDir),
-		tools.NewEditFileTool(workDir),
+		tools.NewReadFileTool(workDir, tools.ReadFileWithEnvironment(c.ToolEnvironment)),
+		tools.NewWriteFileTool(workDir, tools.WriteFileWithEnvironment(c.ToolEnvironment)),
+		tools.NewBashTool(workDir, tools.WithEnvironment(c.ToolEnvironment)),
+		tools.NewEditFileTool(workDir, tools.EditFileWithEnvironment(c.ToolEnvironment)),
 		tools.NewPlanWriteTool(planning.NewPlanStore()),
 	} {
 		if err := registry.Register(t); err != nil {

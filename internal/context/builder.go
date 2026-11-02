@@ -26,6 +26,10 @@ type DefaultPromptBuilder struct {
 	offloadEnabled bool
 	ltmReader      func() string
 	sandboxEnabled bool
+	// seatbeltEnabled 表示当前后端是 macOS Seatbelt（sandbox-exec）原生沙箱。
+	// 与 sandboxEnabled（Docker 容器）互斥：两者对模型承诺的隔离边界完全不同，
+	// Seatbelt 绝不能复用 Docker 文案（见 WithSeatbeltContext 注释）。
+	seatbeltEnabled bool
 	// sandboxDegraded 非空表示 Sandbox 已启用但启动失败，值为降级原因。
 	sandboxDegraded string
 }
@@ -62,6 +66,18 @@ func (b *DefaultPromptBuilder) WithLongTermMemory(reader func() string) *Default
 // 当启用时，在 system prompt 中添加 Sandbox 特定指引，说明可用的环境能力。
 func (b *DefaultPromptBuilder) WithSandboxContext(enabled bool) *DefaultPromptBuilder {
 	b.sandboxEnabled = enabled
+	return b
+}
+
+// WithSeatbeltContext 启用 macOS Seatbelt（sandbox-exec）执行环境提示。
+// 与 WithSandboxContext（Docker 容器）互斥使用。
+//
+// 必须独立成段而不能复用 Docker 文案的原因：Docker 文案承诺"root in Ubuntu、
+// 操作不影响真实系统、可用 apt-get 安装"——对 Seatbelt 全部不成立且危险：
+// Seatbelt 运行在用户真实 macOS 中，仅对子进程施加文件系统/网络护栏，
+// 模型若据此误判隔离边界，会执行越界破坏操作或发出错误的平台指令。
+func (b *DefaultPromptBuilder) WithSeatbeltContext(enabled bool) *DefaultPromptBuilder {
+	b.seatbeltEnabled = enabled
 	return b
 }
 
@@ -171,6 +187,20 @@ func (b *DefaultPromptBuilder) Build() string {
 				"- 安装的软件在本次会话期间持续有效\n"+
 				"- 代码验证（编译、运行、测试）是开发任务的必要步骤，不得跳过；"+
 				"遇到工具缺失时，先安装后验证",
+		)
+	} else if b.seatbeltEnabled {
+		parts = append(parts,
+			"## 执行环境（macOS Seatbelt 沙箱）\n\n"+
+				"你通过 macOS 原生 Seatbelt（sandbox-exec）沙箱执行终端命令：\n"+
+				"- 你运行在用户的真实 macOS 环境中，不是 root，也不在一次性容器里；"+
+				"操作会直接影响用户的真实工作区\n"+
+				"- 工作目录、系统临时目录与 ~/.harness9 可写；其余文件系统路径只读，"+
+				"越界写入会收到 Operation not permitted\n"+
+				"- 沙箱是行为护栏而非硬边界：不可逆操作（删除、git push、安装软件）"+
+				"前必须征得用户同意\n"+
+				"- 工具链使用宿主机已安装的版本（go/node/python 等）；缺失时先如实告知用户，"+
+				"不要假设可用 apt-get\n"+
+				"- 代码验证（编译、运行、测试）是开发任务的必要步骤，不得跳过",
 		)
 	}
 

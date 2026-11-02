@@ -4,7 +4,7 @@ harness9 的质量保障体系由三个相互独立但协同工作的子系统�
 
 ```
 开发阶段 ──→ Test（确定性测试）      ScriptedProvider + Assertion
-CI 阶段  ──→ Eval（黄金数据集评估）  24 个用例 + Quality Gate
+CI 阶段  ──→ Eval（黄金数据集评估）  26 个用例 + Quality Gate
 生产阶段 ──→ Observability（追踪）  OTEL Traces + Metrics → Langfuse
 ```
 
@@ -33,7 +33,7 @@ CI 阶段  ──→ Eval（黄金数据集评估）  24 个用例 + Quality Gat
                          │
           ┌──────────────▼──────────────┐
           │   Eval（评估）               │  ← CI/CD：黄金数据集 Quality Gate
-          │   量化 Agent 能力边界        │    24 个用例，PR 触发，失败阻断合并
+          │   量化 Agent 能力边界        │    26 个用例，PR 触发，失败阻断合并
           └──────────────┬──────────────┘
                          │
           ┌──────────────▼──────────────┐
@@ -191,7 +191,7 @@ func TestMyFeature(t *testing.T) {
 
 ## 三、Eval 子系统：黄金数据集
 
-### 3.1 当前黄金数据集（24 个用例）
+### 3.1 当前黄金数据集（26 个用例）
 
 | 类别 | 用例 | 验证目标 |
 |------|------|---------|
@@ -213,6 +213,8 @@ func TestMyFeature(t *testing.T) {
 | `error_handling` | `bash_fallback_on_error` | 工具失败后 LLM 切换替代方案（Self-Healing） |
 | `error_handling` | `write_failure_graceful_stop` | 写入失败后优雅降级不重试 |
 | `error_handling` | `max_turns_protection` | MaxTurns 触发引擎受控终止（不 panic） |
+| `sandbox_backend` | `seatbelt_workspace_write` | Seatbelt workspace-write 放行工作区写入（真实 sandbox-exec，副作用断言） |
+| `sandbox_backend` | `seatbelt_read_only_denies_write` | Seatbelt read-only 内核级拒绝工作区写入（文件不得落盘） |
 | `memory` | `write_memory` | memory_write 工具被调用 |
 | `memory` | `search_memory` | memory_search 工具被调用 |
 | `compaction` | `anchor_preservation` | 压缩后 LLM 仍能回答关于用户意图的问题（锚点保留） |

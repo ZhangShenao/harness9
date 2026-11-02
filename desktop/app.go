@@ -8,6 +8,7 @@ import (
 
 	"github.com/harness9/internal/appservice"
 	"github.com/harness9/internal/engine"
+	"github.com/harness9/internal/logfmt"
 	"github.com/harness9/internal/memory"
 	"github.com/harness9/internal/planning"
 	"github.com/harness9/internal/sandbox"
@@ -40,7 +41,7 @@ func (a *App) startup(ctx context.Context) {
 	if st, err := appservice.LoadSettings(a.homeDir); err == nil {
 		a.settings = st
 	} else {
-		log.Printf("desktop: 加载设置失败（使用默认值）: %v", err)
+		log.Print(logfmt.FormatMsg("desktop", fmt.Sprintf("加载设置失败（使用默认值）: %v", err)))
 	}
 }
 
@@ -70,7 +71,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 // ConfirmQuit 是前端确认后的退出入口：置旁路位并触发应用退出。
 // 下一轮 beforeClose 直接放行，shutdown 中统一释放资源（含中断运行中的任务）。
 func (a *App) ConfirmQuit() {
-	log.Print("desktop: 用户确认退出")
+	log.Print(logfmt.FormatMsg("desktop", "用户确认退出"))
 	a.mu.Lock()
 	a.quitBypass = true
 	a.mu.Unlock()

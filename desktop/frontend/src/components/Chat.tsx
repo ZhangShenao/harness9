@@ -55,6 +55,14 @@ function ToolCard({ item }: { item: ChatItem }) {
 
 function argPreview(args?: string): string {
   if (!args) return "";
+  if (typeof args !== "string") {
+    // 双保险：store 已归一化，此处兜底非字符串输入
+    try {
+      return argPreview(JSON.stringify(args));
+    } catch {
+      return "";
+    }
+  }
   try {
     const obj = JSON.parse(args);
     const first = obj.command ?? obj.path ?? obj.file_path ?? obj.query ?? obj.skill_name ?? obj.action ?? "";

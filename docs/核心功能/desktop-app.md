@@ -134,6 +134,8 @@ Codex 的产品线（CLI / IDE 扩展 / macOS 桌面版）共用一个 Rust core
 
 与 Docker 后端的关系：Seatbelt 无容器生命周期（不经过 Manager、零守护进程依赖、秒启），是桌面端的一等默认后端；Docker 提供更强的容器级硬隔离，二者通过设置页或 `SANDBOX_BACKEND` 环境变量切换（`seatbelt` / `docker` / `off`）。定位是行为护栏而非对抗性安全边界（与项目 NetworkBlockedHosts 的威胁模型口径一致）。
 
+三处配套语义保证后端一致性：**子代理委派继承父环境**（Seatbelt 下子代理的基础工具显式共享父环境，杜绝"父会话被沙箱约束、委派出去却不受限"的扩权漏洞；Docker 后端仍由 Runner 为每个子代理创建独立容器）；**专属 system prompt 段**（`WithSeatbeltContext` 独立文案，如实告知"运行在真实 macOS、非 root、仅工作区可写"——绝不能复用 Docker 的 "root in Ubuntu、操作不影响真实系统" 文案）；**行为级 eval**（`sandbox_backend` 两用例经真实 sandbox-exec 断言放行与拒绝，拒绝方向以"文件不得落盘"的副作用为凭）。
+
 桌面端设置持久化在 `~/.harness9/desktop/settings.json`（模型 / 权限模式 / 沙箱后端 / 最近工作目录）。生效时机：权限模式下次打开会话生效（会话栈重建时读取），模型与沙箱后端重启生效。API Key 仍由 workDir 的 `.env` 提供，不进设置文件。
 
 ---
@@ -169,7 +171,7 @@ open build/bin/harness9.app
 
 ## 测试
 
-- `internal/appservice` 单元测试：会话生命周期、事件泵（含审批并发场景：允许+白名单持久化、拒绝+反馈回传）、`historyToItems` 归并、git diff 采集、设置读写、权限模式互转；
+- `internal/appservice` 单元测试：会话生命周期、事件泵（含审批并发场景：允许 + 白名单持久化、拒绝 + 反馈回传）、`historyToItems` 归并、git diff 采集、设置读写、权限模式互转；
 - `internal/sandbox/seatbelt_test.go`：真实 `sandbox-exec` 冒烟（workspace-write 可写 workDir / 越界写入被拒 / read-only 禁写禁网 / 网络分档），非 darwin 自动跳过；
 - 既有引擎与 eval 黄金数据集零回退（服务层不改变任何 Agent 行为语义）。
 

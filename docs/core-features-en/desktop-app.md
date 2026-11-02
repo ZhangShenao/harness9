@@ -134,6 +134,8 @@ Following Codex's approach on macOS, a new `sandbox.SeatbeltEnvironment` (`inter
 
 Relationship to the Docker backend: Seatbelt has no container lifecycle (no Manager, no daemon dependency, instant start) and is the desktop app's first-class default; Docker offers stronger container-grade hard isolation. Switch via the settings dialog or the `SANDBOX_BACKEND` env var (`seatbelt` / `docker` / `off`). The positioning is a behavior guardrail, not an adversarial security boundary (same threat-model wording as NetworkBlockedHosts).
 
+Three companion semantics keep the backend consistent: **sub-agent delegation inherits the parent environment** (under Seatbelt the child base tools explicitly share the parent environment, closing the escalation hole where the parent session is sandboxed but delegated work is not; the Docker backend still has the Runner create a separate container per child); **a dedicated system-prompt section** (`WithSeatbeltContext` uses its own copy that honestly states "real macOS, not root, workspace-writable only" — reusing the Docker copy of "root in Ubuntu, operations cannot affect the real system" would be false and dangerous); **behavior-level evals** (the two `sandbox_backend` cases drive a real sandbox-exec and assert both allow and deny sides, with the deny side proven by the side effect that the file must not land).
+
 Desktop settings persist in `~/.harness9/desktop/settings.json` (model / permission mode / sandbox backend / recent workdirs). Effective timing: permission mode applies on the next opened session (read during session-stack rebuild); model and sandbox backend require an app restart. API keys still come from the workDir's `.env` and never enter the settings file.
 
 ---

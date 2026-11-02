@@ -73,15 +73,34 @@ func (e *SeatbeltEnvironment) Policy() SeatbeltPolicy { return e.policy }
 func (e *SeatbeltEnvironment) Close(_ context.Context) error { return nil }
 
 // RunBash 在 Seatbelt profile 约束下执行 bash 命令。
-// 语义与 LocalEnvironment 一致：非零退出返回 (错误文本, nil)，
+// 语义与 LocalEnvironment 一致：非零退出返回 (错误文本，nil)，
 // 保持工具层的 Self-Correction Loopback。
+//
+// 输出经临时文件而非 CombinedOutput 的管道承接：`sleep 300 &` 这类后台化
+// 子进程会继承管道写端，Wait() 在其存活期间永久阻塞且默认不受 ctx 取消
+// 约束（WaitDelay=0），工具超时与 Interrupt 都会失效；*os.File 走原始 fd
+// 直传，Wait 只等 bash -c 本身退出（与 BashTool.runLocal 同款方案）。
 func (e *SeatbeltEnvironment) RunBash(ctx context.Context, cmd, workDir string) (string, error) {
 	profile := e.buildProfile()
+	tmp, err := os.CreateTemp("", "harness9-seatbelt-*.log")
+	if err != nil {
+		return "", fmt.Errorf("创建临时输出文件失败：%w", err)
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+
 	c := exec.CommandContext(ctx, "sandbox-exec", "-p", profile, "bash", "-c", cmd)
 	c.Dir = workDir
-	out, err := c.CombinedOutput()
-	if err != nil {
-		return fmt.Sprintf("执行报错: %v\n输出:\n%s", err, out), nil
+	c.Stdout = tmp
+	c.Stderr = tmp
+	runErr := c.Run()
+
+	out, readErr := os.ReadFile(tmp.Name())
+	if readErr != nil {
+		return "", fmt.Errorf("读取命令输出失败：%w", readErr)
+	}
+	if runErr != nil {
+		return fmt.Sprintf("执行报错: %v\n输出:\n%s", runErr, out), nil
 	}
 	return string(out), nil
 }

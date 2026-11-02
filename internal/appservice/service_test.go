@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,22 +52,25 @@ func newTestServiceWithFactory(t *testing.T, factory func(string) (provider.LLMP
 }
 
 // eventCollector 是线程安全的事件收集器（泵 goroutine 异步投递）。
+// events 的读写必须经 mu：事件泵与测试断言分属不同 goroutine，
+// 无锁并发访问会被 -race 检出（CI Test job 即因此失败）。
 type eventCollector struct {
 	ch     chan Event
-	mu     chan struct{}
+	mu     sync.Mutex
 	events []Event
 }
 
 func newEventCollector(svc *Service) *eventCollector {
-	ec := &eventCollector{ch: make(chan Event, 256), mu: make(chan struct{}, 1)}
+	ec := &eventCollector{ch: make(chan Event, 256)}
 	svc.SetListener(func(evt Event) {
 		ec.ch <- evt
 	})
 	go func() {
 		for evt := range ec.ch {
+			ec.mu.Lock()
 			ec.events = append(ec.events, evt)
+			ec.mu.Unlock()
 		}
-		close(ec.mu)
 	}()
 	return ec
 }
@@ -78,18 +82,22 @@ func (ec *eventCollector) waitDone(t *testing.T) []Event {
 	for {
 		select {
 		case <-deadline:
-			t.Fatalf("等待任务结束超时，已收事件数: %d", len(ec.events))
+			t.Fatalf("等待任务结束超时，已收事件数：%d", len(ec.snapshot()))
 		case <-time.After(10 * time.Millisecond):
-			for _, evt := range ec.events {
+			for _, evt := range ec.snapshot() {
 				if evt.Type == string(engine.EventDone) || evt.Type == string(engine.EventError) {
-					return ec.events
+					return ec.snapshot()
 				}
 			}
 		}
 	}
 }
 
-func (ec *eventCollector) snapshot() []Event { return append([]Event(nil), ec.events...) }
+func (ec *eventCollector) snapshot() []Event {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	return append([]Event(nil), ec.events...)
+}
 
 func TestServiceSessionLifecycle(t *testing.T) {
 	svc := newTestService(t, providertest.NewMock())
@@ -105,7 +113,7 @@ func TestServiceSessionLifecycle(t *testing.T) {
 		t.Fatalf("ListSessions: %v", err)
 	}
 	if len(sessions) != 1 || sessions[0].Title != "测试标题" {
-		t.Fatalf("会话列表不符合预期: %+v", sessions)
+		t.Fatalf("会话列表不符合预期：%+v", sessions)
 	}
 
 	// 重新打开（会话栈重建）后标题保持
@@ -122,7 +130,7 @@ func TestServiceSessionLifecycle(t *testing.T) {
 	}
 	sessions, _ = svc.ListSessions()
 	if len(sessions) != 0 {
-		t.Fatalf("删除后会话列表应为空: %+v", sessions)
+		t.Fatalf("删除后会话列表应为空：%+v", sessions)
 	}
 	if _, ok := svc.ActiveSession(); ok {
 		t.Fatalf("删除活跃会话后 ActiveSession 应返回 false")
@@ -250,7 +258,7 @@ func TestServiceApprovalAllowAndRemember(t *testing.T) {
 				}
 				// 空白名单下 bash 未匹配任何规则 → permission hook 默认 ask（medium）
 				if data.ToolName != "bash" || data.RiskLevel != "medium" {
-					t.Fatalf("审批内容不符合预期: %+v", data)
+					t.Fatalf("审批内容不符合预期：%+v", data)
 				}
 				// 应答不存在/重复应答应报错
 				if err := svc.RespondApproval(data.ID+"-nope", true, "", false); err == nil {
@@ -365,23 +373,23 @@ func TestHistoryToItems(t *testing.T) {
 	}
 	items := historyToItems(msgs)
 	if len(items) != 5 {
-		t.Fatalf("条目数不符: %d (%+v)", len(items), items)
+		t.Fatalf("条目数不符：%d (%+v)", len(items), items)
 	}
-	// 期望顺序: user / assistant(text) / tool(c1, 已回填) / tool(c2, pending) / assistant
+	// 期望顺序：user / assistant(text) / tool(c1, 已回填) / tool(c2, pending) / assistant
 	if items[0].Kind != "user" || items[0].Text != "第一问" {
-		t.Fatalf("items[0] 不符: %+v", items[0])
+		t.Fatalf("items[0] 不符：%+v", items[0])
 	}
 	if items[1].Kind != "assistant" || items[1].Text != "我来查一下" {
-		t.Fatalf("items[1] 不符: %+v", items[1])
+		t.Fatalf("items[1] 不符：%+v", items[1])
 	}
 	if items[2].ToolName != "bash" || items[2].ToolOutput != "ls 输出" || items[2].Pending {
-		t.Fatalf("items[2] 应为已回填的 bash 卡片: %+v", items[2])
+		t.Fatalf("items[2] 应为已回填的 bash 卡片：%+v", items[2])
 	}
 	if items[3].ToolName != "read_file" || !items[3].Pending {
-		t.Fatalf("items[3] 应为 pending 的 read_file 卡片: %+v", items[3])
+		t.Fatalf("items[3] 应为 pending 的 read_file 卡片：%+v", items[3])
 	}
 	if items[4].Kind != "assistant" || items[4].Text != "结论" {
-		t.Fatalf("items[4] 不符: %+v", items[4])
+		t.Fatalf("items[4] 不符：%+v", items[4])
 	}
 }
 
@@ -427,7 +435,7 @@ func TestServiceSessionDiff(t *testing.T) {
 		t.Fatalf("GetSessionDiff: %v", err)
 	}
 	if !diff.IsGitRepo || !diff.Dirty {
-		t.Fatalf("应识别为脏 git 仓库: %+v", diff)
+		t.Fatalf("应识别为脏 git 仓库：%+v", diff)
 	}
 	if !strings.Contains(diff.Patch, "hello world") {
 		t.Fatalf("补丁应包含修改内容: %q", diff.Patch)
@@ -444,7 +452,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("LoadSettings(不存在): %v", err)
 	}
 	if st.Model != "" {
-		t.Fatalf("默认设置应为零值: %+v", st)
+		t.Fatalf("默认设置应为零值：%+v", st)
 	}
 
 	st = Settings{
@@ -462,7 +470,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 	if got.Model != "deepseek-chat" || got.PermissionMode != "auto_approve" ||
 		got.SandboxBackend != "seatbelt" || len(got.RecentWorkDirs) != 1 {
-		t.Fatalf("回读不符: %+v", got)
+		t.Fatalf("回读不符：%+v", got)
 	}
 }
 
@@ -562,7 +570,7 @@ approved:
 		t.Fatalf("中断后 running 应复位")
 	}
 	if got := svc.PendingApprovals(); len(got) != 0 {
-		t.Fatalf("run 结束后审批应清空，实际: %+v", got)
+		t.Fatalf("run 结束后审批应清空，实际：%+v", got)
 	}
 	_ = ec
 }

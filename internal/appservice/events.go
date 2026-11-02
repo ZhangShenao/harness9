@@ -75,6 +75,10 @@ func (s *Service) pump(stack *SessionStack, ch <-chan engine.Event, cancel conte
 		// 残留条目会让 RespondApproval 误以为仍在等待（应答只会超时丢弃），
 		// 也会让 PendingApprovals 恢复逻辑展示已失效的弹窗。
 		s.pendingApprovals = make(map[string]*engine.ApprovalRequest)
+		// 收割本次 run 期间完成的后台子代理任务，供下一条消息前置注入。
+		if completed := stack.tracker.DrainCompleted(); len(completed) > 0 {
+			stack.pendingInject = append(stack.pendingInject, formatCompletedTasks(completed)...)
+		}
 		s.mu.Unlock()
 		log.Print(logfmt.FormatMsg("appservice", "事件泵退出"))
 	}()
